@@ -322,9 +322,9 @@ class MarketDataService:
     def _with_chart_time(bars: pd.DataFrame, bar_mode: str) -> pd.DataFrame:
         normalized = bars.copy()
         if bar_mode == "time":
-            adjusted_times = (normalized["datetime"].astype("int64") // 10**9).astype(int).tolist()
+            adjusted_times = [int(pd.Timestamp(dt).timestamp()) for dt in normalized["datetime"].tolist()]
         else:
-            base_times = (normalized["datetime"].astype("int64") // 10**9).tolist()
+            base_times = [int(pd.Timestamp(dt).timestamp()) for dt in normalized["datetime"].tolist()]
             if base_times:
                 start_time = int(base_times[0])
                 adjusted_times = [start_time + index for index in range(len(base_times))]
@@ -336,31 +336,42 @@ class MarketDataService:
 
     @staticmethod
     def _serialize_candles(df: pd.DataFrame) -> list[dict[str, Any]]:
+        times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+        opens = pd.to_numeric(df["open"], errors="coerce").tolist()
+        highs = pd.to_numeric(df["high"], errors="coerce").tolist()
+        lows = pd.to_numeric(df["low"], errors="coerce").tolist()
+        closes = pd.to_numeric(df["close"], errors="coerce").tolist()
         return [
             {
-                "time": int(row.time),
-                "open": float(row.open),
-                "high": float(row.high),
-                "low": float(row.low),
-                "close": float(row.close),
+                "time": time_value,
+                "open": float(open_value),
+                "high": float(high_value),
+                "low": float(low_value),
+                "close": float(close_value),
             }
-            for row in df[["time", "open", "high", "low", "close"]].itertuples(index=False)
+            for time_value, open_value, high_value, low_value, close_value in zip(times, opens, highs, lows, closes)
         ]
 
     @staticmethod
     def _serialize_volume(df: pd.DataFrame) -> list[dict[str, Any]]:
+        times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+        opens = pd.to_numeric(df["open"], errors="coerce").tolist()
+        closes = pd.to_numeric(df["close"], errors="coerce").tolist()
+        volumes = pd.to_numeric(df["volume"], errors="coerce").fillna(0).tolist()
         return [
             {
-                "time": int(row.time),
-                "value": float(row.volume),
-                "color": TV_UP if row.close >= row.open else TV_DOWN,
+                "time": time_value,
+                "value": float(volume_value),
+                "color": TV_UP if close_value >= open_value else TV_DOWN,
             }
-            for row in df[["time", "open", "close", "volume"]].itertuples(index=False)
+            for time_value, open_value, close_value, volume_value in zip(times, opens, closes, volumes)
         ]
 
     @staticmethod
     def _serialize_time_labels(df: pd.DataFrame) -> dict[str, str]:
-        return {str(int(row.time)): str(row.display_time) for row in df[["time", "display_time"]].itertuples(index=False)}
+        times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+        labels = df["display_time"].astype(str).tolist()
+        return {str(time_value): label for time_value, label in zip(times, labels)}
 
     @staticmethod
     def _serialize_indicator(result: IndicatorResult) -> dict[str, Any]:

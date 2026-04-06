@@ -5,7 +5,7 @@
 当前默认目标：
 
 - 数据源：`bitget`
-- 默认合约：`BTCUSDT`
+- 默认合约：`XAUUSDT`
 - 默认周期：`1m`
 - 实时方式：浏览器直连 Bitget WebSocket
 
@@ -141,7 +141,7 @@ http://127.0.0.1:8050
 ```bash
 ./myvenv/bin/python web_tq_chart.py \
   --provider bitget \
-  --symbol BTCUSDT \
+  --symbol XAUUSDT \
   --duration 60 \
   --length 800 \
   --bar-mode time \
@@ -153,7 +153,7 @@ http://127.0.0.1:8050
 参数说明：
 
 - `--provider`：当前主用 `bitget`，也可切到 `duckdb`
-- `--symbol`：默认合约，例如 `BTCUSDT`
+- `--symbol`：默认合约，例如 `XAUUSDT`
 - `--duration`：时间 K 周期，单位秒
 - `--length`：默认拉取根数
 - `--bar-mode`：当前 Bitget 主链路只建议使用 `time`
@@ -189,7 +189,7 @@ http://127.0.0.1:8050
 示例：
 
 ```text
-/api/snapshot?provider=bitget&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands
+/api/snapshot?provider=bitget&symbol=XAUUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands
 ```
 
 ## 指标

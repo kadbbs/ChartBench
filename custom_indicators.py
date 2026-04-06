@@ -16,10 +16,9 @@ def _line_point(time_value: int, value: float | None) -> dict[str, float | int]:
 
 
 def _line_data(df: pd.DataFrame, column: str) -> list[dict[str, float | int | None]]:
-    return [
-        _line_point(int(row.time), row.value)
-        for row in df[["time", column]].rename(columns={column: "value"}).itertuples(index=False)
-    ]
+    times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+    values = df[column].tolist()
+    return [_line_point(time_value, value) for time_value, value in zip(times, values)]
 
 
 def _colored_line_data(
@@ -31,11 +30,13 @@ def _colored_line_data(
 ) -> list[dict[str, float | int | str]]:
     points: list[dict[str, float | int | str]] = []
 
-    for row in df[["time", value_column, trend_column]].itertuples(index=False):
-        value = getattr(row, value_column)
-        trend = getattr(row, trend_column)
+    times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+    values = df[value_column].tolist()
+    trends = df[trend_column].tolist()
+
+    for time_value, value, trend in zip(times, values, trends):
         if pd.isna(value):
-            points.append({"time": int(row.time)})
+            points.append({"time": int(time_value)})
             continue
 
         color = up_color
@@ -44,7 +45,7 @@ def _colored_line_data(
 
         points.append(
             {
-                "time": int(row.time),
+                "time": int(time_value),
                 "value": float(value),
                 "color": color,
             }
@@ -62,10 +63,12 @@ def _state_colored_line_data(
 ) -> list[dict[str, float | int | str]]:
     points: list[dict[str, float | int | str]] = []
 
-    for row in df[["time", value_column]].itertuples(index=False):
-        value = getattr(row, value_column)
+    times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+    values = df[value_column].tolist()
+
+    for time_value, value in zip(times, values):
         if pd.isna(value):
-            points.append({"time": int(row.time)})
+            points.append({"time": int(time_value)})
             continue
 
         if float(value) > 0:
@@ -77,7 +80,7 @@ def _state_colored_line_data(
 
         points.append(
             {
-                "time": int(row.time),
+                "time": int(time_value),
                 "value": float(value),
                 "color": color,
             }
@@ -94,15 +97,19 @@ def _trend_line_data(
 ) -> list[dict[str, float | int | None]]:
     points: list[dict[str, float | int | None]] = []
 
-    for row in df[["time", value_column, trend_column]].itertuples(index=False):
-        value = None if pd.isna(getattr(row, value_column)) else float(getattr(row, value_column))
-        trend = bool(getattr(row, trend_column)) if not pd.isna(getattr(row, trend_column)) else None
+    times = pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist()
+    values = df[value_column].tolist()
+    trends = df[trend_column].tolist()
+
+    for time_value, raw_value, raw_trend in zip(times, values, trends):
+        value = None if pd.isna(raw_value) else float(raw_value)
+        trend = bool(raw_trend) if not pd.isna(raw_trend) else None
 
         if value is None or trend is None:
-            points.append(_line_point(int(row.time), None))
+            points.append(_line_point(int(time_value), None))
             continue
 
-        points.append(_line_point(int(row.time), value if trend is bullish else None))
+        points.append(_line_point(int(time_value), value if trend is bullish else None))
 
     return points
 
@@ -466,7 +473,7 @@ class DuoKongLineIndicator(Indicator):
         name="多空线",
         pane="price",
         description="通达信风格 HULL 多空线，白色主线叠加红绿趋势段，并标注 多 / 空 信号。",
-        enabled_by_default=False,
+        enabled_by_default=True,
         params=[
             {
                 "key": "mode",

@@ -93,7 +93,7 @@ class AtrBandsIndicator(Indicator):
         name="ATR Bands",
         pane="price",
         description="基于 ATR 的上下轨，默认参数 N=14, M=1.5。",
-        enabled_by_default=False,
+        enabled_by_default=True,
     )
 
     def __init__(self, period: int = 14, multiplier: float = 1.5) -> None:
