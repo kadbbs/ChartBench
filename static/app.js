@@ -53,6 +53,8 @@ const state = {
     vwap: true,
   },
   runtimeIndicators: [],
+  watchlistMode: "all",
+  watchlistSymbols: [],
 };
 
 const DEFAULT_VISIBLE_BARS = 120;
@@ -82,6 +84,7 @@ const ORDERFLOW_CELL_MIN_TEXT_WIDTH = 64;
 const ORDERFLOW_DOM_HALF_WIDTH = 34;
 const ORDERFLOW_IMBALANCE_RATIO = 0.72;
 const TERMINAL_TEMPLATE_STORAGE_KEY = "qh_terminal_template_v1";
+const WATCHLIST_STORAGE_KEY = "qh_symbol_watchlist_v1";
 
 function paneLabelConfig(paneId) {
   if (paneId === "pseudo_orderflow_5m") {
@@ -1771,7 +1774,7 @@ class TerminalStatsRenderer {
     const headerHeight = 16;
     const rowHeight = (height - headerHeight) / rows.length;
     const latestTime = this.data[this.data.length - 1]?.time;
-    this.ctx.font = "11px IBM Plex Mono, IBM Plex Sans, monospace";
+    this.ctx.font = "13px IBM Plex Mono, IBM Plex Sans, monospace";
     this.ctx.fillStyle = "rgba(141, 147, 165, 0.82)";
     this.ctx.fillText("Footprint bar statistics", 8, 11);
     this.ctx.fillStyle = "rgba(141, 147, 165, 0.7)";
@@ -1788,7 +1791,7 @@ class TerminalStatsRenderer {
       this.ctx.fillStyle = "rgba(141, 147, 165, 0.92)";
       this.ctx.font = "11px IBM Plex Mono, IBM Plex Sans, monospace";
       this.ctx.fillStyle = row.color || "rgba(141, 147, 165, 0.92)";
-      this.ctx.fillText(row.label, 8, top + 14);
+      this.ctx.fillText(row.label, 8, top + 17);
     });
     const columns = this.data
       .map((point) => {
@@ -1947,7 +1950,7 @@ class UnderBarTextRenderer {
         const value = Number(point[row.key] || 0);
         const text = row.format ? row.format(value) : String(value);
         this.ctx.fillStyle = row.color || (value >= 0 ? "#69ff7b" : "#ff335f");
-        this.ctx.fillText(text, Math.max(leftLabelWidth, x - columnWidth / 2 + 2), top + 14);
+        this.ctx.fillText(text, Math.max(leftLabelWidth, x - columnWidth / 2 + 2), top + 17);
       });
     });
   }
@@ -2003,6 +2006,10 @@ const els = {
   symbol: document.getElementById("symbol-name"),
   duration: document.getElementById("duration-name"),
   symbolSelect: document.getElementById("symbol-select"),
+  watchlistTabFavorites: document.getElementById("watchlist-tab-favorites"),
+  watchlistTabAll: document.getElementById("watchlist-tab-all"),
+  watchlistAddCurrent: document.getElementById("watchlist-add-current"),
+  watchlistRemoveCurrent: document.getElementById("watchlist-remove-current"),
   barModeSelect: document.getElementById("bar-mode-select"),
   durationSelect: document.getElementById("duration-select"),
   barSizeLabel: document.getElementById("bar-size-label"),
@@ -2797,6 +2804,37 @@ function persistTerminalTemplate(template) {
   window.localStorage.setItem(TERMINAL_TEMPLATE_STORAGE_KEY, JSON.stringify(template));
 }
 
+function loadWatchlistSymbols() {
+  const raw = window.localStorage.getItem(WATCHLIST_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistWatchlistSymbols(symbols) {
+  state.watchlistSymbols = [...new Set(symbols.filter(Boolean))];
+  window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(state.watchlistSymbols));
+}
+
+function syncWatchlistUi() {
+  els.watchlistTabFavorites?.classList.toggle("is-active", state.watchlistMode === "favorites");
+  els.watchlistTabAll?.classList.toggle("is-active", state.watchlistMode === "all");
+  const current = getRequestedSymbol();
+  const inWatchlist = state.watchlistSymbols.includes(current);
+  if (els.watchlistAddCurrent) {
+    els.watchlistAddCurrent.disabled = inWatchlist;
+  }
+  if (els.watchlistRemoveCurrent) {
+    els.watchlistRemoveCurrent.disabled = !inWatchlist;
+  }
+}
+
 function loadSavedTerminalTemplate() {
   const raw = window.localStorage.getItem(TERMINAL_TEMPLATE_STORAGE_KEY);
   if (!raw) {
@@ -2932,11 +2970,13 @@ function formatBarModeLabel(barMode, durationSeconds, rangeTicks) {
 }
 
 function syncMarketHeader(symbolLabel, durationSeconds, barMode, rangeTicks) {
-  els.title.textContent = `${symbolLabel} 图表工作台`;
-  els.symbol.textContent = symbolLabel;
+  const [primaryLabel, secondaryLabel] = String(symbolLabel || "").split("·").map((item) => item.trim());
+  const mainLabel = primaryLabel || symbolLabel;
+  els.title.textContent = `${mainLabel} 图表工作台`;
+  els.symbol.textContent = mainLabel;
   els.duration.textContent = formatBarModeLabel(barMode, durationSeconds, rangeTicks);
   if (els.metaContract) {
-    els.metaContract.textContent = symbolLabel;
+    els.metaContract.textContent = secondaryLabel ? `${mainLabel} · ${secondaryLabel}` : mainLabel;
   }
 }
 
@@ -3370,9 +3410,25 @@ function buildContractOptions(contracts, activeSymbol) {
     els.toolbarSymbol.innerHTML = "";
   }
   const provider = getRequestedProvider() || state.activeProvider || state.config?.provider || "";
-  const normalizedContracts = contracts.length
+  let normalizedContracts = contracts.length
     ? contracts
     : [{ symbol: activeSymbol, label: activeSymbol }];
+  if (state.watchlistMode === "favorites") {
+    normalizedContracts = normalizedContracts.filter((contract) => state.watchlistSymbols.includes(contract.symbol));
+  }
+  if (normalizedContracts.length === 0 && state.watchlistMode === "favorites") {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "自选为空";
+    option.disabled = true;
+    option.selected = true;
+    els.symbolSelect.append(option);
+    if (els.toolbarSymbol) {
+      els.toolbarSymbol.append(option.cloneNode(true));
+    }
+    syncWatchlistUi();
+    return;
+  }
   normalizedContracts.forEach((contract) => {
     const option = document.createElement("option");
     option.value = contract.symbol;
@@ -3386,6 +3442,7 @@ function buildContractOptions(contracts, activeSymbol) {
       els.toolbarSymbol.append(clone);
     }
   });
+  syncWatchlistUi();
 }
 
 function getRequestedSymbol() {
@@ -3905,7 +3962,7 @@ function paneHeights(panes) {
     return [82, 18];
   }
   if (hasTerminalStats && indicatorCount === 1) {
-    return [72, 12, 16];
+    return [68, 10, 22];
   }
   if (indicatorCount === 1) {
     return [46, 14, 40];
@@ -4020,7 +4077,7 @@ function rebuildCharts() {
         : paneId === VOLUME_PANE_ID
           ? "56px"
           : paneId === "terminal_bar_microstats"
-            ? "110px"
+            ? "150px"
             : "96px";
     els.chartStack.appendChild(pane);
 
@@ -4514,6 +4571,7 @@ function resizeCharts() {
 
 async function boot() {
   state.config = await fetchJson("/api/config");
+  state.watchlistSymbols = loadWatchlistSymbols();
   state.activeProvider = state.config.provider;
   state.activeSymbol = state.config.symbol;
   state.activeDurationSeconds = state.config.duration_seconds;
@@ -4584,6 +4642,31 @@ async function boot() {
       await refreshSnapshot();
     } catch (error) {
       els.error.textContent = error.message;
+    }
+  });
+  els.watchlistTabFavorites?.addEventListener("click", async () => {
+    state.watchlistMode = "favorites";
+    buildContractOptions(state.config.contracts || [], state.activeSymbol);
+  });
+  els.watchlistTabAll?.addEventListener("click", async () => {
+    state.watchlistMode = "all";
+    buildContractOptions(state.config.contracts || [], state.activeSymbol);
+  });
+  els.watchlistAddCurrent?.addEventListener("click", () => {
+    const current = getRequestedSymbol();
+    if (!current) {
+      return;
+    }
+    persistWatchlistSymbols([...state.watchlistSymbols, current]);
+    syncWatchlistUi();
+  });
+  els.watchlistRemoveCurrent?.addEventListener("click", async () => {
+    const current = getRequestedSymbol();
+    persistWatchlistSymbols(state.watchlistSymbols.filter((item) => item !== current));
+    if (state.watchlistMode === "favorites") {
+      buildContractOptions(state.config.contracts || [], state.activeSymbol);
+    } else {
+      syncWatchlistUi();
     }
   });
   els.toolbarSymbol?.addEventListener("change", async () => {

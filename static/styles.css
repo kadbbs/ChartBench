@@ -97,6 +97,29 @@ body {
   font-size: 12px;
 }
 
+.symbol-mode-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.symbol-mode-btn,
+.symbol-mode-action {
+  padding: 5px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(13, 16, 22, 0.98);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.symbol-mode-btn.is-active {
+  color: var(--text);
+  border-color: rgba(122, 208, 255, 0.4);
+  background: rgba(122, 208, 255, 0.12);
+}
+
 .control-field input,
 .control-field select,
 .indicator-param input,
