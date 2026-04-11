@@ -42,9 +42,9 @@ const state = {
   orderflowSeenTradeIds: new Set(),
   orderflowUi: {
     rowDensityScale: 1,
+    barRowGapScale: 1,
   },
   terminalToggles: {
-    cluster: true,
     text: true,
     candle: true,
     oi: true,
@@ -1919,18 +1919,23 @@ class UnderBarTextRenderer {
     }
     const leftLabelWidth = 88;
     const headerHeight = 16;
-    const rowHeight = (height - headerHeight) / rows.length;
+    const rowGapScale = Math.max(0.75, Math.min(1.6, Number(state.orderflowUi?.barRowGapScale || 1)));
+    const availableHeight = Math.max(height - headerHeight, 1);
+    const baseRowHeight = availableHeight / rows.length;
+    const rowHeight = baseRowHeight * rowGapScale;
+    const blockHeight = Math.min(availableHeight, rowHeight * rows.length);
+    const blockTop = headerHeight + Math.max((availableHeight - blockHeight) / 2, 0);
 
     this.ctx.font = "11px IBM Plex Mono, IBM Plex Sans, monospace";
     this.ctx.fillStyle = "rgba(141, 147, 165, 0.84)";
-    this.ctx.fillText("Bar Tick Aggregate", 8, 11);
+    this.ctx.fillText("Real Trade Orderflow", 8, 11);
 
     rows.forEach((row, rowIndex) => {
-      const top = headerHeight + rowIndex * rowHeight;
+      const top = blockTop + rowIndex * rowHeight;
       this.ctx.fillStyle = rowIndex % 2 === 0 ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.05)";
-      this.ctx.fillRect(0, top, width, rowHeight);
+      this.ctx.fillRect(0, top, width, Math.max(rowHeight - 1, 1));
       this.ctx.fillStyle = row.color || "rgba(141, 147, 165, 0.92)";
-      this.ctx.fillText(row.label, 8, top + 14);
+      this.ctx.fillText(row.label, 8, top + Math.min(rowHeight * 0.72, 15));
       this.ctx.strokeStyle = "rgba(255,255,255,0.05)";
       this.ctx.beginPath();
       this.ctx.moveTo(0, top + 0.5);
@@ -1946,11 +1951,11 @@ class UnderBarTextRenderer {
       const nextX = this.chart.timeScale().timeToCoordinate(point.time + 1);
       const columnWidth = Number.isFinite(nextX) ? Math.max(nextX - x - 1, 18) : 28;
       rows.forEach((row, rowIndex) => {
-        const top = headerHeight + rowIndex * rowHeight;
+        const top = blockTop + rowIndex * rowHeight;
         const value = Number(point[row.key] || 0);
         const text = row.format ? row.format(value) : String(value);
         this.ctx.fillStyle = row.color || (value >= 0 ? "#69ff7b" : "#ff335f");
-        this.ctx.fillText(text, Math.max(leftLabelWidth, x - columnWidth / 2 + 2), top + 17);
+        this.ctx.fillText(text, Math.max(leftLabelWidth, x - columnWidth / 2 + 2), top + Math.min(rowHeight * 0.78, 17));
       });
     });
   }
@@ -2051,9 +2056,6 @@ const els = {
   toolbarBarMode: document.getElementById("toolbar-bar-mode"),
   toolbarRangeTicks: document.getElementById("toolbar-range-ticks"),
   toolbarBrickLength: document.getElementById("toolbar-brick-length"),
-  toolbarOrderflowView: document.getElementById("toolbar-orderflow-view"),
-  toolbarCenterLock: document.getElementById("toolbar-center-lock"),
-  toggleCluster: document.getElementById("toggle-cluster"),
   toggleText: document.getElementById("toggle-text"),
   toggleCandle: document.getElementById("toggle-candle"),
   toggleOi: document.getElementById("toggle-oi"),
@@ -2065,17 +2067,38 @@ const els = {
   metaContract: document.getElementById("meta-contract"),
   metaStatus: document.getElementById("meta-status"),
   metaDebug: document.getElementById("meta-debug"),
+  barStatsCard: document.querySelector(".bar-stats-card"),
+  barflowRowGap: document.getElementById("barflow-row-gap"),
+  barflowRowGapValue: document.getElementById("barflow-row-gap-value"),
+  barflowBadge: document.getElementById("barflow-badge"),
   barstatDelta: document.getElementById("barstat-delta"),
   barstatSpeed: document.getElementById("barstat-speed"),
   barstatEfficiency: document.getElementById("barstat-efficiency"),
   barstatClosePos: document.getElementById("barstat-close-pos"),
   barstatHighBuy: document.getElementById("barstat-high-buy"),
   barstatLowSell: document.getElementById("barstat-low-sell"),
+  barflowState: document.getElementById("barflow-state"),
+  barflowBias: document.getElementById("barflow-bias"),
+  barflowTrades: document.getElementById("barflow-trades"),
+  barflowVolume: document.getElementById("barflow-volume"),
+  barflowBuyRatio: document.getElementById("barflow-buy-ratio"),
+  barflowSellRatio: document.getElementById("barflow-sell-ratio"),
+  barflowDeltaRatio: document.getElementById("barflow-delta-ratio"),
   barGrid: document.getElementById("bar-grid"),
   error: document.getElementById("error-message"),
 };
 
 state.timeLabels = new Map();
+
+function syncBarRowGapControl() {
+  const value = Math.max(0.75, Math.min(1.6, Number(state.orderflowUi.barRowGapScale || 1)));
+  if (els.barflowRowGap) {
+    els.barflowRowGap.value = String(value);
+  }
+  if (els.barflowRowGapValue) {
+    els.barflowRowGapValue.textContent = `${value.toFixed(2)}x`;
+  }
+}
 
 const chartTheme = {
   layout: {
@@ -2123,7 +2146,7 @@ const chartTheme = {
     pinch: true,
     axisPressedMouseMove: {
       time: true,
-      price: false,
+      price: true,
     },
   },
   localization: {
@@ -2764,14 +2787,7 @@ function buildDefaultTerminalTemplate() {
     bar_mode: state.config?.bar_mode || "time",
     range_ticks: state.config?.range_ticks || 10,
     brick_length: state.config?.brick_length || 10000,
-    orderflow_gl: {
-      view_mode: "profile",
-      profile_opacity: 0.78,
-      footprint_opacity: 0.9,
-      lock_price_center: true,
-    },
     toggles: {
-      cluster: true,
       text: true,
       candle: true,
       oi: true,
@@ -2790,12 +2806,6 @@ function buildCurrentTerminalTemplate() {
     bar_mode: getRequestedBarMode(),
     range_ticks: getRequestedRangeTicks(),
     brick_length: getRequestedBrickLength(),
-    orderflow_gl: {
-      view_mode: state.indicatorParams.orderflow_gl?.view_mode || "profile",
-      profile_opacity: Number(state.indicatorParams.orderflow_gl?.profile_opacity ?? 0.78),
-      footprint_opacity: Number(state.indicatorParams.orderflow_gl?.footprint_opacity ?? 0.9),
-      lock_price_center: Boolean(state.indicatorParams.orderflow_gl?.lock_price_center ?? true),
-    },
     toggles: { ...state.terminalToggles },
   };
 }
@@ -2848,7 +2858,6 @@ function loadSavedTerminalTemplate() {
 }
 
 function syncToolbarToggles() {
-  if (els.toggleCluster) els.toggleCluster.checked = Boolean(state.terminalToggles.cluster);
   if (els.toggleText) els.toggleText.checked = Boolean(state.terminalToggles.text);
   if (els.toggleCandle) els.toggleCandle.checked = Boolean(state.terminalToggles.candle);
   if (els.toggleOi) els.toggleOi.checked = Boolean(state.terminalToggles.oi);
@@ -2865,12 +2874,6 @@ async function applyTerminalTemplate(template) {
   };
   syncToolbarToggles();
 
-  const nextOrderflow = {
-    ...state.indicatorParams.orderflow_gl,
-    ...(nextTemplate.orderflow_gl || {}),
-  };
-  state.indicatorParams.orderflow_gl = nextOrderflow;
-
   if (els.toolbarProvider) els.toolbarProvider.value = String(nextTemplate.provider || state.config.provider);
   if (els.providerSelect) els.providerSelect.value = String(nextTemplate.provider || state.config.provider);
   if (els.toolbarSymbol) els.toolbarSymbol.value = String(nextTemplate.symbol || state.config.symbol);
@@ -2883,8 +2886,6 @@ async function applyTerminalTemplate(template) {
   if (els.rangeTicksInput) els.rangeTicksInput.value = String(nextTemplate.range_ticks || state.config.range_ticks || 10);
   if (els.toolbarBrickLength) els.toolbarBrickLength.value = String(nextTemplate.brick_length || state.config.brick_length || 10000);
   if (els.brickLengthInput) els.brickLengthInput.value = String(nextTemplate.brick_length || state.config.brick_length || 10000);
-  if (els.toolbarOrderflowView) els.toolbarOrderflowView.value = String(nextOrderflow.view_mode || "profile");
-  if (els.toolbarCenterLock) els.toolbarCenterLock.checked = Boolean(nextOrderflow.lock_price_center ?? true);
 
   syncBarModeControls(getRequestedBarMode());
   await refreshConfig(getRequestedProvider());
@@ -3045,6 +3046,11 @@ function computePerBarMicrostructure(candle, snapshot = null) {
       buy_vol: 0,
       sell_vol: 0,
       total_vol: 0,
+      trade_count: 0,
+      buy_ratio: 0,
+      sell_ratio: 0,
+      delta_ratio: 0,
+      imbalance_ratio: 0,
       dOI: 0,
     };
   }
@@ -3075,18 +3081,64 @@ function computePerBarMicrostructure(candle, snapshot = null) {
     }
   });
   const totalVol = buyVol + sellVol;
+  const imbalanceRatio = (buyVol - sellVol) / (totalVol + 1e-9);
   return {
     delta: buyVol - sellVol,
     speed: trades.length / barSeconds,
-    efficiency: Math.abs(close - open) / (totalVol + 1e-9),
+    efficiency: Math.abs(close - open) / (range + 1e-9),
     close_pos: (close - low) / (range + 1e-9),
     high_zone_buy_ratio: highZoneBuy / (highZoneTotal + 1e-9),
     low_zone_sell_ratio: lowZoneSell / (lowZoneTotal + 1e-9),
     buy_vol: buyVol,
     sell_vol: sellVol,
     total_vol: totalVol,
+    trade_count: trades.length,
+    buy_ratio: buyVol / (totalVol + 1e-9),
+    sell_ratio: sellVol / (totalVol + 1e-9),
+    delta_ratio: (buyVol - sellVol) / (totalVol + 1e-9),
+    imbalance_ratio: imbalanceRatio,
     dOI: buyVol - sellVol,
   };
+}
+
+function classifyRealtimeOrderflow(stats) {
+  if (!stats || stats.trade_count <= 0 || stats.total_vol <= 0) {
+    return { state: "等待成交", bias: "--", color: "#94a3b8", tone: "neutral" };
+  }
+
+  const imbalance = Number(stats.imbalance_ratio || 0);
+  const closePos = Number(stats.close_pos || 0);
+  const highBuy = Number(stats.high_zone_buy_ratio || 0);
+  const lowSell = Number(stats.low_zone_sell_ratio || 0);
+  const efficiency = Number(stats.efficiency || 0);
+  const speed = Number(stats.speed || 0);
+  const deltaRatio = Number(stats.delta_ratio || 0);
+
+  if (imbalance > 0.24 && deltaRatio > 0.22 && closePos > 0.68 && highBuy > 0.60 && efficiency > 0.34) {
+    return { state: "多头确认", bias: "偏多", color: "#69ff7b", tone: "bull" };
+  }
+  if (imbalance > 0.14 && deltaRatio > 0.12 && closePos > 0.58 && highBuy > 0.54 && efficiency > 0.24) {
+    return { state: "多头试探", bias: "轻多", color: "#83ff92", tone: "bull" };
+  }
+  if (imbalance < -0.24 && deltaRatio < -0.22 && closePos < 0.32 && lowSell > 0.60 && efficiency > 0.34) {
+    return { state: "空头确认", bias: "偏空", color: "#ff335f", tone: "bear" };
+  }
+  if (imbalance < -0.14 && deltaRatio < -0.12 && closePos < 0.42 && lowSell > 0.54 && efficiency > 0.24) {
+    return { state: "空头试探", bias: "轻空", color: "#ff5f7f", tone: "bear" };
+  }
+  if (imbalance > 0.14 && closePos < 0.46 && highBuy < 0.52) {
+    return { state: "上方吸收确认", bias: "偏空", color: "#ffb347", tone: "bear" };
+  }
+  if (imbalance < -0.14 && closePos > 0.54 && lowSell < 0.52) {
+    return { state: "下方吸收确认", bias: "偏多", color: "#7ad0ff", tone: "bull" };
+  }
+  if (Math.abs(imbalance) < 0.08 && efficiency < 0.22 && speed > 0.8) {
+    return { state: "高速拉锯", bias: "观望", color: "#c9d1df", tone: "neutral" };
+  }
+  if (Math.abs(imbalance) >= 0.10 || Math.abs(deltaRatio) >= 0.10) {
+    return { state: "方向试探", bias: imbalance > 0 ? "轻多" : "轻空", color: "#f5c542", tone: "neutral" };
+  }
+  return { state: "中性整理", bias: "中性", color: "#c9d1df", tone: "neutral" };
 }
 
 function buildRealtimeBarMicrostatsData() {
@@ -3122,27 +3174,64 @@ function renderCurrentBarStatsCard() {
   const candles = state.seriesDataByKey.get("candles") || [];
   const currentCandle = candles[candles.length - 1];
   const stats = currentCandle ? computePerBarMicrostructure(currentCandle) : null;
-  const setValue = (element, value, digits = 3) => {
+  const card = els.barStatsCard;
+  const resetCardTone = () => {
+    if (!card) {
+      return;
+    }
+    card.classList.remove("is-bull", "is-bear", "is-neutral");
+  };
+  const setValue = (element, value, digits = 3, color = "") => {
     if (!element) {
       return;
     }
+    element.style.color = color || "";
     element.textContent = value === null || value === undefined ? "--" : Number(value).toFixed(digits);
   };
+  const setText = (element, value, color = "") => {
+    if (!element) {
+      return;
+    }
+    element.style.color = color || "";
+    element.textContent = value ?? "--";
+  };
   if (!stats) {
+    resetCardTone();
     setValue(els.barstatDelta, null);
     setValue(els.barstatSpeed, null);
     setValue(els.barstatEfficiency, null, 4);
     setValue(els.barstatClosePos, null);
     setValue(els.barstatHighBuy, null);
     setValue(els.barstatLowSell, null);
+    setText(els.barflowState, "--");
+    setText(els.barflowBias, "--");
+    setText(els.barflowTrades, "--");
+    setText(els.barflowVolume, "--");
+    setText(els.barflowBuyRatio, "--");
+    setText(els.barflowSellRatio, "--");
+    setText(els.barflowDeltaRatio, "--");
+    setText(els.barflowBadge, "等待成交");
     return;
   }
-  setValue(els.barstatDelta, stats.delta);
-  setValue(els.barstatSpeed, stats.speed);
-  setValue(els.barstatEfficiency, stats.efficiency, 4);
-  setValue(els.barstatClosePos, stats.close_pos);
-  setValue(els.barstatHighBuy, stats.high_zone_buy_ratio);
-  setValue(els.barstatLowSell, stats.low_zone_sell_ratio);
+  const flow = classifyRealtimeOrderflow(stats);
+  resetCardTone();
+  if (card) {
+    card.classList.add(flow.tone === "bull" ? "is-bull" : flow.tone === "bear" ? "is-bear" : "is-neutral");
+  }
+  setValue(els.barstatDelta, stats.delta, 3, stats.delta >= 0 ? "#69ff7b" : "#ff335f");
+  setValue(els.barstatSpeed, stats.speed, 3, "#7ad0ff");
+  setValue(els.barstatEfficiency, stats.efficiency, 3, "#f5c542");
+  setValue(els.barstatClosePos, stats.close_pos, 3, "#e5ecf5");
+  setValue(els.barstatHighBuy, stats.high_zone_buy_ratio, 3, "#69ff7b");
+  setValue(els.barstatLowSell, stats.low_zone_sell_ratio, 3, "#ff335f");
+  setText(els.barflowState, flow.state, flow.color);
+  setText(els.barflowBias, flow.bias, flow.color);
+  setText(els.barflowTrades, String(stats.trade_count || 0), "#e5ecf5");
+  setText(els.barflowVolume, Number(stats.total_vol || 0).toFixed(3), "#e5ecf5");
+  setText(els.barflowBuyRatio, `${(Number(stats.buy_ratio || 0) * 100).toFixed(1)}%`, "#69ff7b");
+  setText(els.barflowSellRatio, `${(Number(stats.sell_ratio || 0) * 100).toFixed(1)}%`, "#ff335f");
+  setText(els.barflowDeltaRatio, `${Number(stats.delta_ratio || 0).toFixed(3)}`, flow.color);
+  setText(els.barflowBadge, flow.state, flow.color);
 }
 
 function renderBarGrid() {
@@ -3545,29 +3634,13 @@ function sanitizePricePaneIndicators(snapshot) {
 }
 
 function augmentTerminalPanels(snapshot) {
-  const toggles = state.terminalToggles;
   const candles = snapshot.candles || [];
   if (candles.length === 0) {
     return snapshot;
   }
 
   const indicators = [...(snapshot.indicators || [])];
-  const filteredIndicators = indicators.filter((indicator) => toggles.cluster || indicator.id !== "orderflow_gl");
-  filteredIndicators.forEach((indicator) => {
-    if (indicator.id === "orderflow_gl") {
-      indicator.series = indicator.series.map((series) =>
-        series.id === "orderflow_gl_matrix"
-          ? {
-              ...series,
-              options: {
-                ...(series.options || {}),
-                showText: toggles.text,
-              },
-            }
-          : series
-      );
-    }
-  });
+  const filteredIndicators = indicators;
 
   const barStats = candles.map((candle) => ({
     time: candle.time,
@@ -3593,7 +3666,7 @@ function augmentTerminalPanels(snapshot) {
               rows: [
                 { key: "delta", label: "Delta", color: "#69ff7b", format: (value) => value.toFixed(3) },
                 { key: "speed", label: "Speed", color: "#7ad0ff", format: (value) => value.toFixed(3) },
-                { key: "efficiency", label: "Eff", color: "#f5c542", format: (value) => value.toFixed(4) },
+                { key: "efficiency", label: "Eff", color: "#f5c542", format: (value) => value.toFixed(3) },
                 { key: "close_pos", label: "ClosePos", color: "#e5ecf5", format: (value) => value.toFixed(3) },
                 { key: "high_zone_buy_ratio", label: "HighBuy", color: "#69ff7b", format: (value) => value.toFixed(3) },
                 { key: "low_zone_sell_ratio", label: "LowSell", color: "#ff335f", format: (value) => value.toFixed(3) },
@@ -3658,16 +3731,6 @@ function buildIndicatorSelector(indicators, defaults) {
     label.append(checkbox, content);
     els.indicatorForm.append(label);
   });
-}
-
-async function updateOrderflowIndicatorParam(key, value) {
-  if (!state.indicatorParams.orderflow_gl) {
-    state.indicatorParams.orderflow_gl = {};
-  }
-  state.indicatorParams.orderflow_gl[key] = value;
-  const snapshot = await fetchSnapshotPayload();
-  applySnapshot(snapshot);
-  syncAutoRefresh(snapshot.refresh_ms ?? state.config?.refresh_ms ?? 0);
 }
 
 function toggleParamInputs(indicatorId, enabled) {
@@ -4600,9 +4663,6 @@ async function boot() {
   if (els.toolbarBarMode) {
     els.toolbarBarMode.value = state.activeBarMode;
   }
-  if (els.toolbarOrderflowView) {
-    els.toolbarOrderflowView.value = String(state.indicatorParams.orderflow_gl?.view_mode || "profile");
-  }
   els.rangeTicksInput.value = String(state.activeRangeTicks);
   els.brickLengthInput.value = String(state.activeBrickLength);
   if (els.toolbarRangeTicks) {
@@ -4611,9 +4671,7 @@ async function boot() {
   if (els.toolbarBrickLength) {
     els.toolbarBrickLength.value = String(state.activeBrickLength);
   }
-  if (els.toolbarCenterLock) {
-    els.toolbarCenterLock.checked = Boolean(state.indicatorParams.orderflow_gl?.lock_price_center ?? true);
-  }
+  syncBarRowGapControl();
   syncToolbarToggles();
   syncBarModeControls(state.activeBarMode);
   syncMarketHeader(
@@ -4737,22 +4795,7 @@ async function boot() {
     els.brickLengthInput.value = els.toolbarBrickLength.value;
     els.brickLengthInput.dispatchEvent(new Event("change"));
   });
-  els.toolbarOrderflowView?.addEventListener("change", async () => {
-    try {
-      await updateOrderflowIndicatorParam("view_mode", els.toolbarOrderflowView.value);
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
-  els.toolbarCenterLock?.addEventListener("change", async () => {
-    try {
-      await updateOrderflowIndicatorParam("lock_price_center", els.toolbarCenterLock.checked);
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
   [
-    ["cluster", els.toggleCluster],
     ["text", els.toggleText],
     ["candle", els.toggleCandle],
     ["oi", els.toggleOi],
@@ -4801,6 +4844,16 @@ async function boot() {
       els.error.textContent = error.message;
     }
   });
+  els.barflowRowGap?.addEventListener("input", () => {
+    const value = Number(els.barflowRowGap.value || 1);
+    state.orderflowUi.barRowGapScale = Math.max(0.75, Math.min(1.6, value));
+    syncBarRowGapControl();
+    state.seriesByKey.forEach((series) => {
+      if (typeof series?.render === "function") {
+        series.render();
+      }
+    });
+  });
 
   buildIndicatorSelector(state.config.indicators, state.config.default_indicator_ids);
   rebuildCharts();
@@ -4808,20 +4861,6 @@ async function boot() {
   window.addEventListener("keydown", async (event) => {
     if (event.target && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) {
       return;
-    }
-    try {
-      if (event.key === "1") {
-        await updateOrderflowIndicatorParam("view_mode", "profile");
-      } else if (event.key === "2") {
-        await updateOrderflowIndicatorParam("view_mode", "overlay");
-      } else if (event.key === "3") {
-        await updateOrderflowIndicatorParam("view_mode", "ladder");
-      } else if (event.key.toLowerCase() === "c") {
-        const currentValue = Boolean(state.indicatorParams.orderflow_gl?.lock_price_center ?? true);
-        await updateOrderflowIndicatorParam("lock_price_center", !currentValue);
-      }
-    } catch (error) {
-      els.error.textContent = error.message;
     }
   });
   await refreshSnapshot();

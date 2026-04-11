@@ -134,7 +134,7 @@ class MarketDataService:
         selected = indicator_ids or self.indicators.default_ids()
         all_params = indicator_params or {}
         need_pseudo_orderflow = any(
-            indicator_id in selected for indicator_id in {"pseudo_orderflow_5m", "orderflow_gl", "spqrc_signals", "spqrc_panel"}
+            indicator_id in selected for indicator_id in {"pseudo_orderflow_5m", "spqrc_signals", "spqrc_panel"}
         )
 
         data_source = self._get_data_source(

@@ -176,7 +176,17 @@
         </div>
       </section>
       <section class="bar-stats-card">
-        <div class="bar-stats-title">当前 K 线逐笔聚合</div>
+        <div class="bar-stats-head">
+          <div class="bar-stats-title">当前 K 线真实逐笔订单流</div>
+          <div class="bar-stats-tools">
+            <label class="bar-spacing-control">
+              <span>纵轴间隔</span>
+              <input id="barflow-row-gap" type="range" min="0.75" max="1.6" step="0.05" value="1" />
+              <strong id="barflow-row-gap-value">1.00x</strong>
+            </label>
+            <div id="barflow-badge" class="bar-flow-badge">等待成交</div>
+          </div>
+        </div>
         <div class="bar-stats-grid">
           <div class="bar-stat"><span>Delta</span><strong id="barstat-delta">--</strong></div>
           <div class="bar-stat"><span>Speed</span><strong id="barstat-speed">--</strong></div>
@@ -184,6 +194,36 @@
           <div class="bar-stat"><span>ClosePos</span><strong id="barstat-close-pos">--</strong></div>
           <div class="bar-stat"><span>HighBuy</span><strong id="barstat-high-buy">--</strong></div>
           <div class="bar-stat"><span>LowSell</span><strong id="barstat-low-sell">--</strong></div>
+        </div>
+        <div class="bar-flow-strip">
+          <div class="bar-flow-item">
+            <span>State</span>
+            <strong id="barflow-state">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>Bias</span>
+            <strong id="barflow-bias">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>Trades</span>
+            <strong id="barflow-trades">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>Volume</span>
+            <strong id="barflow-volume">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>AggBuy%</span>
+            <strong id="barflow-buy-ratio">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>AggSell%</span>
+            <strong id="barflow-sell-ratio">--</strong>
+          </div>
+          <div class="bar-flow-item">
+            <span>DeltaRatio</span>
+            <strong id="barflow-delta-ratio">--</strong>
+          </div>
         </div>
       </section>
       <div class="chart-card">

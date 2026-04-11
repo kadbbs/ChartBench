@@ -62,31 +62,6 @@ def _probability_heat_points(df: pd.DataFrame, column: str, level: float, color:
     return points
 
 
-def _webgl_orderflow_points(df: pd.DataFrame) -> list[dict[str, Any]]:
-    metric_columns = [
-        "delta_ratio_5m",
-        "imbalance_close_5m",
-        "microprice_bias_5m",
-        "dOI_5m",
-        "efficiency2",
-        "orderflow_strength_score_5m",
-    ]
-    points: list[dict[str, Any]] = []
-    for row in df[["time", *metric_columns]].itertuples(index=False):
-        points.append(
-            {
-                "time": int(row.time),
-                "delta_ratio_5m": None if pd.isna(row.delta_ratio_5m) else float(row.delta_ratio_5m),
-                "imbalance_close_5m": None if pd.isna(row.imbalance_close_5m) else float(row.imbalance_close_5m),
-                "microprice_bias_5m": None if pd.isna(row.microprice_bias_5m) else float(row.microprice_bias_5m),
-                "dOI_5m": None if pd.isna(row.dOI_5m) else float(row.dOI_5m),
-                "efficiency2": None if pd.isna(row.efficiency2) else float(row.efficiency2),
-                "orderflow_strength_score_5m": None if pd.isna(row.orderflow_strength_score_5m) else float(row.orderflow_strength_score_5m),
-            }
-        )
-    return points
-
-
 class AtrBandsIndicator(Indicator):
     meta = IndicatorMeta(
         id="atr_bands",
@@ -466,96 +441,10 @@ class SPQRCPanelIndicator(Indicator):
         )
 
 
-class WebGLOrderflowIndicator(Indicator):
-    meta = IndicatorMeta(
-        id="orderflow_gl",
-        name="Orderflow GL",
-        pane="indicator",
-        description="使用 WebGL 渲染的订单流矩阵面板，当前聚合展示 Delta、Imbalance、Microprice、dOI、效率与强度。",
-        enabled_by_default=False,
-        params=[
-            {"key": "view_mode", "label": "视图模式", "type": "string", "default": "profile", "options": ["profile", "overlay", "ladder"]},
-            {"key": "profile_opacity", "label": "Profile透明度", "type": "float", "default": 0.78, "min": 0.1, "max": 1.0, "step": 0.01},
-            {"key": "footprint_opacity", "label": "Footprint透明度", "type": "float", "default": 0.9, "min": 0.1, "max": 1.0, "step": 0.01},
-            {"key": "lock_price_center", "label": "锁定当前价中心", "type": "bool", "default": True},
-        ],
-    )
-
-    def build(self, bars: pd.DataFrame, params: dict[str, Any] | None = None) -> IndicatorResult:
-        df = bars.copy()
-        resolved = self.resolve_params(params)
-        required_columns = {
-            "delta_ratio_5m": pd.NA,
-            "imbalance_close_5m": pd.NA,
-            "microprice_bias_5m": pd.NA,
-            "dOI_5m": pd.NA,
-            "efficiency2": pd.NA,
-            "orderflow_strength_score_5m": pd.NA,
-        }
-        for column, default_value in required_columns.items():
-            if column not in df.columns:
-                df[column] = default_value
-
-        row_specs = [
-            {"key": "delta_ratio_5m", "label": "DeltaRatio", "mode": "signed", "scale": 0.35},
-            {"key": "imbalance_close_5m", "label": "Imbalance", "mode": "signed", "scale": 0.65},
-            {"key": "microprice_bias_5m", "label": "MicroBias", "mode": "signed", "scale": 0.0025},
-            {"key": "dOI_5m", "label": "dOI", "mode": "signed", "scale": 8000.0},
-            {"key": "efficiency2", "label": "Efficiency", "mode": "positive", "scale": 0.06},
-            {"key": "orderflow_strength_score_5m", "label": "Strength", "mode": "positive", "scale": 5.0},
-        ]
-
-        anchor = df.assign(time=df["time"], orderflow_gl_anchor=0.0)
-        return IndicatorResult(
-            id=self.meta.id,
-            name=self.meta.name,
-            pane=self.meta.pane,
-            series=[
-                SeriesDefinition(
-                    id="orderflow_gl_anchor",
-                    name="Orderflow GL Anchor",
-                    pane="indicator",
-                    series_type="line",
-                    data=_line_points(anchor, "orderflow_gl_anchor"),
-                    options={
-                        "color": "rgba(0,0,0,0)",
-                        "lineWidth": 1,
-                        "priceLineVisible": False,
-                        "lastValueVisible": False,
-                    },
-                ),
-                SeriesDefinition(
-                    id="orderflow_gl_matrix",
-                    name="Orderflow GL Matrix",
-                    pane="indicator",
-                    series_type="webgl-orderflow",
-                    data=_webgl_orderflow_points(df.assign(time=df["time"])),
-                    options={
-                        "rows": row_specs,
-                        "viewMode": resolved["view_mode"],
-                        "profileOpacity": resolved["profile_opacity"],
-                        "footprintOpacity": resolved["footprint_opacity"],
-                        "lockPriceCenter": resolved["lock_price_center"],
-                        "showText": True,
-                        "palette": {
-                            "positive": "#12b886",
-                            "negative": "#f03e3e",
-                            "neutral": "#eadfce",
-                            "text": "#5f4a35",
-                            "grid": "rgba(92, 70, 47, 0.12)",
-                            "background": "rgba(255, 251, 245, 0.92)",
-                        },
-                    },
-                ),
-            ],
-        )
-
-
 def register_builtin_indicators(registry: IndicatorRegistry) -> None:
     registry.register(AtrBandsIndicator())
     registry.register(MacdIndicator())
     registry.register(SmaIndicator())
     registry.register(PseudoOrderflow5mIndicator())
-    registry.register(WebGLOrderflowIndicator())
     registry.register(SPQRCSignalsIndicator())
     registry.register(SPQRCPanelIndicator())
