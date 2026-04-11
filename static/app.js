@@ -18,6 +18,7 @@ const state = {
   hasFitted: false,
   isSyncingCrosshair: false,
   refreshTimerId: null,
+  microstructureFrameId: null,
   snapshotRequestId: 0,
   configRequestId: 0,
   requestedDataLength: null,
@@ -56,6 +57,24 @@ const state = {
   watchlistMode: "all",
   watchlistSymbols: [],
 };
+
+const EMPTY_MICROSTRUCTURE_STATS = Object.freeze({
+  delta: 0,
+  speed: 0,
+  efficiency: 0,
+  close_pos: 0,
+  high_zone_buy_ratio: 0,
+  low_zone_sell_ratio: 0,
+  buy_vol: 0,
+  sell_vol: 0,
+  total_vol: 0,
+  trade_count: 0,
+  buy_ratio: 0,
+  sell_ratio: 0,
+  delta_ratio: 0,
+  imbalance_ratio: 0,
+  dOI: 0,
+});
 
 const DEFAULT_VISIBLE_BARS = 120;
 const MIN_VISIBLE_DATA_BARS = 60;
@@ -2075,14 +2094,19 @@ const els = {
   barstatSpeed: document.getElementById("barstat-speed"),
   barstatEfficiency: document.getElementById("barstat-efficiency"),
   barstatClosePos: document.getElementById("barstat-close-pos"),
+  barstatClosePosFill: document.getElementById("barstat-close-pos-fill"),
   barstatHighBuy: document.getElementById("barstat-high-buy"),
+  barstatHighBuyFill: document.getElementById("barstat-high-buy-fill"),
   barstatLowSell: document.getElementById("barstat-low-sell"),
+  barstatLowSellFill: document.getElementById("barstat-low-sell-fill"),
   barflowState: document.getElementById("barflow-state"),
   barflowBias: document.getElementById("barflow-bias"),
   barflowTrades: document.getElementById("barflow-trades"),
   barflowVolume: document.getElementById("barflow-volume"),
   barflowBuyRatio: document.getElementById("barflow-buy-ratio"),
+  barflowBuyRatioFill: document.getElementById("barflow-buy-ratio-fill"),
   barflowSellRatio: document.getElementById("barflow-sell-ratio"),
+  barflowSellRatioFill: document.getElementById("barflow-sell-ratio-fill"),
   barflowDeltaRatio: document.getElementById("barflow-delta-ratio"),
   barGrid: document.getElementById("bar-grid"),
   error: document.getElementById("error-message"),
@@ -2262,6 +2286,10 @@ function startBitgetMonitor() {
 }
 
 function resetOrderflowState() {
+  if (state.microstructureFrameId !== null) {
+    window.cancelAnimationFrame(state.microstructureFrameId);
+    state.microstructureFrameId = null;
+  }
   state.orderflowTradeBuckets = new Map();
   state.orderflowBook = { bids: [], asks: [], ts: null };
   state.orderflowRecentTrades = [];
@@ -2347,6 +2375,36 @@ function updateOrderflowRendererContexts() {
         orderBook: state.orderflowBook,
       });
     }
+  });
+}
+
+function sumBucketDirectionalVolume(bucket) {
+  if (!bucket?.levels) {
+    return { buyVol: 0, sellVol: 0, totalVol: 0 };
+  }
+  let buyVol = 0;
+  let sellVol = 0;
+  let totalVol = 0;
+  bucket.levels.forEach((level) => {
+    const buy = Number(level?.buy || 0);
+    const sell = Number(level?.sell || 0);
+    const total = Number(level?.total || buy + sell || 0);
+    buyVol += buy;
+    sellVol += sell;
+    totalVol += total;
+  });
+  return { buyVol, sellVol, totalVol };
+}
+
+function scheduleRealtimeMicrostructureRefresh() {
+  if (state.microstructureFrameId !== null) {
+    return;
+  }
+  state.microstructureFrameId = window.requestAnimationFrame(() => {
+    state.microstructureFrameId = null;
+    updateOrderflowRendererContexts();
+    refreshRealtimeBarMicrostats();
+    renderMicrostructure();
   });
 }
 
@@ -2492,9 +2550,7 @@ function applyBitgetTradeUpdate(rawTrade) {
     }
   });
 
-  updateOrderflowRendererContexts();
-  refreshRealtimeBarMicrostats();
-  renderMicrostructure();
+  scheduleRealtimeMicrostructureRefresh();
 }
 
 function applyBitgetOrderBookSnapshot(book) {
@@ -2514,8 +2570,7 @@ function applyBitgetOrderBookSnapshot(book) {
     asks: normalizeLevels(book?.asks),
     ts: Number(book?.ts || Date.now()),
   };
-  updateOrderflowRendererContexts();
-  renderMicrostructure();
+  scheduleRealtimeMicrostructureRefresh();
 }
 
 function syncCurrentPriceLine(price, color) {
@@ -2614,8 +2669,7 @@ function applyBitgetWsCandleUpdate(rawRow) {
   const volumeSeries = state.seriesByKey.get("volume");
   setSeriesData("candles", candleSeries, candles);
   setSeriesData("volume", volumeSeries, volumeSeriesData);
-  refreshRealtimeBarMicrostats();
-  updateOrderflowRendererContexts();
+  scheduleRealtimeMicrostructureRefresh();
 
   els.lastPrice.textContent = close.toFixed(2);
   els.lastPrice.style.color = close >= open ? "#089981" : "#f23645";
@@ -3023,36 +3077,33 @@ function actualTimeMsForCandle(candle, snapshot = null) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function computePerBarMicrostructure(candle, snapshot = null) {
+function bucketForCandle(candle, snapshot = null) {
   const actualTimeMs = actualTimeMsForCandle(candle, snapshot);
+  if (actualTimeMs === null) {
+    return null;
+  }
+  return state.orderflowTradeBuckets.get(String(actualTimeMs)) || null;
+}
+
+function computePerBarMicrostructure(candle, snapshot = null) {
   const open = Number(candle?.open);
   const high = Number(candle?.high);
   const low = Number(candle?.low);
   const close = Number(candle?.close);
   const barSeconds = Math.max(state.activeDurationSeconds || getRequestedDuration() || 60, 1);
+  const actualTimeMs = actualTimeMsForCandle(candle, snapshot);
+  const bucket = bucketForCandle(candle, snapshot);
   const barEndMs = actualTimeMs === null ? null : actualTimeMs + barSeconds * 1000;
-  const trades = actualTimeMs === null
-    ? []
-    : state.orderflowRecentTrades.filter((trade) => trade.ts >= actualTimeMs && trade.ts < barEndMs);
+  const trades = !bucket && actualTimeMs !== null
+    ? state.orderflowRecentTrades.filter((trade) => trade.ts >= actualTimeMs && trade.ts < barEndMs)
+    : [];
 
-  if (!trades.length || ![open, high, low, close].every(Number.isFinite)) {
-    return {
-      delta: 0,
-      speed: 0,
-      efficiency: 0,
-      close_pos: 0,
-      high_zone_buy_ratio: 0,
-      low_zone_sell_ratio: 0,
-      buy_vol: 0,
-      sell_vol: 0,
-      total_vol: 0,
-      trade_count: 0,
-      buy_ratio: 0,
-      sell_ratio: 0,
-      delta_ratio: 0,
-      imbalance_ratio: 0,
-      dOI: 0,
-    };
+  if (![open, high, low, close].every(Number.isFinite)) {
+    return { ...EMPTY_MICROSTRUCTURE_STATS };
+  }
+
+  if (!bucket && trades.length === 0) {
+    return { ...EMPTY_MICROSTRUCTURE_STATS };
   }
 
   let buyVol = 0;
@@ -3064,27 +3115,46 @@ function computePerBarMicrostructure(candle, snapshot = null) {
   const range = Math.max(high - low, 1e-9);
   const highZoneThreshold = low + range * (2 / 3);
   const lowZoneThreshold = low + range * (1 / 3);
-  trades.forEach((trade) => {
-    const buy = trade.side === "sell" ? 0 : Number(trade.size || 0);
-    const sell = trade.side === "sell" ? Number(trade.size || 0) : 0;
-    const total = Number(trade.size || 0);
-    const price = Number(trade.price || 0);
-    buyVol += buy;
-    sellVol += sell;
-    if (price >= highZoneThreshold) {
-      highZoneBuy += buy;
-      highZoneTotal += total;
-    }
-    if (price <= lowZoneThreshold) {
-      lowZoneSell += sell;
-      lowZoneTotal += total;
-    }
-  });
+  if (bucket?.levels) {
+    bucket.levels.forEach((level) => {
+      const buy = Number(level?.buy || 0);
+      const sell = Number(level?.sell || 0);
+      const total = Number(level?.total || buy + sell || 0);
+      const price = Number(level?.price);
+      buyVol += buy;
+      sellVol += sell;
+      if (price >= highZoneThreshold) {
+        highZoneBuy += buy;
+        highZoneTotal += total;
+      }
+      if (price <= lowZoneThreshold) {
+        lowZoneSell += sell;
+        lowZoneTotal += total;
+      }
+    });
+  } else {
+    trades.forEach((trade) => {
+      const buy = trade.side === "sell" ? 0 : Number(trade.size || 0);
+      const sell = trade.side === "sell" ? Number(trade.size || 0) : 0;
+      const total = Number(trade.size || 0);
+      const price = Number(trade.price || 0);
+      buyVol += buy;
+      sellVol += sell;
+      if (price >= highZoneThreshold) {
+        highZoneBuy += buy;
+        highZoneTotal += total;
+      }
+      if (price <= lowZoneThreshold) {
+        lowZoneSell += sell;
+        lowZoneTotal += total;
+      }
+    });
+  }
   const totalVol = buyVol + sellVol;
   const imbalanceRatio = (buyVol - sellVol) / (totalVol + 1e-9);
   return {
     delta: buyVol - sellVol,
-    speed: trades.length / barSeconds,
+    speed: Number(bucket?.tradeCount || trades.length || 0) / barSeconds,
     efficiency: Math.abs(close - open) / (range + 1e-9),
     close_pos: (close - low) / (range + 1e-9),
     high_zone_buy_ratio: highZoneBuy / (highZoneTotal + 1e-9),
@@ -3092,7 +3162,7 @@ function computePerBarMicrostructure(candle, snapshot = null) {
     buy_vol: buyVol,
     sell_vol: sellVol,
     total_vol: totalVol,
-    trade_count: trades.length,
+    trade_count: Number(bucket?.tradeCount || trades.length || 0),
     buy_ratio: buyVol / (totalVol + 1e-9),
     sell_ratio: sellVol / (totalVol + 1e-9),
     delta_ratio: (buyVol - sellVol) / (totalVol + 1e-9),
@@ -3158,16 +3228,10 @@ function debugCurrentBarAggregation() {
   if (!currentCandle) {
     return { trades60: 0, barHits: 0, buyVol: 0, sellVol: 0 };
   }
-  const actualTimeMs = actualTimeMsForCandle(currentCandle);
-  const barSeconds = Math.max(state.activeDurationSeconds || getRequestedDuration() || 60, 1);
-  const barEndMs = actualTimeMs === null ? null : actualTimeMs + barSeconds * 1000;
-  const trades = actualTimeMs === null
-    ? []
-    : state.orderflowRecentTrades.filter((trade) => trade.ts >= actualTimeMs && trade.ts < barEndMs);
+  const bucket = bucketForCandle(currentCandle);
   const trades60 = state.orderflowRecentTrades.filter((trade) => trade.ts >= Date.now() - 60_000).length;
-  const buyVol = trades.filter((trade) => trade.side !== "sell").reduce((sum, trade) => sum + trade.size, 0);
-  const sellVol = trades.filter((trade) => trade.side === "sell").reduce((sum, trade) => sum + trade.size, 0);
-  return { trades60, barHits: trades.length, buyVol, sellVol };
+  const { buyVol, sellVol } = sumBucketDirectionalVolume(bucket);
+  return { trades60, barHits: Number(bucket?.tradeCount || 0), buyVol, sellVol };
 }
 
 function renderCurrentBarStatsCard() {
@@ -3195,6 +3259,13 @@ function renderCurrentBarStatsCard() {
     element.style.color = color || "";
     element.textContent = value ?? "--";
   };
+  const setMeter = (element, value) => {
+    if (!element) {
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Number(value || 0) * 100));
+    element.style.width = `${percent.toFixed(1)}%`;
+  };
   if (!stats) {
     resetCardTone();
     setValue(els.barstatDelta, null);
@@ -3211,6 +3282,11 @@ function renderCurrentBarStatsCard() {
     setText(els.barflowSellRatio, "--");
     setText(els.barflowDeltaRatio, "--");
     setText(els.barflowBadge, "等待成交");
+    setMeter(els.barflowBuyRatioFill, 0);
+    setMeter(els.barflowSellRatioFill, 0);
+    setMeter(els.barstatClosePosFill, 0);
+    setMeter(els.barstatHighBuyFill, 0);
+    setMeter(els.barstatLowSellFill, 0);
     return;
   }
   const flow = classifyRealtimeOrderflow(stats);
@@ -3232,6 +3308,11 @@ function renderCurrentBarStatsCard() {
   setText(els.barflowSellRatio, `${(Number(stats.sell_ratio || 0) * 100).toFixed(1)}%`, "#ff335f");
   setText(els.barflowDeltaRatio, `${Number(stats.delta_ratio || 0).toFixed(3)}`, flow.color);
   setText(els.barflowBadge, flow.state, flow.color);
+  setMeter(els.barflowBuyRatioFill, stats.buy_ratio);
+  setMeter(els.barflowSellRatioFill, stats.sell_ratio);
+  setMeter(els.barstatClosePosFill, stats.close_pos);
+  setMeter(els.barstatHighBuyFill, stats.high_zone_buy_ratio);
+  setMeter(els.barstatLowSellFill, stats.low_zone_sell_ratio);
 }
 
 function renderBarGrid() {

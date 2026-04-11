@@ -187,42 +187,79 @@
             <div id="barflow-badge" class="bar-flow-badge">等待成交</div>
           </div>
         </div>
-        <div class="bar-stats-grid">
-          <div class="bar-stat"><span>Delta</span><strong id="barstat-delta">--</strong></div>
-          <div class="bar-stat"><span>Speed</span><strong id="barstat-speed">--</strong></div>
-          <div class="bar-stat"><span>Efficiency</span><strong id="barstat-efficiency">--</strong></div>
-          <div class="bar-stat"><span>ClosePos</span><strong id="barstat-close-pos">--</strong></div>
-          <div class="bar-stat"><span>HighBuy</span><strong id="barstat-high-buy">--</strong></div>
-          <div class="bar-stat"><span>LowSell</span><strong id="barstat-low-sell">--</strong></div>
+        <div class="bar-summary-grid">
+          <div class="bar-stat bar-stat-hero">
+            <span>Delta</span>
+            <strong id="barstat-delta">--</strong>
+          </div>
+          <div class="bar-stat bar-stat-state">
+            <div class="bar-state-meta">
+              <span>State</span>
+              <strong id="barflow-state">--</strong>
+            </div>
+            <div class="bar-state-meta">
+              <span>Bias</span>
+              <strong id="barflow-bias">--</strong>
+            </div>
+            <div class="bar-state-meta">
+              <span>DeltaRatio</span>
+              <strong id="barflow-delta-ratio">--</strong>
+            </div>
+          </div>
         </div>
-        <div class="bar-flow-strip">
-          <div class="bar-flow-item">
-            <span>State</span>
-            <strong id="barflow-state">--</strong>
+        <div class="bar-stats-grid bar-stats-grid-compact">
+          <div class="bar-stat">
+            <span>Speed</span>
+            <strong id="barstat-speed">--</strong>
           </div>
-          <div class="bar-flow-item">
-            <span>Bias</span>
-            <strong id="barflow-bias">--</strong>
-          </div>
-          <div class="bar-flow-item">
+          <div class="bar-stat">
             <span>Trades</span>
             <strong id="barflow-trades">--</strong>
           </div>
-          <div class="bar-flow-item">
+          <div class="bar-stat">
             <span>Volume</span>
             <strong id="barflow-volume">--</strong>
           </div>
-          <div class="bar-flow-item">
-            <span>AggBuy%</span>
-            <strong id="barflow-buy-ratio">--</strong>
+          <div class="bar-stat">
+            <span>Eff</span>
+            <strong id="barstat-efficiency">--</strong>
           </div>
-          <div class="bar-flow-item">
-            <span>AggSell%</span>
-            <strong id="barflow-sell-ratio">--</strong>
+        </div>
+        <div class="bar-meter-grid">
+          <div class="bar-meter-card">
+            <div class="bar-meter-head">
+              <span>AggBuy</span>
+              <strong id="barflow-buy-ratio">--</strong>
+            </div>
+            <div class="bar-meter-track"><div id="barflow-buy-ratio-fill" class="bar-meter-fill bar-meter-fill-buy"></div></div>
           </div>
-          <div class="bar-flow-item">
-            <span>DeltaRatio</span>
-            <strong id="barflow-delta-ratio">--</strong>
+          <div class="bar-meter-card">
+            <div class="bar-meter-head">
+              <span>AggSell</span>
+              <strong id="barflow-sell-ratio">--</strong>
+            </div>
+            <div class="bar-meter-track"><div id="barflow-sell-ratio-fill" class="bar-meter-fill bar-meter-fill-sell"></div></div>
+          </div>
+          <div class="bar-meter-card">
+            <div class="bar-meter-head">
+              <span>ClosePos</span>
+              <strong id="barstat-close-pos">--</strong>
+            </div>
+            <div class="bar-meter-track"><div id="barstat-close-pos-fill" class="bar-meter-fill bar-meter-fill-neutral"></div></div>
+          </div>
+          <div class="bar-meter-card">
+            <div class="bar-meter-head">
+              <span>HighBuy</span>
+              <strong id="barstat-high-buy">--</strong>
+            </div>
+            <div class="bar-meter-track"><div id="barstat-high-buy-fill" class="bar-meter-fill bar-meter-fill-buy"></div></div>
+          </div>
+          <div class="bar-meter-card">
+            <div class="bar-meter-head">
+              <span>LowSell</span>
+              <strong id="barstat-low-sell">--</strong>
+            </div>
+            <div class="bar-meter-track"><div id="barstat-low-sell-fill" class="bar-meter-fill bar-meter-fill-sell"></div></div>
           </div>
         </div>
       </section>
