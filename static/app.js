@@ -2103,6 +2103,13 @@ const els = {
   barflowBias: document.getElementById("barflow-bias"),
   barflowTrades: document.getElementById("barflow-trades"),
   barflowVolume: document.getElementById("barflow-volume"),
+  barflowCvd: document.getElementById("barflow-cvd"),
+  barflowCvdSparkline: document.getElementById("barflow-cvd-sparkline"),
+  barflowCvdSparklineLine: document.getElementById("barflow-cvd-sparkline-line"),
+  barflowVpPoc: document.getElementById("barflow-vp-poc"),
+  barflowVpShare: document.getElementById("barflow-vp-share"),
+  barflowVpHvn: document.getElementById("barflow-vp-hvn"),
+  barflowVpLvn: document.getElementById("barflow-vp-lvn"),
   barflowBuyRatio: document.getElementById("barflow-buy-ratio"),
   barflowBuyRatioFill: document.getElementById("barflow-buy-ratio-fill"),
   barflowSellRatio: document.getElementById("barflow-sell-ratio"),
@@ -2135,7 +2142,7 @@ const chartTheme = {
     horzLines: { color: "rgba(133, 137, 153, 0.08)" },
   },
   crosshair: {
-    mode: LightweightCharts.CrosshairMode.Magnet,
+    mode: LightweightCharts.CrosshairMode.Normal,
     vertLine: { color: "#7f86a3", labelBackgroundColor: "#2e3344" },
     horzLine: { color: "#7f86a3", labelBackgroundColor: "#2e3344" },
   },
@@ -3234,6 +3241,92 @@ function debugCurrentBarAggregation() {
   return { trades60, barHits: Number(bucket?.tradeCount || 0), buyVol, sellVol };
 }
 
+function computeVisibleCvd() {
+  const candles = state.seriesDataByKey.get("candles") || [];
+  if (!candles.length) {
+    return { total: 0, series: [] };
+  }
+  let running = 0;
+  const series = candles.map((candle) => {
+    const stats = computePerBarMicrostructure(candle);
+    running += Number(stats.delta || 0);
+    return running;
+  });
+  return {
+    total: running,
+    series,
+  };
+}
+
+function computeSimpleVolumeProfile() {
+  const candles = state.seriesDataByKey.get("candles") || [];
+  if (!candles.length) {
+    return { pocPrice: null, pocShare: 0, hvnPrice: null, lvnPrice: null };
+  }
+
+  const profile = new Map();
+  let totalVolume = 0;
+  candles.forEach((candle) => {
+    const bucket = bucketForCandle(candle);
+    if (!bucket?.levels) {
+      return;
+    }
+    bucket.levels.forEach((level) => {
+      const price = Number(level?.price);
+      const total = Number(level?.total || 0);
+      if (!Number.isFinite(price) || !Number.isFinite(total) || total <= 0) {
+        return;
+      }
+      totalVolume += total;
+      profile.set(price, Number(profile.get(price) || 0) + total);
+    });
+  });
+
+  if (profile.size === 0 || totalVolume <= 0) {
+    return { pocPrice: null, pocShare: 0, hvnPrice: null, lvnPrice: null };
+  }
+
+  let pocPrice = null;
+  let pocVolume = 0;
+  let hvnPrice = null;
+  let hvnVolume = -1;
+  let lvnPrice = null;
+  let lvnVolume = Number.POSITIVE_INFINITY;
+  profile.forEach((volume, price) => {
+    if (volume > pocVolume) {
+      pocPrice = price;
+      pocVolume = volume;
+    }
+    if (volume > hvnVolume) {
+      hvnPrice = price;
+      hvnVolume = volume;
+    }
+    if (volume > 0 && volume < lvnVolume) {
+      lvnPrice = price;
+      lvnVolume = volume;
+    }
+  });
+
+  let secondaryHvnPrice = null;
+  let secondaryHvnVolume = -1;
+  profile.forEach((volume, price) => {
+    if (price === pocPrice) {
+      return;
+    }
+    if (volume > secondaryHvnVolume) {
+      secondaryHvnPrice = price;
+      secondaryHvnVolume = volume;
+    }
+  });
+
+  return {
+    pocPrice,
+    pocShare: pocVolume / totalVolume,
+    hvnPrice: secondaryHvnPrice ?? hvnPrice,
+    lvnPrice,
+  };
+}
+
 function renderCurrentBarStatsCard() {
   const candles = state.seriesDataByKey.get("candles") || [];
   const currentCandle = candles[candles.length - 1];
@@ -3266,6 +3359,28 @@ function renderCurrentBarStatsCard() {
     const percent = Math.max(0, Math.min(100, Number(value || 0) * 100));
     element.style.width = `${percent.toFixed(1)}%`;
   };
+  const setSparkline = (polyline, values, color = "#7ad0ff") => {
+    if (!polyline) {
+      return;
+    }
+    if (!Array.isArray(values) || values.length === 0) {
+      polyline.setAttribute("points", "");
+      polyline.style.color = color;
+      return;
+    }
+    const width = 120;
+    const height = 28;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = Math.max(max - min, 1e-9);
+    const points = values.map((value, index) => {
+      const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+      const y = height - ((value - min) / span) * (height - 4) - 2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    polyline.setAttribute("points", points.join(" "));
+    polyline.style.color = color;
+  };
   if (!stats) {
     resetCardTone();
     setValue(els.barstatDelta, null);
@@ -3278,6 +3393,11 @@ function renderCurrentBarStatsCard() {
     setText(els.barflowBias, "--");
     setText(els.barflowTrades, "--");
     setText(els.barflowVolume, "--");
+    setText(els.barflowCvd, "--");
+    setText(els.barflowVpPoc, "--");
+    setText(els.barflowVpShare, "--");
+    setText(els.barflowVpHvn, "--");
+    setText(els.barflowVpLvn, "--");
     setText(els.barflowBuyRatio, "--");
     setText(els.barflowSellRatio, "--");
     setText(els.barflowDeltaRatio, "--");
@@ -3287,9 +3407,12 @@ function renderCurrentBarStatsCard() {
     setMeter(els.barstatClosePosFill, 0);
     setMeter(els.barstatHighBuyFill, 0);
     setMeter(els.barstatLowSellFill, 0);
+    setSparkline(els.barflowCvdSparklineLine, []);
     return;
   }
   const flow = classifyRealtimeOrderflow(stats);
+  const visibleCvd = computeVisibleCvd();
+  const simpleVp = computeSimpleVolumeProfile();
   resetCardTone();
   if (card) {
     card.classList.add(flow.tone === "bull" ? "is-bull" : flow.tone === "bear" ? "is-bear" : "is-neutral");
@@ -3304,6 +3427,23 @@ function renderCurrentBarStatsCard() {
   setText(els.barflowBias, flow.bias, flow.color);
   setText(els.barflowTrades, String(stats.trade_count || 0), "#e5ecf5");
   setText(els.barflowVolume, Number(stats.total_vol || 0).toFixed(3), "#e5ecf5");
+  setText(els.barflowCvd, Number(visibleCvd.total || 0).toFixed(3), visibleCvd.total >= 0 ? "#69ff7b" : "#ff335f");
+  setText(
+    els.barflowVpPoc,
+    Number.isFinite(simpleVp.pocPrice) ? Number(simpleVp.pocPrice).toFixed(2) : "--",
+    "#e5ecf5"
+  );
+  setText(els.barflowVpShare, `${(Number(simpleVp.pocShare || 0) * 100).toFixed(1)}%`, "#f5c542");
+  setText(
+    els.barflowVpHvn,
+    Number.isFinite(simpleVp.hvnPrice) ? Number(simpleVp.hvnPrice).toFixed(2) : "--",
+    "#69ff7b"
+  );
+  setText(
+    els.barflowVpLvn,
+    Number.isFinite(simpleVp.lvnPrice) ? Number(simpleVp.lvnPrice).toFixed(2) : "--",
+    "#ffb347"
+  );
   setText(els.barflowBuyRatio, `${(Number(stats.buy_ratio || 0) * 100).toFixed(1)}%`, "#69ff7b");
   setText(els.barflowSellRatio, `${(Number(stats.sell_ratio || 0) * 100).toFixed(1)}%`, "#ff335f");
   setText(els.barflowDeltaRatio, `${Number(stats.delta_ratio || 0).toFixed(3)}`, flow.color);
@@ -3313,6 +3453,7 @@ function renderCurrentBarStatsCard() {
   setMeter(els.barstatClosePosFill, stats.close_pos);
   setMeter(els.barstatHighBuyFill, stats.high_zone_buy_ratio);
   setMeter(els.barstatLowSellFill, stats.low_zone_sell_ratio);
+  setSparkline(els.barflowCvdSparklineLine, visibleCvd.series, visibleCvd.total >= 0 ? "#69ff7b" : "#ff335f");
 }
 
 function renderBarGrid() {

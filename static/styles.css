@@ -375,6 +375,13 @@ body {
   margin-top: 10px;
 }
 
+.bar-secondary-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .bar-summary-grid {
   display: grid;
   grid-template-columns: minmax(180px, 1.05fr) minmax(260px, 1.6fr);
@@ -406,6 +413,36 @@ body {
   color: var(--text);
   font-family: "IBM Plex Mono", monospace;
   font-size: 15px;
+}
+
+.bar-stat-cvd {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.bar-cvd-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bar-cvd-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.bar-cvd-head strong {
+  margin-top: 0;
+}
+
+.bar-cvd-sparkline {
+  width: 100%;
+  height: 28px;
+  margin-top: 8px;
+  color: #7ad0ff;
+  opacity: 0.95;
 }
 
 .bar-stat-hero {
@@ -613,6 +650,10 @@ body {
   }
 
   .bar-stats-grid-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bar-secondary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
