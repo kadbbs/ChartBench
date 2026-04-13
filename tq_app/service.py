@@ -7,10 +7,16 @@ from typing import Any
 
 import pandas as pd
 
-from tq_app.contracts import format_contract_label, load_bitget_contract_catalog, load_duckdb_contract_catalog
+from tq_app.contracts import (
+    format_contract_label,
+    load_binance_contract_catalog,
+    load_bitget_contract_catalog,
+    load_duckdb_contract_catalog,
+)
 from tq_app.data_sources.bitget import load_bitget_account_summary
 from tq_app.data_sources import DataSource, create_data_source, get_available_data_sources
-from tq_app.data_sources.bitget import GRANULARITY_MAP
+from tq_app.data_sources.bitget import GRANULARITY_MAP as BITGET_GRANULARITY_MAP
+from tq_app.data_sources.binance import BINANCE_GRANULARITY_MAP
 from tq_app.indicators import build_indicator_registry
 from tq_app.models import IndicatorMeta, IndicatorResult
 
@@ -191,6 +197,11 @@ class MarketDataService:
                 contracts = load_bitget_contract_catalog(self.project_root)
             except Exception:
                 contracts = []
+        elif provider == "binance":
+            try:
+                contracts = load_binance_contract_catalog(self.project_root)
+            except Exception:
+                contracts = []
         elif provider == "duckdb":
             try:
                 contracts = load_duckdb_contract_catalog(self.project_root)
@@ -199,7 +210,7 @@ class MarketDataService:
         else:
             contracts = []
 
-        if not any(item["symbol"] == self.symbol for item in contracts):
+        if provider != "binance" and not any(item["symbol"] == self.symbol for item in contracts):
             contracts = [
                 {
                     "symbol": self.symbol,
@@ -299,6 +310,8 @@ class MarketDataService:
             return "当前使用本地 DuckDB 回放库。系统会优先使用最接近的本地现成数据源；例如 5 分钟 K 线会优先读取 market_bars_5m，缺失时再回退到本地 tick 重建。"
         if provider == "bitget":
             return "当前使用 Bitget 公共行情。后端通过 WebSocket 订阅实时 K 线，页面按短周期读取最新缓存，不包含交易下单。"
+        if provider == "binance":
+            return "当前使用 Binance USD-M 公共行情。前端直连 Binance Futures WebSocket 获取 K 线、逐笔成交与盘口，后端补充历史快照和指标。"
         return ""
 
     def _refresh_interval_ms(self, provider: str) -> int:
@@ -309,12 +322,14 @@ class MarketDataService:
     @staticmethod
     def _duration_options_for_provider(provider: str) -> list[int]:
         if provider == "bitget":
-            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in GRANULARITY_MAP]
+            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BITGET_GRANULARITY_MAP]
+        if provider == "binance":
+            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BINANCE_GRANULARITY_MAP]
         return DEFAULT_DURATION_OPTIONS
 
     @staticmethod
     def _bar_modes_for_provider(provider: str) -> list[dict[str, Any]]:
-        if provider == "bitget":
+        if provider in {"bitget", "binance"}:
             return [item for item in DEFAULT_BAR_MODES if item["id"] == "time"]
         return DEFAULT_BAR_MODES
 

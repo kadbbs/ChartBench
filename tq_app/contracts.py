@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from tq_app.data_sources.binance import load_binance_contract_catalog
 from tq_app.data_sources.bitget import load_bitget_contract_catalog
 
 

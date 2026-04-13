@@ -92,6 +92,7 @@ const MAX_DUCKDB_BRICK_LENGTH = 100000;
 const INCREMENTAL_UPDATE_MAX_NEW_BARS = 3;
 const ORDERFLOW_REFRESH_MS = 450;
 const BITGET_WS_URL = "wss://ws.bitget.com/v2/ws/public";
+const BINANCE_WS_URL = "wss://fstream.binance.com/stream";
 const BITGET_WS_RECONNECT_MS = 2000;
 const BITGET_WS_HEARTBEAT_MS = 20000;
 const BITGET_INDICATOR_SYNC_MS = 1200;
@@ -2216,23 +2217,42 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return provider === "bitget" && barMode === "time";
+  return (provider === "bitget" || provider === "binance") && barMode === "time";
+}
+
+function wsIntervalForProvider(provider, durationSeconds) {
+  const providerIntervals = {
+    bitget: {
+      60: "1m",
+      300: "5m",
+      900: "15m",
+      1800: "30m",
+      3600: "1H",
+      7200: "2H",
+      14400: "4H",
+      21600: "6H",
+      43200: "12H",
+      86400: "1D",
+    },
+    binance: {
+      60: "1m",
+      300: "5m",
+      900: "15m",
+      1800: "30m",
+      3600: "1h",
+      7200: "2h",
+      14400: "4h",
+      21600: "6h",
+      43200: "12h",
+      86400: "1d",
+    },
+  };
+  return providerIntervals[provider]?.[durationSeconds] || null;
 }
 
 function bitgetWsChannelForDuration(durationSeconds) {
-  const channelMap = {
-    60: "candle1m",
-    300: "candle5m",
-    900: "candle15m",
-    1800: "candle30m",
-    3600: "candle1H",
-    7200: "candle2H",
-    14400: "candle4H",
-    21600: "candle6H",
-    43200: "candle12H",
-    86400: "candle1D",
-  };
-  return channelMap[durationSeconds] || null;
+  const interval = wsIntervalForProvider("bitget", durationSeconds);
+  return interval ? `candle${interval}` : null;
 }
 
 function requestedWsSignature() {
@@ -2243,8 +2263,8 @@ function requestedWsSignature() {
   if (!shouldUseBrowserPush(provider, barMode)) {
     return "";
   }
-  const channel = bitgetWsChannelForDuration(durationSeconds);
-  if (!channel || !symbol) {
+  const interval = wsIntervalForProvider(provider, durationSeconds);
+  if (!interval || !symbol) {
     return "";
   }
   return `${provider}|${symbol}|${durationSeconds}|${barMode}`;
@@ -2340,7 +2360,10 @@ function scheduleBitgetReconnect(signature) {
   }, BITGET_WS_RECONNECT_MS);
 }
 
-function startBitgetHeartbeat(socket, signature) {
+function startBitgetHeartbeat(socket, signature, provider) {
+  if (provider !== "bitget") {
+    return;
+  }
   clearBitgetHeartbeat();
   state.wsHeartbeatTimerId = window.setInterval(() => {
     if (state.wsActiveSignature !== signature || socket.readyState !== WebSocket.OPEN) {
@@ -2560,6 +2583,68 @@ function applyBitgetTradeUpdate(rawTrade) {
   scheduleRealtimeMicrostructureRefresh();
 }
 
+function applyBinanceTradeUpdate(rawTrade) {
+  const timestampMs = Number(rawTrade.T || rawTrade.E || rawTrade.ts);
+  const price = Number(rawTrade.p || rawTrade.price);
+  const size = Number(rawTrade.q || rawTrade.size);
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(price) || !Number.isFinite(size)) {
+    return;
+  }
+  const tradeId = String(rawTrade.a || rawTrade.id || `${timestampMs}:${price}:${size}`);
+  if (!registerTradeId(tradeId)) {
+    return;
+  }
+  const side = rawTrade.m ? "sell" : "buy";
+  state.orderflowRecentTrades.push({
+    ts: timestampMs,
+    price,
+    size,
+    side,
+  });
+  const recentCutoff = Date.now() - 10 * 60 * 1000;
+  while (state.orderflowRecentTrades.length > 0 && state.orderflowRecentTrades[0].ts < recentCutoff) {
+    state.orderflowRecentTrades.shift();
+  }
+  const bucketStartMs = orderflowBucketStartMs(timestampMs);
+  const { syntheticTime } = resolveSyntheticTime(bucketStartMs);
+  if (!Number.isFinite(syntheticTime)) {
+    return;
+  }
+  const bucketKey = String(bucketStartMs);
+  let bucket = state.orderflowTradeBuckets.get(bucketKey);
+  if (!bucket) {
+    bucket = { actualTimeMs: bucketStartMs, syntheticTime, levels: new Map(), tradeCount: 0 };
+    state.orderflowTradeBuckets.set(bucketKey, bucket);
+  } else {
+    bucket.syntheticTime = syntheticTime;
+  }
+  bucket.tradeCount += 1;
+
+  const levelKey = orderflowPriceKey(price);
+  const level = bucket.levels.get(levelKey) || { price, buy: 0, sell: 0, total: 0, delta: 0 };
+  if (side === "sell") {
+    level.sell += size;
+    level.delta -= size;
+  } else {
+    level.buy += size;
+    level.delta += size;
+  }
+  level.total += size;
+  bucket.levels.set(levelKey, level);
+
+  const minSyntheticTime = Math.max(0, (state.seriesDataByKey.get("candles") || []).reduce((minValue, item) => {
+    const time = Number(item?.time);
+    return Number.isFinite(time) ? Math.min(minValue, time) : minValue;
+  }, Number.POSITIVE_INFINITY));
+  [...state.orderflowTradeBuckets.entries()].forEach(([key, item]) => {
+    if (Number.isFinite(minSyntheticTime) && item.syntheticTime < minSyntheticTime - 2) {
+      state.orderflowTradeBuckets.delete(key);
+    }
+  });
+
+  scheduleRealtimeMicrostructureRefresh();
+}
+
 function applyBitgetOrderBookSnapshot(book) {
   const normalizeLevels = (levels) =>
     (Array.isArray(levels) ? levels : [])
@@ -2576,6 +2661,26 @@ function applyBitgetOrderBookSnapshot(book) {
     bids: normalizeLevels(book?.bids),
     asks: normalizeLevels(book?.asks),
     ts: Number(book?.ts || Date.now()),
+  };
+  scheduleRealtimeMicrostructureRefresh();
+}
+
+function applyBinanceOrderBookSnapshot(book) {
+  const normalizeLevels = (levels) =>
+    (Array.isArray(levels) ? levels : [])
+      .map((level) => {
+        const price = Number(level?.[0]);
+        const size = Number(level?.[1]);
+        if (!Number.isFinite(price) || !Number.isFinite(size)) {
+          return null;
+        }
+        return { price, size };
+      })
+      .filter(Boolean);
+  state.orderflowBook = {
+    bids: normalizeLevels(book?.b || book?.bids),
+    asks: normalizeLevels(book?.a || book?.asks),
+    ts: Number(book?.E || book?.T || Date.now()),
   };
   scheduleRealtimeMicrostructureRefresh();
 }
@@ -2689,6 +2794,80 @@ function applyBitgetWsCandleUpdate(rawRow) {
   }
 }
 
+function applyBinanceWsCandleUpdate(rawKline) {
+  if (!rawKline || typeof rawKline !== "object") {
+    return;
+  }
+  const actualTimeMs = Number(rawKline.t);
+  if (!Number.isFinite(actualTimeMs)) {
+    return;
+  }
+  const { syntheticTime, isNewBar } = resolveSyntheticTime(actualTimeMs);
+  if (!Number.isFinite(syntheticTime)) {
+    return;
+  }
+
+  const open = Number(rawKline.o);
+  const high = Number(rawKline.h);
+  const low = Number(rawKline.l);
+  const close = Number(rawKline.c);
+  const volume = Number(rawKline.v);
+  if (![open, high, low, close].every(Number.isFinite)) {
+    return;
+  }
+
+  const displayTime = formatWsDisplayTime(actualTimeMs);
+  state.timeLabels.set(String(syntheticTime), displayTime);
+
+  const candles = [...(state.seriesDataByKey.get("candles") || [])];
+  const volumeSeriesData = [...(state.seriesDataByKey.get("volume") || [])];
+  const nextCandle = { time: syntheticTime, open, high, low, close };
+  const nextVolume = {
+    time: syntheticTime,
+    value: Number.isFinite(volume) ? volume : 0,
+    color: close >= open ? "#089981" : "#f23645",
+  };
+  const existingIndex = candles.findIndex((item) => Number(item?.time) === syntheticTime);
+  if (existingIndex >= 0) {
+    candles[existingIndex] = nextCandle;
+    volumeSeriesData[existingIndex] = nextVolume;
+  } else {
+    candles.push(nextCandle);
+    volumeSeriesData.push(nextVolume);
+  }
+
+  const maxLength = currentRequestedDataLength();
+  while (candles.length > maxLength) {
+    const removed = candles.shift();
+    volumeSeriesData.shift();
+    if (removed) {
+      const removedSynthetic = Number(removed.time);
+      const removedActual = state.wsSyntheticToActualTime.get(removedSynthetic);
+      if (removedActual !== undefined) {
+        state.wsSyntheticToActualTime.delete(removedSynthetic);
+        state.wsActualToSyntheticTime.delete(removedActual);
+      }
+      state.timeLabels.delete(String(removedSynthetic));
+    }
+  }
+
+  const candleSeries = state.seriesByKey.get("candles");
+  const volumeSeries = state.seriesByKey.get("volume");
+  setSeriesData("candles", candleSeries, candles);
+  setSeriesData("volume", volumeSeries, volumeSeriesData);
+  scheduleRealtimeMicrostructureRefresh();
+
+  els.lastPrice.textContent = close.toFixed(2);
+  els.lastPrice.style.color = close >= open ? "#089981" : "#f23645";
+  els.lastUpdate.textContent = displayTime;
+  syncCurrentPriceLine(close, close >= open ? "#089981" : "#f23645");
+  updatePaneLabelPositions();
+
+  if (isNewBar) {
+    scheduleIndicatorSnapshotSync();
+  }
+}
+
 function handleBitgetWsMessage(event) {
   if (typeof event.data !== "string" || !event.data || event.data === "pong") {
     return;
@@ -2719,8 +2898,30 @@ function handleBitgetWsMessage(event) {
   }
 }
 
+function handleBinanceWsMessage(event) {
+  if (typeof event.data !== "string" || !event.data) {
+    return;
+  }
+  state.wsLastMessageAt = Date.now();
+  const payload = JSON.parse(event.data);
+  const stream = String(payload.stream || "").toLowerCase();
+  const data = payload.data || {};
+  if (stream.includes("@kline_")) {
+    applyBinanceWsCandleUpdate(data.k || data);
+    return;
+  }
+  if (stream.includes("@aggtrade")) {
+    applyBinanceTradeUpdate(data);
+    return;
+  }
+  if (stream.includes("@depth")) {
+    applyBinanceOrderBookSnapshot(data);
+  }
+}
+
 function connectBitgetStream() {
   const signature = requestedWsSignature();
+  const provider = getRequestedProvider();
   if (!signature) {
     disconnectBitgetStream();
     return;
@@ -2734,12 +2935,19 @@ function connectBitgetStream() {
   }
 
   disconnectBitgetStream();
-  const channel = bitgetWsChannelForDuration(getRequestedDuration());
-  if (!channel) {
+  const symbol = getRequestedSymbol();
+  const duration = getRequestedDuration();
+  const interval = wsIntervalForProvider(provider, duration);
+  if (!interval || !symbol) {
     return;
   }
 
-  const socket = new WebSocket(BITGET_WS_URL);
+  const socket =
+    provider === "binance"
+      ? new WebSocket(
+          `${BINANCE_WS_URL}?streams=${symbol.toLowerCase()}@kline_${interval}/${symbol.toLowerCase()}@aggTrade/${symbol.toLowerCase()}@depth20@100ms`
+        )
+      : new WebSocket(BITGET_WS_URL);
   state.wsConnection = socket;
   state.wsConnectingSignature = signature;
 
@@ -2752,29 +2960,32 @@ function connectBitgetStream() {
     state.wsConnectingSignature = "";
     state.wsLastMessageAt = Date.now();
     els.error.textContent = "";
-    socket.send(
-      JSON.stringify({
-        op: "subscribe",
-        args: [
-          {
-            instType: "USDT-FUTURES",
-            channel,
-            instId: getRequestedSymbol(),
-          },
-          {
-            instType: "USDT-FUTURES",
-            channel: "trade",
-            instId: getRequestedSymbol(),
-          },
-          {
-            instType: "USDT-FUTURES",
-            channel: "books15",
-            instId: getRequestedSymbol(),
-          },
-        ],
-      })
-    );
-    startBitgetHeartbeat(socket, signature);
+    if (provider === "bitget") {
+      const channel = bitgetWsChannelForDuration(duration);
+      socket.send(
+        JSON.stringify({
+          op: "subscribe",
+          args: [
+            {
+              instType: "USDT-FUTURES",
+              channel,
+              instId: symbol,
+            },
+            {
+              instType: "USDT-FUTURES",
+              channel: "trade",
+              instId: symbol,
+            },
+            {
+              instType: "USDT-FUTURES",
+              channel: "books15",
+              instId: symbol,
+            },
+          ],
+        })
+      );
+    }
+    startBitgetHeartbeat(socket, signature, provider);
     startBitgetMonitor();
   };
 
@@ -2783,7 +2994,11 @@ function connectBitgetStream() {
       return;
     }
     try {
-      handleBitgetWsMessage(event);
+      if (provider === "binance") {
+        handleBinanceWsMessage(event);
+      } else {
+        handleBitgetWsMessage(event);
+      }
     } catch (error) {
       els.error.textContent = error.message;
     }
@@ -2791,7 +3006,7 @@ function connectBitgetStream() {
 
   socket.onerror = () => {
     if (state.wsConnection === socket && state.wsActiveSignature === signature) {
-      els.error.textContent = "Bitget 实时连接异常，正在重连。";
+      els.error.textContent = `${provider === "binance" ? "Binance" : "Bitget"} 实时连接异常，正在重连。`;
     }
   };
 
