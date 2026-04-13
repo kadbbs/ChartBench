@@ -3057,7 +3057,7 @@ function updateIndicatorParamState(indicatorId, key, value) {
 
 function buildDefaultTerminalTemplate() {
   return {
-    provider: state.config?.provider || "bitget",
+    provider: state.config?.provider || "binance",
     symbol: state.config?.symbol || "BTCUSDT",
     duration_seconds: state.config?.duration_seconds || 60,
     bar_mode: state.config?.bar_mode || "time",

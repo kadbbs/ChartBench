@@ -12,8 +12,8 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
 
-DEFAULT_PROVIDER = "bitget"
-DEFAULT_SYMBOL = "XAUUSDT"
+DEFAULT_PROVIDER = "binance"
+DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_DURATION_SECONDS = 60
 DEFAULT_DATA_LENGTH = 800
 DEFAULT_REFRESH_MS = 1000

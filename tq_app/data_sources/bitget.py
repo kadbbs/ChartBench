@@ -349,7 +349,7 @@ class BitgetDataSource(DataSource):
             normalized_rows,
             columns=["timestamp", "open", "high", "low", "close", "volume", "quote_volume"],
         )
-        frame["datetime"] = pd.to_datetime(frame["timestamp"].astype("int64"), unit="ms")
+        frame["datetime"] = pd.to_datetime(frame["timestamp"].astype("int64"), unit="ms", utc=True)
         for column in ["open", "high", "low", "close", "volume"]:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
         frame = frame.dropna(subset=["open", "high", "low", "close"])

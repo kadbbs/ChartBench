@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 import threading
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -31,6 +32,7 @@ DEFAULT_BAR_MODES = [
 ]
 DEFAULT_RANGE_TICKS = 10
 DEFAULT_BRICK_LENGTH = 10000
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _contract_has_local_data(contract: dict[str, Any] | None) -> bool:
@@ -184,7 +186,7 @@ class MarketDataService:
             "indicators": [self._serialize_indicator(item) for item in results],
             "last_close": last_close,
             "last_color": TV_UP if last_close >= prev_close else TV_DOWN,
-            "last_time": normalized.iloc[-1]["datetime"].strftime("%Y-%m-%d %H:%M:%S"),
+            "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
         }
 
     def _load_contracts(self, provider: str) -> list[dict[str, Any]]:
@@ -346,7 +348,8 @@ class MarketDataService:
             else:
                 adjusted_times = []
         normalized["time"] = adjusted_times
-        normalized["display_time"] = normalized["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        datetimes = pd.to_datetime(normalized["datetime"], utc=True, errors="coerce")
+        normalized["display_time"] = datetimes.dt.tz_convert(DISPLAY_TIMEZONE).dt.strftime("%Y-%m-%d %H:%M:%S")
         return normalized
 
     @staticmethod
