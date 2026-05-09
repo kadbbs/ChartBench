@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 
@@ -22,3 +23,9 @@ class DataSource(ABC):
 
     def configure(self, **kwargs) -> None:
         return None
+
+    def wait_for_update(self, last_version: int | None, timeout: float) -> int:
+        return 0
+
+    def status(self) -> dict[str, Any]:
+        return {}

@@ -26,9 +26,19 @@ class Indicator(ABC):
         if value in (None, ""):
             return definition.get("default")
         if param_type == "int":
-            return int(value)
+            coerced = int(value)
+            if definition.get("min") is not None:
+                coerced = max(coerced, int(definition["min"]))
+            if definition.get("max") is not None:
+                coerced = min(coerced, int(definition["max"]))
+            return coerced
         if param_type == "float":
-            return float(value)
+            coerced = float(value)
+            if definition.get("min") is not None:
+                coerced = max(coerced, float(definition["min"]))
+            if definition.get("max") is not None:
+                coerced = min(coerced, float(definition["max"]))
+            return coerced
         if param_type == "bool":
             if isinstance(value, bool):
                 return value

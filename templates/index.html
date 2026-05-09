@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bitget Market Chart</title>
+  <title>Binance Market Chart</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_versions.styles_css) }}" />
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -12,7 +12,7 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="eyebrow">Microstructure</div>
-        <h1 id="page-title">Bitget 成交理解面板</h1>
+        <h1 id="page-title">Binance 成交理解面板</h1>
         <div class="brand-subline">
           <span id="symbol-name">--</span>
           <span class="brand-dot">•</span>
@@ -62,15 +62,15 @@
           <div class="detail-card-title">Contract Detail</div>
           <div class="detail-grid">
             <div class="detail-item">
-              <span>First</span>
+              <span>Exchange</span>
               <strong id="detail-first-tick">--</strong>
             </div>
             <div class="detail-item">
-              <span>Last</span>
+              <span>Type</span>
               <strong id="detail-last-tick">--</strong>
             </div>
             <div class="detail-item">
-              <span>Ticks</span>
+              <span>Name</span>
               <strong id="detail-tick-count">--</strong>
             </div>
             <div class="detail-item">
@@ -78,7 +78,7 @@
               <strong id="detail-price-tick">--</strong>
             </div>
             <div class="detail-item">
-              <span>Month</span>
+              <span>Symbol</span>
               <strong id="detail-contract-month">--</strong>
             </div>
             <div class="detail-item">
@@ -87,81 +87,11 @@
             </div>
           </div>
         </div>
-        <div id="bitget-account-card" class="detail-card" hidden>
-          <div class="detail-card-title">Bitget 账户摘要</div>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span>产品类型</span>
-              <strong id="bitget-product-type">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>保证金币种</span>
-              <strong id="bitget-margin-coin">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>账户权益</span>
-              <strong id="bitget-account-equity">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>USDT权益</span>
-              <strong id="bitget-usdt-equity">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>可用余额</span>
-              <strong id="bitget-available">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>冻结余额</span>
-              <strong id="bitget-locked">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>风险率</span>
-              <strong id="bitget-risk-rate">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>资产模式</span>
-              <strong id="bitget-asset-mode">--</strong>
-            </div>
-          </div>
-        </div>
-        <div id="spqrc-detail-card" class="detail-card" hidden>
-          <div class="detail-card-title">SPQRC 当前结论</div>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span>主状态</span>
-              <strong id="spqrc-dominant-state">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>最高概率</span>
-              <strong id="spqrc-dominant-prob">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>模型模式</span>
-              <strong id="spqrc-model-mode">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>最终状态</span>
-              <strong id="spqrc-state-signal">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>粗糙度</span>
-              <strong id="spqrc-roughness">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>区间边际</span>
-              <strong id="spqrc-edge">--</strong>
-            </div>
-            <div class="detail-item">
-              <span>当前建议</span>
-              <strong id="spqrc-advice">--</strong>
-            </div>
-          </div>
-        </div>
       </div>
       <div class="panel">
         <div class="panel-label">Studies</div>
         <form id="indicator-form" class="indicator-list"></form>
-        <div class="hint">这个页面优先看 Tape、Delta、速度、效率和 Volume at Price。指标默认不勾选，按需打开。</div>
+        <div class="hint">当前只保留 ATR Bands、MACD 和多空线。</div>
       </div>
       <div id="error-message" class="error"></div>
     </aside>

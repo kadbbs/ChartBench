@@ -11,12 +11,8 @@ import pandas as pd
 from tq_app.contracts import (
     format_contract_label,
     load_binance_contract_catalog,
-    load_bitget_contract_catalog,
-    load_duckdb_contract_catalog,
 )
-from tq_app.data_sources.bitget import load_bitget_account_summary
 from tq_app.data_sources import DataSource, create_data_source, get_available_data_sources
-from tq_app.data_sources.bitget import GRANULARITY_MAP as BITGET_GRANULARITY_MAP
 from tq_app.data_sources.binance import BINANCE_GRANULARITY_MAP
 from tq_app.indicators import build_indicator_registry
 from tq_app.models import IndicatorMeta, IndicatorResult
@@ -33,13 +29,7 @@ DEFAULT_BAR_MODES = [
 DEFAULT_RANGE_TICKS = 10
 DEFAULT_BRICK_LENGTH = 10000
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
-
-
-def _contract_has_local_data(contract: dict[str, Any] | None) -> bool:
-    if not contract:
-        return False
-    fields = ("tick_count", "bar_1m_count", "bar_5m_count", "bar_10m_count", "bar_15m_count")
-    return any(int(contract.get(field, 0) or 0) > 0 for field in fields)
+BINANCE_PROVIDER = "binance"
 
 
 class MarketDataService:
@@ -55,7 +45,7 @@ class MarketDataService:
         bar_mode: str = "time",
         range_ticks: int = DEFAULT_RANGE_TICKS,
     ) -> None:
-        self.provider = provider
+        self.provider = self._resolve_provider(provider)
         self.symbol = symbol
         self.duration_seconds = duration_seconds
         self.data_length = data_length
@@ -94,8 +84,7 @@ class MarketDataService:
         selected_symbol = default_symbol
         current_contract = next((item for item in contracts if item["symbol"] == self.symbol), None)
         if current_contract is not None:
-            if effective_provider != "duckdb" or _contract_has_local_data(current_contract):
-                selected_symbol = self.symbol
+            selected_symbol = self.symbol
         indicator_meta = [asdict(meta) for meta in self.indicators.list_meta()]
         duration_options = self._duration_options_for_provider(effective_provider)
         bar_modes = self._bar_modes_for_provider(effective_provider)
@@ -141,9 +130,6 @@ class MarketDataService:
         effective_data_length = data_length or self.data_length
         selected = indicator_ids or self.indicators.default_ids()
         all_params = indicator_params or {}
-        need_pseudo_orderflow = any(
-            indicator_id in selected for indicator_id in {"pseudo_orderflow_5m", "spqrc_signals", "spqrc_panel"}
-        )
 
         data_source = self._get_data_source(
             effective_provider,
@@ -154,7 +140,6 @@ class MarketDataService:
             effective_brick_length,
             effective_data_length,
         )
-        data_source.configure(enable_pseudo_orderflow=need_pseudo_orderflow)
         bars = data_source.get_bars()
         normalized = self._with_chart_time(bars, effective_bar_mode)
 
@@ -187,32 +172,47 @@ class MarketDataService:
             "last_close": last_close,
             "last_color": TV_UP if last_close >= prev_close else TV_DOWN,
             "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+            "stream": data_source.status(),
         }
+
+    def wait_for_update(
+        self,
+        symbol: str | None = None,
+        duration_seconds: int | None = None,
+        bar_mode: str | None = None,
+        range_ticks: int | None = None,
+        brick_length: int | None = None,
+        data_length: int | None = None,
+        provider: str | None = None,
+        last_version: int | None = None,
+        timeout: float = 15.0,
+    ) -> int:
+        effective_provider = self._resolve_provider(provider)
+        data_source = self._get_data_source(
+            effective_provider,
+            (symbol or self._default_symbol_for_provider(effective_provider)).strip(),
+            duration_seconds or self.duration_seconds,
+            (bar_mode or self.bar_mode).strip() or "time",
+            range_ticks or self.range_ticks,
+            brick_length or self.brick_length,
+            data_length or self.data_length,
+        )
+        return data_source.wait_for_update(last_version, timeout)
 
     def _load_contracts(self, provider: str) -> list[dict[str, Any]]:
         cached = self._contracts_by_provider.get(provider)
         if cached is not None:
             return cached
 
-        if provider == "bitget":
-            try:
-                contracts = load_bitget_contract_catalog(self.project_root)
-            except Exception:
-                contracts = []
-        elif provider == "binance":
+        if provider == BINANCE_PROVIDER:
             try:
                 contracts = load_binance_contract_catalog(self.project_root)
-            except Exception:
-                contracts = []
-        elif provider == "duckdb":
-            try:
-                contracts = load_duckdb_contract_catalog(self.project_root)
             except Exception:
                 contracts = []
         else:
             contracts = []
 
-        if provider != "binance" and not any(item["symbol"] == self.symbol for item in contracts):
+        if not any(item["symbol"] == self.symbol for item in contracts):
             contracts = [
                 {
                     "symbol": self.symbol,
@@ -275,18 +275,13 @@ class MarketDataService:
             return data_source
 
     def _resolve_provider(self, provider: str | None) -> str:
-        candidate = (provider or self.provider).strip()
-        if candidate not in get_available_data_sources():
-            names = ", ".join(get_available_data_sources())
-            raise ValueError(f"未知数据源: {candidate}，可选值: {names}")
-        return candidate
+        candidate = (provider or BINANCE_PROVIDER).strip()
+        if candidate and candidate != BINANCE_PROVIDER:
+            raise ValueError(f"未知数据源: {candidate}，当前仅支持 {BINANCE_PROVIDER}")
+        return BINANCE_PROVIDER
 
     def _default_symbol_for_provider(self, provider: str) -> str:
         contracts = self._load_contracts(provider)
-        if provider == "duckdb":
-            first_with_data = next((item for item in contracts if _contract_has_local_data(item)), None)
-            if first_with_data:
-                return str(first_with_data["symbol"])
         if contracts:
             return str(contracts[0]["symbol"])
         return self.symbol
@@ -299,39 +294,26 @@ class MarketDataService:
         return dict(contract)
 
     def _provider_account(self, provider: str) -> dict[str, Any]:
-        if provider == "bitget":
-            try:
-                return load_bitget_account_summary(self.project_root)
-            except Exception:
-                return {}
         return {}
 
     @staticmethod
     def _provider_hint(provider: str) -> str:
-        if provider == "duckdb":
-            return "当前使用本地 DuckDB 回放库。系统会优先使用最接近的本地现成数据源；例如 5 分钟 K 线会优先读取 market_bars_5m，缺失时再回退到本地 tick 重建。"
-        if provider == "bitget":
-            return "当前使用 Bitget 公共行情。后端通过 WebSocket 订阅实时 K 线，页面按短周期读取最新缓存，不包含交易下单。"
-        if provider == "binance":
-            return "当前使用 Binance USD-M 公共行情。前端直连 Binance Futures WebSocket 获取 K 线、逐笔成交与盘口，后端补充历史快照和指标。"
+        if provider == BINANCE_PROVIDER:
+            return "当前使用 Binance USD-M 公共行情。浏览器只连接本机后端；后端通过 Binance REST 定时刷新 K 线，不使用 WebSocket。"
         return ""
 
     def _refresh_interval_ms(self, provider: str) -> int:
-        if provider == "duckdb":
-            return 0
         return self.refresh_ms
 
     @staticmethod
     def _duration_options_for_provider(provider: str) -> list[int]:
-        if provider == "bitget":
-            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BITGET_GRANULARITY_MAP]
-        if provider == "binance":
+        if provider == BINANCE_PROVIDER:
             return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BINANCE_GRANULARITY_MAP]
         return DEFAULT_DURATION_OPTIONS
 
     @staticmethod
     def _bar_modes_for_provider(provider: str) -> list[dict[str, Any]]:
-        if provider in {"bitget", "binance"}:
+        if provider == BINANCE_PROVIDER:
             return [item for item in DEFAULT_BAR_MODES if item["id"] == "time"]
         return DEFAULT_BAR_MODES
 

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from tq_app.service import MarketDataService
 
@@ -34,6 +34,81 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
 
     @app.get("/api/snapshot")
     def api_snapshot() -> Any:
+        parsed = _parse_snapshot_request()
+        try:
+            return jsonify(service.get_snapshot(**parsed))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.get("/api/stream")
+    def api_stream() -> Response:
+        parsed = _parse_snapshot_request()
+
+        def encode_event(event: str, payload: dict[str, Any]) -> str:
+            return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        @stream_with_context
+        def generate():
+            last_version: int | None = None
+            try:
+                snapshot = service.get_snapshot(**parsed)
+                stream_meta = snapshot.get("stream") or {}
+                last_version = int(stream_meta.get("version") or 0)
+                if stream_meta.get("last_message_at") is None:
+                    next_version = service.wait_for_update(
+                        symbol=parsed.get("symbol"),
+                        provider=parsed.get("provider"),
+                        duration_seconds=parsed.get("duration_seconds"),
+                        bar_mode=parsed.get("bar_mode"),
+                        range_ticks=parsed.get("range_ticks"),
+                        brick_length=parsed.get("brick_length"),
+                        data_length=parsed.get("data_length"),
+                        last_version=last_version,
+                        timeout=3.0,
+                    )
+                    if next_version != last_version:
+                        snapshot = service.get_snapshot(**parsed)
+                        stream_meta = snapshot.get("stream") or {}
+                        last_version = int(stream_meta.get("version") or next_version)
+                yield encode_event("snapshot", snapshot)
+            except Exception as exc:
+                yield encode_event("stream-error", {"error": str(exc)})
+
+            while True:
+                try:
+                    next_version = service.wait_for_update(
+                        symbol=parsed.get("symbol"),
+                        provider=parsed.get("provider"),
+                        duration_seconds=parsed.get("duration_seconds"),
+                        bar_mode=parsed.get("bar_mode"),
+                        range_ticks=parsed.get("range_ticks"),
+                        brick_length=parsed.get("brick_length"),
+                        data_length=parsed.get("data_length"),
+                        last_version=last_version,
+                        timeout=15.0,
+                    )
+                    if next_version == last_version:
+                        yield encode_event("heartbeat", {"version": last_version})
+                        continue
+                    snapshot = service.get_snapshot(**parsed)
+                    stream_meta = snapshot.get("stream") or {}
+                    last_version = int(stream_meta.get("version") or next_version)
+                    yield encode_event("snapshot", snapshot)
+                except GeneratorExit:
+                    break
+                except Exception as exc:
+                    yield encode_event("stream-error", {"error": str(exc)})
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    def _parse_snapshot_request() -> dict[str, Any]:
         indicator_param = request.args.get("indicators", "")
         indicator_params_raw = request.args.get("indicator_params", "")
         symbol = request.args.get("symbol", "").strip() or None
@@ -59,21 +134,16 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
             brick_length = int(brick_length_raw)
         if data_length_raw:
             data_length = int(data_length_raw)
-        try:
-            return jsonify(
-                service.get_snapshot(
-                    indicator_ids or None,
-                    indicator_params,
-                    symbol=symbol,
-                    provider=provider,
-                    duration_seconds=duration_seconds,
-                    bar_mode=bar_mode,
-                    range_ticks=range_ticks,
-                    brick_length=brick_length,
-                    data_length=data_length,
-                )
-            )
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+        return {
+            "indicator_ids": indicator_ids or None,
+            "indicator_params": indicator_params,
+            "symbol": symbol,
+            "provider": provider,
+            "duration_seconds": duration_seconds,
+            "bar_mode": bar_mode,
+            "range_ticks": range_ticks,
+            "brick_length": brick_length,
+            "data_length": data_length,
+        }
 
     return app

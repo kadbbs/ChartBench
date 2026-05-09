@@ -21,15 +21,14 @@ const state = {
   microstructureFrameId: null,
   snapshotRequestId: 0,
   configRequestId: 0,
+  snapshotRefreshInFlight: false,
   requestedDataLength: null,
-  historyExpandInFlight: false,
-  pendingHistoryRange: null,
   wsConnection: null,
-  wsHeartbeatTimerId: null,
   wsReconnectTimerId: null,
   wsActiveSignature: "",
   wsConnectingSignature: "",
   wsLastMessageAt: 0,
+  wsOpenedAt: 0,
   wsMonitorTimerId: null,
   wsActualToSyntheticTime: new Map(),
   wsSyntheticToActualTime: new Map(),
@@ -86,17 +85,10 @@ const RIGHT_PRICE_SCALE_MIN_WIDTH = 72;
 const RENKO_DEFAULT_TICKS = 5;
 const RANGE_DEFAULT_TICKS = 10;
 const VOLUME_PANE_ID = "__volume__";
-const HISTORY_EXPAND_LEFT_THRESHOLD = 20;
-const MAX_DUCKDB_DATA_LENGTH = 50000;
-const MAX_DUCKDB_BRICK_LENGTH = 100000;
 const INCREMENTAL_UPDATE_MAX_NEW_BARS = 3;
-const ORDERFLOW_REFRESH_MS = 450;
-const BITGET_WS_URL = "wss://ws.bitget.com/v2/ws/public";
-const BINANCE_WS_URL = "wss://fstream.binance.com/stream";
-const BITGET_WS_RECONNECT_MS = 2000;
-const BITGET_WS_HEARTBEAT_MS = 20000;
-const BITGET_INDICATOR_SYNC_MS = 1200;
-const BITGET_WS_STALE_MS = 15000;
+const WS_RECONNECT_MS = 2000;
+const INDICATOR_SYNC_MS = 1200;
+const WS_STALE_MS = 20000;
 const ORDERFLOW_MAX_VISIBLE_COLUMNS = 20;
 const ORDERFLOW_TARGET_VISIBLE_ROWS = 18;
 const ORDERFLOW_MIN_ROW_HEIGHT = 18;
@@ -107,28 +99,6 @@ const TERMINAL_TEMPLATE_STORAGE_KEY = "qh_terminal_template_v1";
 const WATCHLIST_STORAGE_KEY = "qh_symbol_watchlist_v1";
 
 function paneLabelConfig(paneId) {
-  if (paneId === "pseudo_orderflow_5m") {
-    return [
-      { text: "Delta>0", value: 5.0 },
-      { text: "DeltaRatio>均值20", value: 4.0 },
-      { text: "dOI>0", value: 3.0 },
-      { text: "盘口尾值>0", value: 2.0 },
-      { text: "Efficiency>中位20", value: 1.0 },
-    ];
-  }
-  if (paneId === "spqrc_panel") {
-    return [
-      { text: "PushUp", value: 9.4 },
-      { text: "PushDown", value: 8.4 },
-      { text: "FadeUp", value: 7.4 },
-      { text: "FadeDown", value: 6.4 },
-      { text: "Noise", value: 5.4 },
-      { text: "粗糙度", value: 4.4 },
-      { text: "区间边际", value: 3.0 },
-      { text: "最终状态", value: 2.0 },
-      { text: "模型模式", value: 1.3 },
-    ];
-  }
   return [];
 }
 
@@ -691,12 +661,7 @@ class WebGLOrderflowRenderer {
     const modeLabel = this.viewMode === "overlay" ? "Overlay" : this.viewMode === "ladder" ? "Ladder" : "Profile";
     const density = state.orderflowUi.rowDensityScale.toFixed(2);
     const lockText = this.lockPriceCenter ? "Center:Lock" : "Center:Free";
-    const wsStatus = !shouldUseBrowserPush()
-      ? "WS:OFF"
-      : state.wsConnection && state.wsConnection.readyState === WebSocket.OPEN
-        ? (Date.now() - (state.wsLastMessageAt || 0) <= BITGET_WS_STALE_MS ? "WS:LIVE" : "WS:STALE")
-        : "WS:DISC";
-    const hudText = `${modeLabel}  ${lockText}  Dense:${density}  ${wsStatus}`;
+    const hudText = `${modeLabel}  ${lockText}  Dense:${density}  HTTP:POLL`;
     const x = width - 290;
     const y = 10;
     this.labelCtx.fillStyle = "rgba(255, 251, 245, 0.88)";
@@ -2051,23 +2016,6 @@ const els = {
   detailPriceTick: document.getElementById("detail-price-tick"),
   detailContractMonth: document.getElementById("detail-contract-month"),
   detailVolumeMultiple: document.getElementById("detail-volume-multiple"),
-  bitgetAccountCard: document.getElementById("bitget-account-card"),
-  bitgetProductType: document.getElementById("bitget-product-type"),
-  bitgetMarginCoin: document.getElementById("bitget-margin-coin"),
-  bitgetAccountEquity: document.getElementById("bitget-account-equity"),
-  bitgetUsdtEquity: document.getElementById("bitget-usdt-equity"),
-  bitgetAvailable: document.getElementById("bitget-available"),
-  bitgetLocked: document.getElementById("bitget-locked"),
-  bitgetRiskRate: document.getElementById("bitget-risk-rate"),
-  bitgetAssetMode: document.getElementById("bitget-asset-mode"),
-  spqrcDetailCard: document.getElementById("spqrc-detail-card"),
-  spqrcDominantState: document.getElementById("spqrc-dominant-state"),
-  spqrcDominantProb: document.getElementById("spqrc-dominant-prob"),
-  spqrcModelMode: document.getElementById("spqrc-model-mode"),
-  spqrcStateSignal: document.getElementById("spqrc-state-signal"),
-  spqrcRoughness: document.getElementById("spqrc-roughness"),
-  spqrcEdge: document.getElementById("spqrc-edge"),
-  spqrcAdvice: document.getElementById("spqrc-advice"),
   indicatorForm: document.getElementById("indicator-form"),
   chartStack: document.getElementById("chart-stack"),
   toolbarProvider: document.getElementById("toolbar-provider"),
@@ -2217,23 +2165,11 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return (provider === "bitget" || provider === "binance") && barMode === "time";
+  return false;
 }
 
 function wsIntervalForProvider(provider, durationSeconds) {
   const providerIntervals = {
-    bitget: {
-      60: "1m",
-      300: "5m",
-      900: "15m",
-      1800: "30m",
-      3600: "1H",
-      7200: "2H",
-      14400: "4H",
-      21600: "6H",
-      43200: "12H",
-      86400: "1D",
-    },
     binance: {
       60: "1m",
       300: "5m",
@@ -2250,11 +2186,6 @@ function wsIntervalForProvider(provider, durationSeconds) {
   return providerIntervals[provider]?.[durationSeconds] || null;
 }
 
-function bitgetWsChannelForDuration(durationSeconds) {
-  const interval = wsIntervalForProvider("bitget", durationSeconds);
-  return interval ? `candle${interval}` : null;
-}
-
 function requestedWsSignature() {
   const provider = getRequestedProvider();
   const barMode = getRequestedBarMode();
@@ -2267,45 +2198,50 @@ function requestedWsSignature() {
   if (!interval || !symbol) {
     return "";
   }
-  return `${provider}|${symbol}|${durationSeconds}|${barMode}`;
+  const indicatorSignature = state.selectedIndicators
+    .map((indicatorId) => `${indicatorId}:${JSON.stringify(state.indicatorParams[indicatorId] || {})}`)
+    .join(",");
+  return [
+    provider,
+    symbol,
+    durationSeconds,
+    barMode,
+    getRequestedRangeTicks(),
+    getRequestedBrickLength(),
+    currentRequestedDataLength(),
+    indicatorSignature,
+  ].join("|");
 }
 
-function clearBitgetHeartbeat() {
-  if (state.wsHeartbeatTimerId) {
-    window.clearInterval(state.wsHeartbeatTimerId);
-    state.wsHeartbeatTimerId = null;
-  }
-}
-
-function clearBitgetReconnect() {
+function clearRealtimeReconnect() {
   if (state.wsReconnectTimerId) {
     window.clearTimeout(state.wsReconnectTimerId);
     state.wsReconnectTimerId = null;
   }
 }
 
-function stopBitgetMonitor() {
+function stopRealtimeMonitor() {
   if (state.wsMonitorTimerId) {
     window.clearInterval(state.wsMonitorTimerId);
     state.wsMonitorTimerId = null;
   }
 }
 
-function startBitgetMonitor() {
-  stopBitgetMonitor();
+function startRealtimeMonitor() {
+  stopRealtimeMonitor();
   state.wsMonitorTimerId = window.setInterval(async () => {
     if (!shouldUseBrowserPush()) {
       return;
     }
-    const isConnected = state.wsConnection && state.wsConnection.readyState === WebSocket.OPEN;
-    const lastMessageAge = state.wsLastMessageAt > 0 ? Date.now() - state.wsLastMessageAt : Number.POSITIVE_INFINITY;
-    if (isConnected && lastMessageAge <= BITGET_WS_STALE_MS) {
+    const isConnected = false;
+    const referenceTime = state.wsLastMessageAt || state.wsOpenedAt || 0;
+    const lastMessageAge = referenceTime > 0 ? Date.now() - referenceTime : Number.POSITIVE_INFINITY;
+    if (isConnected && lastMessageAge <= WS_STALE_MS) {
       return;
     }
     try {
-      disconnectBitgetStream();
-      connectBitgetStream();
-      await refreshSnapshot();
+      disconnectRealtimeStream();
+      connectRealtimeStream();
     } catch (error) {
       els.error.textContent = error.message;
     }
@@ -2324,10 +2260,9 @@ function resetOrderflowState() {
   state.orderflowSeenTradeIds = new Set();
 }
 
-function disconnectBitgetStream() {
-  clearBitgetHeartbeat();
-  clearBitgetReconnect();
-  stopBitgetMonitor();
+function disconnectRealtimeStream() {
+  clearRealtimeReconnect();
+  stopRealtimeMonitor();
   if (state.indicatorSyncTimerId) {
     window.clearTimeout(state.indicatorSyncTimerId);
     state.indicatorSyncTimerId = null;
@@ -2339,39 +2274,26 @@ function disconnectBitgetStream() {
     socket.onmessage = null;
     socket.onerror = null;
     socket.onclose = null;
-    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+    if (typeof socket.close === "function") {
       socket.close();
     }
   }
   state.wsActiveSignature = "";
   state.wsConnectingSignature = "";
   state.wsLastMessageAt = 0;
+  state.wsOpenedAt = 0;
   resetOrderflowState();
 }
 
-function scheduleBitgetReconnect(signature) {
-  clearBitgetReconnect();
+function scheduleRealtimeReconnect(signature) {
+  clearRealtimeReconnect();
   if (!signature || signature !== requestedWsSignature()) {
     return;
   }
   state.wsReconnectTimerId = window.setTimeout(() => {
     state.wsReconnectTimerId = null;
-    connectBitgetStream();
-  }, BITGET_WS_RECONNECT_MS);
-}
-
-function startBitgetHeartbeat(socket, signature, provider) {
-  if (provider !== "bitget") {
-    return;
-  }
-  clearBitgetHeartbeat();
-  state.wsHeartbeatTimerId = window.setInterval(() => {
-    if (state.wsActiveSignature !== signature || socket.readyState !== WebSocket.OPEN) {
-      clearBitgetHeartbeat();
-      return;
-    }
-    socket.send("ping");
-  }, BITGET_WS_HEARTBEAT_MS);
+    connectRealtimeStream();
+  }, WS_RECONNECT_MS);
 }
 
 function formatWsDisplayTime(timestampMs) {
@@ -2502,87 +2424,6 @@ function registerTradeId(tradeId) {
   return true;
 }
 
-function inferTradeSide(rawTrade) {
-  const side = String(rawTrade.side || rawTrade.takerSide || rawTrade.tradeSide || "").toLowerCase();
-  if (side.includes("buy")) {
-    return "buy";
-  }
-  if (side.includes("sell")) {
-    return "sell";
-  }
-  const direction = String(rawTrade.buySell || "").toLowerCase();
-  if (direction.includes("buy")) {
-    return "buy";
-  }
-  if (direction.includes("sell")) {
-    return "sell";
-  }
-  return null;
-}
-
-function applyBitgetTradeUpdate(rawTrade) {
-  const timestampMs = Number(rawTrade.ts || rawTrade.cTime || rawTrade.fillTime);
-  const price = Number(rawTrade.price);
-  const size = Number(rawTrade.size || rawTrade.qty || rawTrade.amount);
-  if (!Number.isFinite(timestampMs) || !Number.isFinite(price) || !Number.isFinite(size)) {
-    return;
-  }
-  const tradeId = String(rawTrade.tradeId || rawTrade.id || `${timestampMs}:${price}:${size}:${rawTrade.side || ""}`);
-  if (!registerTradeId(tradeId)) {
-    return;
-  }
-
-  const side = inferTradeSide(rawTrade);
-  state.orderflowRecentTrades.push({
-    ts: timestampMs,
-    price,
-    size,
-    side: side || "buy",
-  });
-  const recentCutoff = Date.now() - 10 * 60 * 1000;
-  while (state.orderflowRecentTrades.length > 0 && state.orderflowRecentTrades[0].ts < recentCutoff) {
-    state.orderflowRecentTrades.shift();
-  }
-  const bucketStartMs = orderflowBucketStartMs(timestampMs);
-  const { syntheticTime } = resolveSyntheticTime(bucketStartMs);
-  if (!Number.isFinite(syntheticTime)) {
-    return;
-  }
-  const bucketKey = String(bucketStartMs);
-  let bucket = state.orderflowTradeBuckets.get(bucketKey);
-  if (!bucket) {
-    bucket = { actualTimeMs: bucketStartMs, syntheticTime, levels: new Map(), tradeCount: 0 };
-    state.orderflowTradeBuckets.set(bucketKey, bucket);
-  } else {
-    bucket.syntheticTime = syntheticTime;
-  }
-  bucket.tradeCount += 1;
-
-  const levelKey = orderflowPriceKey(price);
-  const level = bucket.levels.get(levelKey) || { price, buy: 0, sell: 0, total: 0, delta: 0 };
-  if (side === "sell") {
-    level.sell += size;
-    level.delta -= size;
-  } else {
-    level.buy += size;
-    level.delta += size;
-  }
-  level.total += size;
-  bucket.levels.set(levelKey, level);
-
-  const minSyntheticTime = Math.max(0, (state.seriesDataByKey.get("candles") || []).reduce((minValue, item) => {
-    const time = Number(item?.time);
-    return Number.isFinite(time) ? Math.min(minValue, time) : minValue;
-  }, Number.POSITIVE_INFINITY));
-  [...state.orderflowTradeBuckets.entries()].forEach(([key, item]) => {
-    if (Number.isFinite(minSyntheticTime) && item.syntheticTime < minSyntheticTime - 2) {
-      state.orderflowTradeBuckets.delete(key);
-    }
-  });
-
-  scheduleRealtimeMicrostructureRefresh();
-}
-
 function applyBinanceTradeUpdate(rawTrade) {
   const timestampMs = Number(rawTrade.T || rawTrade.E || rawTrade.ts);
   const price = Number(rawTrade.p || rawTrade.price);
@@ -2645,26 +2486,6 @@ function applyBinanceTradeUpdate(rawTrade) {
   scheduleRealtimeMicrostructureRefresh();
 }
 
-function applyBitgetOrderBookSnapshot(book) {
-  const normalizeLevels = (levels) =>
-    (Array.isArray(levels) ? levels : [])
-      .map((level) => {
-        const price = Number(level?.[0]);
-        const size = Number(level?.[1]);
-        if (!Number.isFinite(price) || !Number.isFinite(size)) {
-          return null;
-        }
-        return { price, size };
-      })
-      .filter(Boolean);
-  state.orderflowBook = {
-    bids: normalizeLevels(book?.bids),
-    asks: normalizeLevels(book?.asks),
-    ts: Number(book?.ts || Date.now()),
-  };
-  scheduleRealtimeMicrostructureRefresh();
-}
-
 function applyBinanceOrderBookSnapshot(book) {
   const normalizeLevels = (levels) =>
     (Array.isArray(levels) ? levels : [])
@@ -2717,81 +2538,7 @@ function scheduleIndicatorSnapshotSync() {
     } catch (error) {
       els.error.textContent = error.message;
     }
-  }, BITGET_INDICATOR_SYNC_MS);
-}
-
-function applyBitgetWsCandleUpdate(rawRow) {
-  if (!Array.isArray(rawRow) || rawRow.length < 6) {
-    return;
-  }
-  const actualTimeMs = Number(rawRow[0]);
-  if (!Number.isFinite(actualTimeMs)) {
-    return;
-  }
-  const { syntheticTime, isNewBar } = resolveSyntheticTime(actualTimeMs);
-  if (!Number.isFinite(syntheticTime)) {
-    return;
-  }
-
-  const open = Number(rawRow[1]);
-  const high = Number(rawRow[2]);
-  const low = Number(rawRow[3]);
-  const close = Number(rawRow[4]);
-  const volume = Number(rawRow[5]);
-  if (![open, high, low, close].every(Number.isFinite)) {
-    return;
-  }
-
-  const displayTime = formatWsDisplayTime(actualTimeMs);
-  state.timeLabels.set(String(syntheticTime), displayTime);
-
-  const candles = [...(state.seriesDataByKey.get("candles") || [])];
-  const volumeSeriesData = [...(state.seriesDataByKey.get("volume") || [])];
-  const nextCandle = { time: syntheticTime, open, high, low, close };
-  const nextVolume = {
-    time: syntheticTime,
-    value: Number.isFinite(volume) ? volume : 0,
-    color: close >= open ? "#089981" : "#f23645",
-  };
-  const existingIndex = candles.findIndex((item) => Number(item?.time) === syntheticTime);
-  if (existingIndex >= 0) {
-    candles[existingIndex] = nextCandle;
-    volumeSeriesData[existingIndex] = nextVolume;
-  } else {
-    candles.push(nextCandle);
-    volumeSeriesData.push(nextVolume);
-  }
-
-  const maxLength = currentRequestedDataLength();
-  while (candles.length > maxLength) {
-    const removed = candles.shift();
-    volumeSeriesData.shift();
-    if (removed) {
-      const removedSynthetic = Number(removed.time);
-      const removedActual = state.wsSyntheticToActualTime.get(removedSynthetic);
-      if (removedActual !== undefined) {
-        state.wsSyntheticToActualTime.delete(removedSynthetic);
-        state.wsActualToSyntheticTime.delete(removedActual);
-      }
-      state.timeLabels.delete(String(removedSynthetic));
-    }
-  }
-
-  const candleSeries = state.seriesByKey.get("candles");
-  const volumeSeries = state.seriesByKey.get("volume");
-  setSeriesData("candles", candleSeries, candles);
-  setSeriesData("volume", volumeSeries, volumeSeriesData);
-  scheduleRealtimeMicrostructureRefresh();
-
-  els.lastPrice.textContent = close.toFixed(2);
-  els.lastPrice.style.color = close >= open ? "#089981" : "#f23645";
-  els.lastUpdate.textContent = displayTime;
-  syncCurrentPriceLine(close, close >= open ? "#089981" : "#f23645");
-  updatePaneLabelPositions();
-
-  if (isNewBar) {
-    scheduleIndicatorSnapshotSync();
-  }
+  }, INDICATOR_SYNC_MS);
 }
 
 function applyBinanceWsCandleUpdate(rawKline) {
@@ -2868,36 +2615,6 @@ function applyBinanceWsCandleUpdate(rawKline) {
   }
 }
 
-function handleBitgetWsMessage(event) {
-  if (typeof event.data !== "string" || !event.data || event.data === "pong") {
-    return;
-  }
-  state.wsLastMessageAt = Date.now();
-  const payload = JSON.parse(event.data);
-  if (payload.event === "subscribe" || payload.event === "unsubscribe") {
-    return;
-  }
-  if (payload.event === "error") {
-    throw new Error(payload.msg || payload.code || "Bitget 订阅失败");
-  }
-  const channel = payload.arg?.channel || "";
-  const rows = payload.data || [];
-  if (channel.startsWith("candle")) {
-    rows.forEach((row) => applyBitgetWsCandleUpdate(row));
-    return;
-  }
-  if (channel === "trade") {
-    rows.forEach((row) => applyBitgetTradeUpdate(row));
-    return;
-  }
-  if (channel.startsWith("books")) {
-    const first = rows[0];
-    if (first) {
-      applyBitgetOrderBookSnapshot(first);
-    }
-  }
-}
-
 function handleBinanceWsMessage(event) {
   if (typeof event.data !== "string" || !event.data) {
     return;
@@ -2919,118 +2636,12 @@ function handleBinanceWsMessage(event) {
   }
 }
 
-function connectBitgetStream() {
-  const signature = requestedWsSignature();
-  const provider = getRequestedProvider();
-  if (!signature) {
-    disconnectBitgetStream();
-    return;
-  }
-  if (
-    state.wsConnection &&
-    state.wsActiveSignature === signature &&
-    (state.wsConnection.readyState === WebSocket.OPEN || state.wsConnection.readyState === WebSocket.CONNECTING)
-  ) {
-    return;
-  }
-
-  disconnectBitgetStream();
-  const symbol = getRequestedSymbol();
-  const duration = getRequestedDuration();
-  const interval = wsIntervalForProvider(provider, duration);
-  if (!interval || !symbol) {
-    return;
-  }
-
-  const socket =
-    provider === "binance"
-      ? new WebSocket(
-          `${BINANCE_WS_URL}?streams=${symbol.toLowerCase()}@kline_${interval}/${symbol.toLowerCase()}@aggTrade/${symbol.toLowerCase()}@depth20@100ms`
-        )
-      : new WebSocket(BITGET_WS_URL);
-  state.wsConnection = socket;
-  state.wsConnectingSignature = signature;
-
-  socket.onopen = () => {
-    if (state.wsConnection !== socket) {
-      socket.close();
-      return;
-    }
-    state.wsActiveSignature = signature;
-    state.wsConnectingSignature = "";
-    state.wsLastMessageAt = Date.now();
-    els.error.textContent = "";
-    if (provider === "bitget") {
-      const channel = bitgetWsChannelForDuration(duration);
-      socket.send(
-        JSON.stringify({
-          op: "subscribe",
-          args: [
-            {
-              instType: "USDT-FUTURES",
-              channel,
-              instId: symbol,
-            },
-            {
-              instType: "USDT-FUTURES",
-              channel: "trade",
-              instId: symbol,
-            },
-            {
-              instType: "USDT-FUTURES",
-              channel: "books15",
-              instId: symbol,
-            },
-          ],
-        })
-      );
-    }
-    startBitgetHeartbeat(socket, signature, provider);
-    startBitgetMonitor();
-  };
-
-  socket.onmessage = (event) => {
-    if (state.wsConnection !== socket || state.wsActiveSignature !== signature) {
-      return;
-    }
-    try {
-      if (provider === "binance") {
-        handleBinanceWsMessage(event);
-      } else {
-        handleBitgetWsMessage(event);
-      }
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  };
-
-  socket.onerror = () => {
-    if (state.wsConnection === socket && state.wsActiveSignature === signature) {
-      els.error.textContent = `${provider === "binance" ? "Binance" : "Bitget"} 实时连接异常，正在重连。`;
-    }
-  };
-
-  socket.onclose = () => {
-    if (state.wsConnection === socket) {
-      state.wsConnection = null;
-    }
-    clearBitgetHeartbeat();
-    const shouldReconnect = requestedWsSignature() === signature;
-    if (state.wsActiveSignature === signature) {
-      state.wsActiveSignature = "";
-    }
-    if (shouldReconnect) {
-      scheduleBitgetReconnect(signature);
-    }
-  };
+function connectRealtimeStream() {
+  disconnectRealtimeStream();
 }
 
 function syncRealtimeTransport() {
-  if (shouldUseBrowserPush()) {
-    connectBitgetStream();
-    return;
-  }
-  disconnectBitgetStream();
+  disconnectRealtimeStream();
 }
 
 function getIndicatorIds() {
@@ -3053,6 +2664,12 @@ function updateIndicatorParamState(indicatorId, key, value) {
     state.indicatorParams[indicatorId] = {};
   }
   state.indicatorParams[indicatorId][key] = value;
+}
+
+function isIndicatorEnabled(indicatorId) {
+  return [...els.indicatorForm.querySelectorAll('input[data-role="indicator-toggle"]:checked')].some(
+    (item) => item.value === indicatorId
+  );
 }
 
 function buildDefaultTerminalTemplate() {
@@ -3213,7 +2830,7 @@ function createIndicatorParamInput(indicatorId, param, enabled) {
   input.addEventListener("change", async (event) => {
     const nextValue = param.type === "bool" ? event.target.checked : event.target.value;
     updateIndicatorParamState(indicatorId, param.key, nextValue);
-    if (enabled) {
+    if (isIndicatorEnabled(indicatorId)) {
       await refreshSnapshot();
     }
   });
@@ -3749,131 +3366,15 @@ function renderProviderMeta(payload) {
   els.providerHint.textContent = payload.provider_hint || "当前数据源暂无额外说明。";
 
   const detail = payload.contract_detail || {};
-  const localCount =
-    Number(detail.tick_count || 0) +
-    Number(detail.bar_1m_count || 0) +
-    Number(detail.bar_5m_count || 0) +
-    Number(detail.bar_10m_count || 0) +
-    Number(detail.bar_15m_count || 0);
-  const hasLocalCoverage =
-    provider === "duckdb" &&
-    (detail.first_data_at || detail.last_data_at || localCount > 0);
+  const hasContractDetail = Object.keys(detail).length > 0;
 
-  els.contractDetailCard.hidden = !hasLocalCoverage;
-  els.detailFirstTick.textContent = formatDetailValue(detail.first_data_at || detail.first_tick_at);
-  els.detailLastTick.textContent = formatDetailValue(detail.last_data_at || detail.last_tick_at);
-  els.detailTickCount.textContent = formatNumberValue(localCount);
+  els.contractDetailCard.hidden = !hasContractDetail;
+  els.detailFirstTick.textContent = formatDetailValue(detail.exchange_id);
+  els.detailLastTick.textContent = formatDetailValue(detail.product_id);
+  els.detailTickCount.textContent = formatDetailValue(detail.name);
   els.detailPriceTick.textContent = formatNumberValue(detail.price_tick, 4);
-  els.detailContractMonth.textContent = formatDetailValue(detail.contract_month);
+  els.detailContractMonth.textContent = formatDetailValue(detail.symbol);
   els.detailVolumeMultiple.textContent = formatNumberValue(detail.volume_multiple, 0);
-
-  const account = payload.provider_account || {};
-  const hasBitgetAccount = provider === "bitget" && Object.keys(account).length > 0;
-  els.bitgetAccountCard.hidden = !hasBitgetAccount;
-  els.bitgetProductType.textContent = formatDetailValue(account.product_type);
-  els.bitgetMarginCoin.textContent = formatDetailValue(account.margin_coin);
-  els.bitgetAccountEquity.textContent = formatDetailValue(account.account_equity);
-  els.bitgetUsdtEquity.textContent = formatDetailValue(account.usdt_equity);
-  els.bitgetAvailable.textContent = formatDetailValue(account.available);
-  els.bitgetLocked.textContent = formatDetailValue(account.locked);
-  els.bitgetRiskRate.textContent = formatDetailValue(account.crossed_risk_rate);
-  els.bitgetAssetMode.textContent = formatDetailValue(account.asset_mode);
-}
-
-function latestDefinedValue(points) {
-  if (!Array.isArray(points)) {
-    return null;
-  }
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    const value = points[index]?.value;
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function renderSpqrcSummary(snapshot) {
-  const panel = (snapshot.indicators || []).find((item) => item.id === "spqrc_panel");
-  if (!panel) {
-    els.spqrcDetailCard.hidden = true;
-    return;
-  }
-
-  const latestBySeries = new Map(panel.series.map((series) => [series.id, latestDefinedValue(series.data)]));
-  const states = [
-    ["push_up", latestBySeries.get("spqrc_push_up_prob")],
-    ["push_down", latestBySeries.get("spqrc_push_down_prob")],
-    ["fade_up", latestBySeries.get("spqrc_fade_up_prob")],
-    ["fade_down", latestBySeries.get("spqrc_fade_down_prob")],
-    ["noise", latestBySeries.get("spqrc_noise_prob")],
-  ].filter((item) => typeof item[1] === "number");
-
-  const labelMap = {
-    push_up: "推进偏多",
-    push_down: "推进偏空",
-    fade_up: "上破衰竭",
-    fade_down: "下破衰竭",
-    noise: "噪声",
-  };
-  const stateSignalMap = {
-    1: "推多",
-    "-1": "推空",
-    0.5: "假空",
-    "-0.5": "假多",
-    0: "中性",
-  };
-
-  let dominantState = "--";
-  let dominantProb = "--";
-  if (states.length > 0) {
-    states.sort((a, b) => Number(b[1]) - Number(a[1]));
-    dominantState = labelMap[states[0][0]] || states[0][0];
-    dominantProb = `${(Number(states[0][1]) * 100).toFixed(1)}%`;
-  }
-
-  const modelMode = latestBySeries.get("spqrc_model_mode");
-  const stateSignal = latestBySeries.get("spqrc_state_signal");
-  const roughness = latestBySeries.get("spqrc_roughness_score");
-  const edge = latestBySeries.get("spqrc_edge_score");
-  const noiseProb = latestBySeries.get("spqrc_noise_prob");
-
-  let advice = "回避";
-  if (typeof stateSignal === "number") {
-    if (noiseProb > 0.55 || roughness > 0.72) {
-      advice = "回避";
-    } else if (stateSignal >= 0.75 || dominantState === "推进偏多") {
-      advice = "偏多";
-    } else if (stateSignal <= -0.75 || dominantState === "推进偏空") {
-      advice = "偏空";
-    } else if (dominantState === "上破衰竭") {
-      advice = "偏空";
-    } else if (dominantState === "下破衰竭") {
-      advice = "偏多";
-    }
-  }
-
-  els.spqrcDominantState.textContent = dominantState;
-  els.spqrcDominantProb.textContent = dominantProb;
-  els.spqrcModelMode.textContent = modelMode && modelMode > 0.5 ? "模型" : "规则回退";
-  els.spqrcStateSignal.textContent =
-    stateSignalMap[String(stateSignal)] ||
-    stateSignalMap[stateSignal] ||
-    (typeof stateSignal === "number" ? stateSignal.toFixed(2) : "--");
-  els.spqrcRoughness.textContent = typeof roughness === "number" ? roughness.toFixed(3) : "--";
-  els.spqrcEdge.textContent = typeof edge === "number" ? edge.toFixed(3) : "--";
-  els.spqrcAdvice.textContent = advice;
-  els.spqrcDetailCard.hidden = false;
-}
-
-function hasDuckdbLocalData(contract) {
-  return (
-    Number(contract?.tick_count || 0) > 0 ||
-    Number(contract?.bar_1m_count || 0) > 0 ||
-    Number(contract?.bar_5m_count || 0) > 0 ||
-    Number(contract?.bar_10m_count || 0) > 0 ||
-    Number(contract?.bar_15m_count || 0) > 0
-  );
 }
 
 function buildDurationOptions(options, activeValue) {
@@ -3935,7 +3436,6 @@ function buildContractOptions(contracts, activeSymbol) {
   if (els.toolbarSymbol) {
     els.toolbarSymbol.innerHTML = "";
   }
-  const provider = getRequestedProvider() || state.activeProvider || state.config?.provider || "";
   let normalizedContracts = contracts.length
     ? contracts
     : [{ symbol: activeSymbol, label: activeSymbol }];
@@ -3958,9 +3458,7 @@ function buildContractOptions(contracts, activeSymbol) {
   normalizedContracts.forEach((contract) => {
     const option = document.createElement("option");
     option.value = contract.symbol;
-    const hasLocalData = provider !== "duckdb" || hasDuckdbLocalData(contract);
-    option.textContent = hasLocalData ? contract.label : `${contract.label}（无本地数据）`;
-    option.disabled = !hasLocalData;
+    option.textContent = contract.label;
     option.selected = contract.symbol === activeSymbol;
     els.symbolSelect.append(option);
     if (els.toolbarSymbol) {
@@ -4071,49 +3569,7 @@ function sanitizePricePaneIndicators(snapshot) {
 }
 
 function augmentTerminalPanels(snapshot) {
-  const candles = snapshot.candles || [];
-  if (candles.length === 0) {
-    return snapshot;
-  }
-
-  const indicators = [...(snapshot.indicators || [])];
-  const filteredIndicators = indicators;
-
-  const barStats = candles.map((candle) => ({
-    time: candle.time,
-    ...computePerBarMicrostructure(candle, snapshot),
-  }));
-
-  return {
-    ...snapshot,
-    indicators: [
-      ...filteredIndicators,
-      {
-        id: "terminal_bar_microstats",
-        name: "Bar Microstructure",
-        pane: "indicator",
-        series: [
-          {
-            id: "terminal_bar_microstats_text",
-            name: "Per-Bar Text Stats",
-            pane: "indicator",
-            series_type: "underbar-text",
-            data: barStats,
-            options: {
-              rows: [
-                { key: "delta", label: "Delta", color: "#69ff7b", format: (value) => value.toFixed(3) },
-                { key: "speed", label: "Speed", color: "#7ad0ff", format: (value) => value.toFixed(3) },
-                { key: "efficiency", label: "Eff", color: "#f5c542", format: (value) => value.toFixed(3) },
-                { key: "close_pos", label: "ClosePos", color: "#e5ecf5", format: (value) => value.toFixed(3) },
-                { key: "high_zone_buy_ratio", label: "HighBuy", color: "#69ff7b", format: (value) => value.toFixed(3) },
-                { key: "low_zone_sell_ratio", label: "LowSell", color: "#ff335f", format: (value) => value.toFixed(3) },
-              ],
-            },
-          },
-        ],
-      },
-    ],
-  };
+  return snapshot;
 }
 
 function buildIndicatorSelector(indicators, defaults) {
@@ -4501,50 +3957,6 @@ function currentRequestedDataLength() {
   return state.requestedDataLength || state.config?.data_length || 800;
 }
 
-function maybeExpandDuckdbHistory(range) {
-  if (state.activeProvider !== "duckdb" || state.historyExpandInFlight) {
-    return;
-  }
-  if (!range || !Number.isFinite(range.from) || range.from > HISTORY_EXPAND_LEFT_THRESHOLD) {
-    return;
-  }
-
-  let expanded = false;
-  if (state.activeBarMode === "time") {
-    const currentLength = currentRequestedDataLength();
-    const nextLength = Math.min(
-      MAX_DUCKDB_DATA_LENGTH,
-      Math.max(currentLength + 500, Math.round(currentLength * 1.8))
-    );
-    if (nextLength > currentLength) {
-      state.requestedDataLength = nextLength;
-      expanded = true;
-    }
-  } else {
-    const currentLength = getRequestedBrickLength();
-    const nextLength = Math.min(
-      MAX_DUCKDB_BRICK_LENGTH,
-      Math.max(currentLength + 1000, Math.round(currentLength * 1.8))
-    );
-    if (nextLength > currentLength) {
-      els.brickLengthInput.value = String(nextLength);
-      expanded = true;
-    }
-  }
-
-  if (!expanded) {
-    return;
-  }
-
-  state.pendingHistoryRange = { from: range.from, to: range.to };
-  state.historyExpandInFlight = true;
-  refreshSnapshot().catch((error) => {
-    els.error.textContent = error.message;
-    state.historyExpandInFlight = false;
-    state.pendingHistoryRange = null;
-  });
-}
-
 function rebuildCharts() {
   state.charts.forEach((entry) => entry.chart.remove());
   state.charts = [];
@@ -4610,7 +4022,6 @@ function rebuildCharts() {
     });
     if (paneId === "price") {
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        maybeExpandDuckdbHistory(range);
       });
     }
   });
@@ -4802,7 +4213,6 @@ function applySnapshot(snapshot) {
     state.activeRangeTicks
   );
   renderProviderMeta(snapshot);
-  renderSpqrcSummary(snapshot);
   els.lastPrice.textContent = snapshot.last_close.toFixed(2);
   els.lastPrice.style.color = snapshot.last_color;
   els.lastUpdate.textContent = snapshot.last_time;
@@ -4921,18 +4331,6 @@ function applySnapshot(snapshot) {
     state.hasFitted = true;
   }
 
-  if (state.pendingHistoryRange && state.charts.length > 0) {
-    const addedBars = Math.max(displaySnapshot.candles.length - previousCandleCount, 0);
-    const priceChart = state.charts[0].chart;
-    if (addedBars > 0) {
-      priceChart.timeScale().setVisibleLogicalRange({
-        from: state.pendingHistoryRange.from + addedBars,
-        to: state.pendingHistoryRange.to + addedBars,
-      });
-    }
-    state.pendingHistoryRange = null;
-    state.historyExpandInFlight = false;
-  }
   updatePaneLabelPositions();
   renderMicrostructure();
 }
@@ -4941,22 +4339,35 @@ async function refreshSnapshot() {
   const requestId = ++state.snapshotRequestId;
   const requestedProvider = getRequestedProvider();
   const requestedSymbol = getRequestedSymbol();
-  const snapshot = await fetchSnapshotPayload();
-  if (requestId !== state.snapshotRequestId) {
-    return;
+  state.snapshotRefreshInFlight = true;
+  try {
+    const snapshot = await fetchSnapshotPayload();
+    if (requestId !== state.snapshotRequestId) {
+      return;
+    }
+    if (
+      snapshot.provider !== requestedProvider ||
+      snapshot.symbol !== requestedSymbol
+    ) {
+      return;
+    }
+    applySnapshot(snapshot);
+    syncAutoRefresh(snapshot.refresh_ms ?? state.config?.refresh_ms ?? 0);
+    syncRealtimeTransport();
+  } finally {
+    if (requestId === state.snapshotRequestId) {
+      state.snapshotRefreshInFlight = false;
+    }
   }
-  if (
-    snapshot.provider !== requestedProvider ||
-    snapshot.symbol !== requestedSymbol
-  ) {
-    return;
-  }
-  applySnapshot(snapshot);
-  syncAutoRefresh(snapshot.refresh_ms ?? state.config?.refresh_ms ?? 0);
-  syncRealtimeTransport();
 }
 
 async function fetchSnapshotPayload() {
+  const params = buildSnapshotParams();
+  const query = params.toString();
+  return fetchJson(`/api/snapshot${query ? `?${query}` : ""}`);
+}
+
+function buildSnapshotParams() {
   const params = new URLSearchParams();
   params.set("provider", getRequestedProvider());
   params.set("symbol", getRequestedSymbol());
@@ -4973,8 +4384,7 @@ async function fetchSnapshotPayload() {
     });
     params.set("indicator_params", JSON.stringify(selectedParams));
   }
-  const query = params.toString();
-  return fetchJson(`/api/snapshot${query ? `?${query}` : ""}`);
+  return params;
 }
 
 async function refreshConfig(provider) {
@@ -5022,30 +4432,21 @@ async function refreshConfig(provider) {
 }
 
 function syncAutoRefresh(refreshMs) {
-  if (shouldUseBrowserPush()) {
-    if (state.refreshTimerId) {
-      window.clearInterval(state.refreshTimerId);
-      state.refreshTimerId = null;
-    }
-    return;
-  }
   if (state.refreshTimerId) {
     window.clearInterval(state.refreshTimerId);
     state.refreshTimerId = null;
   }
-  let effectiveRefreshMs = refreshMs;
-  if (
-    state.activeProvider === "bitget" &&
-    state.activeBarMode === "time" &&
-    getRequestedDuration() === 300 &&
-    state.selectedIndicators.includes("pseudo_orderflow_5m")
-  ) {
-    effectiveRefreshMs = Math.max(refreshMs || 0, ORDERFLOW_REFRESH_MS);
+  if (shouldUseBrowserPush()) {
+    return;
   }
+  const effectiveRefreshMs = refreshMs;
   if (!Number.isFinite(effectiveRefreshMs) || effectiveRefreshMs <= 0) {
     return;
   }
   state.refreshTimerId = window.setInterval(async () => {
+    if (state.snapshotRefreshInFlight) {
+      return;
+    }
     try {
       await refreshSnapshot();
     } catch (error) {
@@ -5172,7 +4573,7 @@ async function boot() {
     const nextProvider = getRequestedProvider();
     try {
       state.snapshotRequestId += 1;
-      disconnectBitgetStream();
+      disconnectRealtimeStream();
       if (state.refreshTimerId) {
         window.clearInterval(state.refreshTimerId);
         state.refreshTimerId = null;
@@ -5300,9 +4701,13 @@ async function boot() {
       return;
     }
   });
-  await refreshSnapshot();
+  if (shouldUseBrowserPush()) {
+    syncRealtimeTransport();
+  } else {
+    await refreshSnapshot();
+  }
   window.addEventListener("beforeunload", () => {
-    disconnectBitgetStream();
+    disconnectRealtimeStream();
   });
 }
 

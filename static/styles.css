@@ -268,7 +268,7 @@ body {
 
 .main {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -276,12 +276,14 @@ body {
 }
 
 .page-header {
+  display: none;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   background: rgba(21, 25, 34, 0.96);
 }
 
 .bar-stats-card {
+  display: none;
   padding: 10px 16px 12px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(17, 21, 29, 0.98);
@@ -558,7 +560,7 @@ body {
 
 .chart-card {
   min-height: 0;
-  padding: 10px 10px 0;
+  padding: 0;
   background: #11151d;
   overflow: hidden;
 }
@@ -575,7 +577,7 @@ body {
   position: relative;
   min-height: 80px;
   background: #151922;
-  border: 1px solid rgba(148, 163, 184, 0.08);
+  border: 0;
   overflow: hidden;
 }
 
@@ -634,7 +636,7 @@ body {
   }
 
   .main {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .bar-stats-grid {

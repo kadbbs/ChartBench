@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -11,12 +10,11 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import pandas as pd
-from websockets.asyncio.client import connect as ws_connect
+from dotenv import load_dotenv
 
 from .base import DataSource
 
 BINANCE_FAPI_BASE = "https://fapi.binance.com"
-BINANCE_WS_BASE = "wss://fstream.binance.com/ws"
 BINANCE_GRANULARITY_MAP = {
     60: "1m",
     300: "5m",
@@ -30,19 +28,44 @@ BINANCE_GRANULARITY_MAP = {
     86400: "1d",
 }
 MAX_KLINE_LIMIT = 1500
-WS_RECV_TIMEOUT_SECONDS = 25
-WS_RECONNECT_DELAY_SECONDS = 2
+LATEST_KLINE_LIMIT = 5
 
 
-def _binance_get_json(path: str, params: dict[str, Any] | None = None) -> Any:
+def _configured_rest_bases() -> list[str]:
+    raw = os.getenv("BINANCE_FAPI_BASES", "").strip()
+    if raw:
+        bases = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        if bases:
+            return bases
+    single = os.getenv("BINANCE_FAPI_BASE", "").strip().rstrip("/")
+    if single:
+        return [single]
+    return [
+        BINANCE_FAPI_BASE,
+        "https://fapi1.binance.com",
+        "https://fapi2.binance.com",
+        "https://fapi3.binance.com",
+    ]
+
+
+def _binance_get_json(path: str, params: dict[str, Any] | None = None, project_root: Path | None = None) -> Any:
+    if project_root is not None:
+        load_dotenv(project_root / ".env")
     query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
-    url = f"{BINANCE_FAPI_BASE}{path}?{query}" if query else f"{BINANCE_FAPI_BASE}{path}"
-    with urlopen(url, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+    errors: list[str] = []
+    for base in _configured_rest_bases():
+        url = f"{base}{path}?{query}" if query else f"{base}{path}"
+        try:
+            with urlopen(url, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            errors.append(f"{base}: {exc}")
+    joined_errors = " | ".join(errors)
+    raise RuntimeError(f"Binance REST 请求失败: {joined_errors}")
 
 
-def load_binance_contract_catalog(_: Path) -> list[dict[str, Any]]:
-    payload = _binance_get_json("/fapi/v1/exchangeInfo")
+def load_binance_contract_catalog(project_root: Path) -> list[dict[str, Any]]:
+    payload = _binance_get_json("/fapi/v1/exchangeInfo", project_root=project_root)
     contracts: list[dict[str, Any]] = []
     priority = {"BTCUSDT": 0, "ETHUSDT": 1, "BNBUSDT": 2, "SOLUSDT": 3}
     for item in payload.get("symbols", []) or []:
@@ -109,115 +132,60 @@ class BinanceDataSource(DataSource):
         self._lock = threading.Lock()
         self._ready = threading.Event()
         self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
         self._bars: pd.DataFrame | None = None
         self._error: str | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._version = 0
+        self._last_refresh_at = 0.0
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="binance-data-source", daemon=True)
-        self._thread.start()
+        self._ready.set()
 
     def stop(self) -> None:
         self._stop_event.set()
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(lambda: None)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3)
+
+    def wait_for_update(self, last_version: int | None, timeout: float) -> int:
+        time.sleep(max(timeout, 0))
+        with self._lock:
+            return self._version
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "version": self._version,
+                "last_refresh_at": self._last_refresh_at or None,
+                "stream_state": "rest_polling",
+                "stream_url": None,
+                "error": self._error,
+            }
 
     def get_bars(self) -> pd.DataFrame:
         self.start()
         self._ready.wait(timeout=10)
+        refresh_interval = max(float(self.refresh_ms or 0) / 1000.0, 0.5)
+        has_cached_bars = False
         with self._lock:
             if self._error:
                 raise RuntimeError(self._error)
             if self._bars is not None and not self._bars.empty:
-                return self._bars.copy()
+                if time.monotonic() - self._last_refresh_at < refresh_interval:
+                    return self._bars.copy()
+                has_cached_bars = True
 
-        frame = self._fetch_history_bars()
+        frame = self._fetch_latest_bars() if has_cached_bars else self._fetch_history_bars()
         with self._lock:
-            self._bars = frame.copy()
+            if has_cached_bars and self._bars is not None and not self._bars.empty:
+                merged = pd.concat([self._bars, frame], ignore_index=True)
+                merged = merged.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
+                self._bars = merged.tail(self.data_length).reset_index(drop=True)
+            else:
+                self._bars = frame.copy()
             self._error = None
+            self._last_refresh_at = time.monotonic()
+            self._version += 1
         self._ready.set()
-        return frame
-
-    def _run(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._stream_loop())
-        except Exception as exc:
-            with self._lock:
-                self._error = str(exc)
-            self._ready.set()
-        finally:
-            pending = asyncio.all_tasks(self._loop)
-            for task in pending:
-                task.cancel()
-            with contextlib.suppress(Exception):
-                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            self._loop.close()
-            self._loop = None
-
-    async def _stream_loop(self) -> None:
-        frame = self._fetch_history_bars()
         with self._lock:
-            self._bars = frame.copy()
-            self._error = None
-        self._ready.set()
-
-        interval = BINANCE_GRANULARITY_MAP.get(self.duration_seconds)
-        if interval is None:
-            return
-
-        stream_url = f"{BINANCE_WS_BASE}/{self.symbol.lower()}@kline_{interval}"
-        while not self._stop_event.is_set():
-            try:
-                async with ws_connect(stream_url, ping_interval=None, close_timeout=1) as websocket:
-                    while not self._stop_event.is_set():
-                        try:
-                            message = await asyncio.wait_for(websocket.recv(), timeout=WS_RECV_TIMEOUT_SECONDS)
-                        except asyncio.TimeoutError:
-                            await websocket.ping()
-                            continue
-                        self._handle_ws_message(message)
-            except Exception as exc:
-                with self._lock:
-                    self._error = None if self._bars is not None else str(exc)
-                if self._stop_event.wait(WS_RECONNECT_DELAY_SECONDS):
-                    break
-
-    def _handle_ws_message(self, message: Any) -> None:
-        if isinstance(message, bytes):
-            message = message.decode("utf-8")
-        if not message:
-            return
-        payload = json.loads(message)
-        data = payload.get("k") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            return
-        row = [
-            data.get("t"),
-            data.get("o"),
-            data.get("h"),
-            data.get("l"),
-            data.get("c"),
-            data.get("v"),
-        ]
-        updates = self._rows_to_frame([row])
-        if updates.empty:
-            return
-        with self._lock:
-            base = self._bars.copy() if self._bars is not None else pd.DataFrame(columns=updates.columns)
-            merged = pd.concat([base, updates], ignore_index=True)
-            merged = merged.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
-            self._bars = merged.tail(self.data_length).reset_index(drop=True)
-            self._error = None
-        self._ready.set()
+            return self._bars.copy()
 
     def _fetch_history_bars(self) -> pd.DataFrame:
         if self.bar_mode != "time":
@@ -266,6 +234,25 @@ class BinanceDataSource(DataSource):
         if frame.empty:
             raise RuntimeError(f"Binance 中暂无 {self.symbol} 的可用 K 线。")
         return frame.tail(self.data_length).reset_index(drop=True)
+
+    def _fetch_latest_bars(self) -> pd.DataFrame:
+        if self.bar_mode != "time":
+            raise RuntimeError("Binance 数据源当前只支持时间 K 线。")
+        interval = BINANCE_GRANULARITY_MAP.get(self.duration_seconds)
+        if interval is None:
+            raise RuntimeError(f"Binance 暂不支持 {self.duration_seconds} 秒周期。")
+        rows = _binance_get_json(
+            "/fapi/v1/klines",
+            {
+                "symbol": self.symbol,
+                "interval": interval,
+                "limit": LATEST_KLINE_LIMIT,
+            },
+        )
+        frame = self._rows_to_frame(rows)
+        if frame.empty:
+            raise RuntimeError(f"Binance 中暂无 {self.symbol} 的可用 K 线。")
+        return frame.reset_index(drop=True)
 
     @staticmethod
     def _rows_to_frame(rows: list[list[Any]]) -> pd.DataFrame:

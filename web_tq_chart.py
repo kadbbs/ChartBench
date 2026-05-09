@@ -7,7 +7,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from werkzeug.serving import BaseWSGIServer, make_server
+from dotenv import load_dotenv
+from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
 
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
@@ -16,7 +17,7 @@ DEFAULT_PROVIDER = "binance"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_DURATION_SECONDS = 60
 DEFAULT_DATA_LENGTH = 800
-DEFAULT_REFRESH_MS = 1000
+DEFAULT_REFRESH_MS = 200
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8050
 DEFAULT_BAR_MODE = "time"
@@ -56,6 +57,16 @@ class IPv6OnlyWSGIServer(BaseWSGIServer):
         super().server_bind()
 
 
+class IPv6OnlyThreadedWSGIServer(ThreadedWSGIServer):
+    def server_bind(self) -> None:
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except (AttributeError, OSError):
+                pass
+        super().server_bind()
+
+
 class MultiServerThread(threading.Thread):
     def __init__(self, app, host: str, port: int) -> None:
         super().__init__(daemon=True)
@@ -66,14 +77,14 @@ class MultiServerThread(threading.Thread):
     def _build_servers(self, app, host: str, port: int) -> list[BaseWSGIServer]:
         normalized_host = host.strip()
         if normalized_host not in {"0.0.0.0", "::", ""}:
-            return [make_server(normalized_host, port, app)]
+            return [make_server(normalized_host, port, app, threaded=True)]
 
         servers: list[BaseWSGIServer] = []
-        ipv4_server = make_server("0.0.0.0", port, app)
+        ipv4_server = make_server("0.0.0.0", port, app, threaded=True)
         servers.append(ipv4_server)
 
         try:
-            ipv6_server = IPv6OnlyWSGIServer("::", port, app)
+            ipv6_server = IPv6OnlyThreadedWSGIServer("::", port, app)
         except OSError:
             ipv6_server = None
         if ipv6_server is not None:
@@ -112,9 +123,9 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Bitget 行情浏览器图表工作台")
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER, help="数据源名称，当前支持 bitget / duckdb")
-    parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="合约代码，例如 XAUUSDT")
+    parser = argparse.ArgumentParser(description="Binance 行情浏览器图表工作台")
+    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 binance")
+    parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="合约代码，例如 BTCUSDT")
     parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_SECONDS, help="K 线周期，单位秒")
     parser.add_argument("--length", type=int, default=DEFAULT_DATA_LENGTH, help="拉取 K 线数量")
     parser.add_argument("--brick-length", type=int, default=DEFAULT_BRICK_LENGTH, help="Range Bar / Renko 保留砖块数量")
@@ -140,6 +151,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     project_root = runtime_project_root()
+    load_dotenv(project_root / ".env")
     service = MarketDataService(
         provider=args.provider,
         symbol=args.symbol,
