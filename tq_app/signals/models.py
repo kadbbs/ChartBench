@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 
 @dataclass(slots=True)
-class SignalRule:
+class SignalCallback:
     id: str
     name: str
-    condition: dict[str, Any]
+    handler: Callable[[Any], Any]
     actions: list[dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
     once_per_bar: bool = True

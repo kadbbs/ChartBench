@@ -36,6 +36,7 @@
 .
 ├── web_tq_chart.py
 ├── custom_indicators.py
+├── signal_callbacks.example.py
 ├── static/
 ├── templates/
 ├── tq_app/
@@ -132,155 +133,306 @@ docker run -d \
 /api/health
 ```
 
-## Signal / Action 工作流
+## Signal / Action 回调
 
-Signal / Action 用来把“指标或行情条件”转成标准事件，然后执行动作。当前版本只做安全框架：可以打印日志、返回 no-op，飞书和交易动作不会真实执行。
+Signal / Action 用来把“行情或指标满足条件”转换成标准事件，然后执行动作。当前版本已经摒弃 JSON 规则文件，改为 Python 回调方式：你写一个函数判断条件，满足时返回 `ctx.signal(...)`，后端负责去重、冷却和动作执行。
+
+当前安全边界很清楚：`log` 和 `noop` 会真实执行；`feishu`、`open_position`、`close_position`、`trade` 只是占位动作，会返回 `action_not_implemented`，不会真的发消息或下单。
 
 处理链路：
 
 ```text
-行情快照 -> 指标计算 -> 条件判断 -> SignalEvent -> ActionExecutor
+Binance 行情 -> 后端快照 -> 后端指标计算 -> Python 回调 -> SignalEvent -> ActionExecutor
 ```
 
-### 启用方式
+### 1. 启用回调
 
-默认不启用任何规则。先复制示例文件：
+默认没有 `signal_callbacks.py` 时，回调系统不会触发任何事件。复制示例文件：
 
 ```bash
-cp signal_rules.example.json signal_rules.json
+cp signal_callbacks.example.py signal_callbacks.py
 ```
 
-然后把想启用的规则改成：
-
-```json
-"enabled": true
-```
-
-重启服务后生效：
+然后重启服务：
 
 ```bash
 ./myvenv/bin/python web_tq_chart.py
 ```
 
-规则文件支持通过环境变量覆盖：
+启动后检查是否加载成功：
+
+```bash
+curl 'http://127.0.0.1:8050/api/config'
+```
+
+关注返回里的 `signals`：
+
+```json
+{
+  "signals": {
+    "enabled": true,
+    "callback_count": 2,
+    "callbacks": [
+      {
+        "id": "duo_kong_buy_marker_log",
+        "name": "多空线 多 信号日志",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+部署时也可以用环境变量指定回调文件路径：
 
 ```env
-SIGNAL_RULES_FILE=/app/signal_rules.json
-SIGNAL_RULES_JSON={"rules":[]}
+SIGNAL_CALLBACKS_FILE=/app/signal_callbacks.py
 ```
 
-优先级：
+加载优先级：
 
 ```text
-SIGNAL_RULES_JSON > SIGNAL_RULES_FILE > ./signal_rules.json
+SIGNAL_CALLBACKS_FILE > ./signal_callbacks.py
 ```
 
-### 规则格式
+### 2. 回调文件结构
 
-一个规则由 `id`、`condition` 和 `actions` 组成：
+`signal_callbacks.py` 必须提供 `register_callbacks(registry)`。所有策略函数都在这里注册：
 
-```json
-{
-  "id": "stc_turn_up_below_25",
-  "name": "STC turns up below 25",
-  "enabled": true,
-  "once_per_bar": true,
-  "cooldown_seconds": 0,
-  "condition": {
-    "type": "turns_up_below",
-    "indicator_id": "stc",
-    "series_id": "stc",
-    "threshold": 25
-  },
-  "actions": [
-    {
-      "type": "log",
-      "level": "info"
-    }
-  ]
-}
+```python
+from __future__ import annotations
+
+from typing import Any
+
+
+def register_callbacks(registry: Any) -> None:
+    registry.on_snapshot(
+        id="duo_kong_buy_marker_log",
+        name="多空线 多 信号日志",
+        callback=duo_kong_buy_marker_log,
+        actions=[{"type": "log", "level": "info"}],
+        once_per_bar=True,
+        cooldown_seconds=0,
+    )
+
+
+def duo_kong_buy_marker_log(ctx: Any) -> Any:
+    marker = ctx.latest_marker("duo_kong_line", "duo_kong_line", "多", lookback_bars=1)
+    if marker is None:
+        return None
+    return ctx.signal(
+        condition_type="duo_kong_marker",
+        bar_time=int(marker["time"]),
+        payload={
+            "side": "buy",
+            "indicator_id": "duo_kong_line",
+            "series_id": "duo_kong_line",
+            "marker": marker,
+        },
+    )
 ```
 
-字段说明：
+`registry.on_snapshot(...)` 参数：
 
-- `id`：规则唯一 ID，会参与去重。
-- `name`：展示名称。
-- `enabled`：是否启用。
-- `once_per_bar`：同一根 K 线同一个规则只触发一次。
-- `cooldown_seconds`：触发后的冷却秒数。
-- `condition`：条件配置。
-- `actions`：触发后执行的动作列表。
+- `id`：唯一 ID。建议只用英文、数字和下划线，例如 `stc_cross_up_25_log`。
+- `name`：展示名称，会进入日志和 `/api/snapshot` 的 `signals`。
+- `callback`：条件判断函数。
+- `actions`：触发后执行的动作列表。当前建议先只用 `log`。
+- `enabled`：是否启用，默认 `True`。
+- `once_per_bar`：同一根 K 同一个回调只触发一次，默认 `True`。
+- `cooldown_seconds`：冷却秒数，默认 `0`。
 
-### 条件类型
+### 3. 如何新增一个回调
 
-当前已实现的条件类型：
+新增回调通常做三件事：
 
-- `crosses_above`
-- `crosses_below`
-- `turns_up_below`
-- `turns_down_above`
+1. 写一个判断函数。
+2. 满足条件时返回 `ctx.signal(...)`。
+3. 在 `register_callbacks(registry)` 里注册它。
 
-`condition` 字段说明：
+例子：STC 从下方上穿 25 时打印日志：
 
-- `type`：条件类型。
-- `indicator_id`：指标 ID，例如 `stc`、`macd`、`atr_bands`。
-- `series_id`：指标序列 ID，例如 STC 的 `stc`、MACD 的 `macd_diff`。
-- `threshold`：阈值。
+```python
+def register_callbacks(registry: Any) -> None:
+    registry.on_snapshot(
+        id="stc_cross_up_25_log",
+        name="STC 上穿 25 日志",
+        callback=stc_cross_up_25_log,
+        actions=[{"type": "log", "level": "info"}],
+        once_per_bar=True,
+    )
 
-示例：STC 上穿 25：
 
-```json
-{
-  "type": "crosses_above",
-  "indicator_id": "stc",
-  "series_id": "stc",
-  "threshold": 25
-}
+def stc_cross_up_25_log(ctx: Any) -> Any:
+    points = ctx.series_points("stc", "stc")
+    if len(points) < 2:
+        return None
+
+    previous = float(points[-2]["value"])
+    current = float(points[-1]["value"])
+    if not (previous <= 25 < current):
+        return None
+
+    return ctx.signal(
+        condition_type="stc_cross_up",
+        bar_time=int(points[-1]["time"]),
+        payload={
+            "indicator_id": "stc",
+            "series_id": "stc",
+            "previous": previous,
+            "current": current,
+            "threshold": 25,
+        },
+    )
 ```
 
-示例：STC 在 25 下方拐头向上：
+同一个文件可以注册多个回调。每个回调的 `id` 必须不同。
 
-```json
-{
-  "type": "turns_up_below",
-  "indicator_id": "stc",
-  "series_id": "stc",
-  "threshold": 25
-}
+### 4. 多空线买卖点日志示例
+
+示例文件 `signal_callbacks.example.py` 已经包含多空线 `多` / `空` marker 的日志回调。启用后，当多空线在当前 K 线上出现 `多` marker，会打印买点日志；出现 `空` marker，会打印卖点日志。
+
+买点：
+
+```python
+def duo_kong_buy_marker_log(ctx: Any) -> Any:
+    marker = ctx.latest_marker("duo_kong_line", "duo_kong_line", "多", lookback_bars=1)
+    if marker is None:
+        return None
+    return ctx.signal(
+        condition_type="duo_kong_marker",
+        bar_time=int(marker["time"]),
+        payload={"side": "buy", "marker": marker},
+    )
 ```
 
-### 动作类型
+卖点：
 
-当前已实现的安全动作：
-
-- `log`
-- `noop`
-
-`log` 会把 SignalEvent 输出到后端日志：
-
-```json
-{
-  "type": "log",
-  "level": "info"
-}
+```python
+def duo_kong_sell_marker_log(ctx: Any) -> Any:
+    marker = ctx.latest_marker("duo_kong_line", "duo_kong_line", "空", lookback_bars=1)
+    if marker is None:
+        return None
+    return ctx.signal(
+        condition_type="duo_kong_marker",
+        bar_time=int(marker["time"]),
+        payload={"side": "sell", "marker": marker},
+    )
 ```
 
-`noop` 什么都不做，只返回动作执行结果：
+### 5. `ctx` 可以读取什么
 
-```json
-{
-  "type": "noop"
-}
+回调函数收到的 `ctx` 是后端快照上下文，常用属性和方法如下：
+
+- `ctx.symbol`：当前合约，例如 `BTCUSDT`。
+- `ctx.provider`：当前数据源，例如 `binance`。
+- `ctx.duration_seconds`：当前周期秒数，例如 `60`。
+- `ctx.last_price`：当前最新收盘价或最新价。
+- `ctx.candles()`：当前 K 线列表。
+- `ctx.last_bar_time()`：最后一根 K 线时间戳。
+- `ctx.display_time(bar_time)`：把时间戳转成后端展示时间。
+- `ctx.indicator_series(indicator_id, series_id)`：读取某个指标序列对象。
+- `ctx.series_points(indicator_id, series_id)`：读取某个指标序列的 `data` 点。
+- `ctx.latest_marker(indicator_id, series_id, text, lookback_bars=1)`：找最近 K 线上的 marker。
+- `ctx.signal(...)`：生成标准 `SignalEvent`。
+
+读取 K 线：
+
+```python
+candles = ctx.candles()
+last = candles[-1]
+open_price = float(last["open"])
+close_price = float(last["close"])
 ```
 
-`feishu`、`open_position`、`close_position` 和 `trade` 现在只会返回 `action_not_implemented`，不会真实发消息或交易。
+读取 STC：
 
-### 查看触发结果
+```python
+points = ctx.series_points("stc", "stc")
+latest_stc = float(points[-1]["value"])
+```
+
+读取 MACD：
+
+```python
+diff = ctx.series_points("macd", "macd_diff")
+dea = ctx.series_points("macd", "macd_dea")
+hist = ctx.series_points("macd", "macd_hist")
+```
+
+读取 ATR Bands：
+
+```python
+upper = ctx.series_points("atr_bands", "atr_upper")
+middle = ctx.series_points("atr_bands", "atr_middle")
+lower = ctx.series_points("atr_bands", "atr_lower")
+```
+
+### 6. `ctx.signal(...)` 怎么写
+
+`ctx.signal(...)` 是回调触发时返回的事件：
+
+```python
+return ctx.signal(
+    condition_type="my_condition",
+    bar_time=ctx.last_bar_time(),
+    price=ctx.last_price,
+    payload={"reason": "something happened"},
+)
+```
+
+常用参数：
+
+- `condition_type`：条件类型名称，自己定义，建议稳定不要频繁改。
+- `bar_time`：触发事件对应的 K 线时间。不传时默认最后一根 K。
+- `price`：触发时价格。不传时默认 `ctx.last_price`。
+- `display_time`：展示时间。不传时后端自动取。
+- `payload`：你想记录的细节，例如指标值、方向、阈值。
+- `actions`：临时覆盖这个事件的动作；一般不需要传，优先用注册时的 `actions`。
+- `id_suffix`：同一个回调同一根 K 需要触发多个事件时，用它区分事件 ID。
+
+返回多个事件也可以：
+
+```python
+return [
+    ctx.signal(condition_type="event_a", id_suffix="a"),
+    ctx.signal(condition_type="event_b", id_suffix="b"),
+]
+```
+
+### 7. 动作类型
+
+当前真实执行的安全动作：
+
+```python
+actions=[{"type": "log", "level": "info"}]
+```
+
+`log` 会把完整 `SignalEvent` 输出到后端日志，日志里会出现 `signal_event ...`。
+
+```python
+actions=[{"type": "noop"}]
+```
+
+`noop` 什么都不做，只返回动作执行结果。
+
+预留但不会真实执行的动作：
+
+```python
+actions=[{"type": "feishu"}]
+actions=[{"type": "open_position"}]
+actions=[{"type": "close_position"}]
+actions=[{"type": "trade"}]
+```
+
+这些动作现在都会返回 `action_not_implemented`。接真实飞书或交易前，需要再补账户配置、权限开关、仓位限制、风控和审计日志。
+
+### 8. 查看触发结果
 
 触发结果会出现在 `/api/snapshot` 返回值的 `signals` 字段里：
 
 ```bash
-curl 'http://127.0.0.1:8050/api/snapshot?provider=binance&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=stc'
+curl 'http://127.0.0.1:8050/api/snapshot?provider=binance&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=duo_kong_line'
 ```
 
 返回示意：
@@ -289,22 +441,20 @@ curl 'http://127.0.0.1:8050/api/snapshot?provider=binance&symbol=BTCUSDT&duratio
 {
   "signals": [
     {
-      "id": "BTCUSDT:60:stc_turn_up_below_25:1778395200",
-      "rule_id": "stc_turn_up_below_25",
-      "rule_name": "STC turns up below 25",
+      "id": "BTCUSDT:60:duo_kong_buy_marker_log:1778395200",
+      "rule_id": "duo_kong_buy_marker_log",
+      "rule_name": "多空线 多 信号日志",
       "symbol": "BTCUSDT",
       "provider": "binance",
       "duration_seconds": 60,
       "bar_time": 1778395200,
       "display_time": "2026-05-10 16:00:00",
       "price": 80650.1,
-      "condition_type": "turns_up_below",
+      "condition_type": "duo_kong_marker",
       "payload": {
-        "indicator_id": "stc",
-        "series_id": "stc",
-        "previous": 18.2,
-        "current": 22.4,
-        "threshold": 25
+        "side": "buy",
+        "indicator_id": "duo_kong_line",
+        "series_id": "duo_kong_line"
       },
       "actions": [
         {
@@ -319,33 +469,64 @@ curl 'http://127.0.0.1:8050/api/snapshot?provider=binance&symbol=BTCUSDT&duratio
 }
 ```
 
-### 查看配置是否加载
+字段里暂时仍叫 `rule_id` / `rule_name`，这是为了兼容已有事件格式；在回调模式下它们对应的是 `callback id` / `callback name`。
 
-`/api/config` 会返回 `signals` 摘要：
+### 9. 本地测试回调文件
+
+可以不启动浏览器，直接检查回调文件能否加载：
 
 ```bash
-curl 'http://127.0.0.1:8050/api/config'
+SIGNAL_CALLBACKS_FILE=signal_callbacks.py ./myvenv/bin/python - <<'PY'
+from pathlib import Path
+from tq_app.signals import SignalEngine
+
+engine = SignalEngine(Path(".").resolve())
+print(engine.describe())
+PY
 ```
 
-关注：
+如果 `enabled` 是 `true` 且 `callback_count` 大于 0，说明文件已加载。
 
-```json
-{
-  "signals": {
-    "enabled": true,
-    "rule_count": 2
-  }
-}
+如果回调函数写错，后端日志会输出：
+
+```text
+signal callback <callback_id> failed
 ```
 
-### 当前安全边界
+如果回调文件加载失败，后端日志会输出：
 
-- 规则只在后端快照生成时评估。
-- 默认不启用任何规则。
-- 同一规则同一根 K 默认只触发一次。
-- `log` 和 `noop` 是唯一真实执行的动作。
-- 飞书和交易动作只是保留接口，不会发消息、不会下单。
-- 后续接真实交易前，需要增加账户配置、权限开关、仓位限制、风控和审计日志。
+```text
+signal callbacks load failed
+```
+
+### 10. 常见问题
+
+`/api/config` 里 `signals.enabled` 是 `false`：
+
+确认项目根目录存在 `signal_callbacks.py`，或者 `SIGNAL_CALLBACKS_FILE` 指向的路径正确。
+
+回调没有触发：
+
+确认前端或请求里启用了对应指标。例如多空线回调需要 snapshot 里有 `duo_kong_line` 指标；STC 回调需要有 `stc` 指标。
+
+同一根 K 只触发了一次：
+
+这是 `once_per_bar=True` 的默认行为。如果你明确需要同一根 K 多次触发，可以设置 `once_per_bar=False`，或者在 `ctx.signal(..., id_suffix="xxx")` 里给不同事件不同后缀。
+
+想临时关闭某个回调：
+
+```python
+registry.on_snapshot(
+    id="my_callback",
+    name="临时关闭示例",
+    callback=my_callback,
+    enabled=False,
+)
+```
+
+修改 `signal_callbacks.py` 后没生效：
+
+回调文件在服务启动时加载，修改后需要重启 `web_tq_chart.py`。
 
 ## API
 
