@@ -61,11 +61,11 @@ class AtrBandsIndicator(Indicator):
         id="atr_bands",
         name="ATR Bands",
         pane="price",
-        description="基于 ATR 的上下轨，默认参数 N=14, M=1.5。",
+        description="基于 ATR 的上下轨，默认参数 N=14, M=2。",
         enabled_by_default=True,
         params=[
             {"key": "period", "label": "ATR周期", "type": "int", "default": 14, "min": 1, "max": 500, "step": 1},
-            {"key": "multiplier", "label": "倍数", "type": "float", "default": 1.5, "min": 0.1, "max": 20, "step": 0.1},
+            {"key": "multiplier", "label": "倍数", "type": "float", "default": 2, "min": 0.1, "max": 20, "step": 0.1},
             {
                 "key": "basis",
                 "label": "基准",
@@ -76,7 +76,7 @@ class AtrBandsIndicator(Indicator):
         ],
     )
 
-    def __init__(self, period: int = 14, multiplier: float = 1.5) -> None:
+    def __init__(self, period: int = 14, multiplier: float = 2) -> None:
         self.period = period
         self.multiplier = multiplier
 
@@ -138,6 +138,11 @@ class MacdIndicator(Indicator):
         pane="indicator",
         description="经典 MACD，默认参数 12/26/9。",
         enabled_by_default=True,
+        params=[
+            {"key": "fast", "label": "Fast", "type": "int", "default": 12, "min": 1, "max": 500, "step": 1},
+            {"key": "slow", "label": "Slow", "type": "int", "default": 26, "min": 1, "max": 500, "step": 1},
+            {"key": "signal", "label": "Signal", "type": "int", "default": 9, "min": 1, "max": 500, "step": 1},
+        ],
     )
 
     def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9) -> None:
@@ -146,11 +151,16 @@ class MacdIndicator(Indicator):
         self.signal = signal
 
     def build(self, bars: pd.DataFrame, params: dict[str, Any] | None = None) -> IndicatorResult:
+        resolved = self.resolve_params(params)
+        fast = max(1, int(resolved.get("fast", self.fast)))
+        slow = max(1, int(resolved.get("slow", self.slow)))
+        signal = max(1, int(resolved.get("signal", self.signal)))
+
         df = bars.copy()
-        ema_fast = df["close"].ewm(span=self.fast, adjust=False).mean()
-        ema_slow = df["close"].ewm(span=self.slow, adjust=False).mean()
+        ema_fast = df["close"].ewm(span=fast, adjust=False).mean()
+        ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
         df["diff"] = ema_fast - ema_slow
-        df["dea"] = df["diff"].ewm(span=self.signal, adjust=False).mean()
+        df["dea"] = df["diff"].ewm(span=signal, adjust=False).mean()
         df["hist"] = (df["diff"] - df["dea"]) * 2
         return IndicatorResult(
             id=self.meta.id,
@@ -159,7 +169,7 @@ class MacdIndicator(Indicator):
             series=[
                 SeriesDefinition(
                     id="macd_diff",
-                    name="DIFF",
+                    name=f"DIFF({fast},{slow})",
                     pane="indicator",
                     series_type="line",
                     data=_line_points(df, "diff"),
@@ -167,7 +177,7 @@ class MacdIndicator(Indicator):
                 ),
                 SeriesDefinition(
                     id="macd_dea",
-                    name="DEA",
+                    name=f"DEA({signal})",
                     pane="indicator",
                     series_type="line",
                     data=_line_points(df, "dea"),
@@ -190,11 +200,11 @@ class StcIndicator(Indicator):
         id="stc",
         name="STC",
         pane="indicator",
-        description="Schaff Trend Cycle，按 TradingView [SHK] STC 默认参数 12/26/50/0.5 计算。",
+        description="Schaff Trend Cycle，默认参数 80/27/50/0.5。",
         enabled_by_default=True,
         params=[
-            {"key": "length", "label": "Length", "type": "int", "default": 12, "min": 1, "max": 500, "step": 1},
-            {"key": "fast_length", "label": "FastLength", "type": "int", "default": 26, "min": 1, "max": 500, "step": 1},
+            {"key": "length", "label": "Length", "type": "int", "default": 80, "min": 1, "max": 500, "step": 1},
+            {"key": "fast_length", "label": "FastLength", "type": "int", "default": 27, "min": 1, "max": 500, "step": 1},
             {"key": "slow_length", "label": "SlowLength", "type": "int", "default": 50, "min": 1, "max": 500, "step": 1},
             {"key": "factor", "label": "Factor", "type": "float", "default": 0.5, "min": 0.01, "max": 1, "step": 0.01},
         ],
@@ -202,8 +212,8 @@ class StcIndicator(Indicator):
 
     def build(self, bars: pd.DataFrame, params: dict[str, Any] | None = None) -> IndicatorResult:
         resolved = self.resolve_params(params)
-        length = max(1, int(resolved.get("length", 12)))
-        fast_length = max(1, int(resolved.get("fast_length", 26)))
+        length = max(1, int(resolved.get("length", 80)))
+        fast_length = max(1, int(resolved.get("fast_length", 27)))
         slow_length = max(1, int(resolved.get("slow_length", 50)))
         factor = min(max(float(resolved.get("factor", 0.5)), 0.01), 1.0)
 
