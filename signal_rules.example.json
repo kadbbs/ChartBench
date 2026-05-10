@@ -1,0 +1,42 @@
+{
+  "rules": [
+    {
+      "id": "stc_turn_up_below_25",
+      "name": "STC turns up below 25",
+      "enabled": false,
+      "once_per_bar": true,
+      "cooldown_seconds": 0,
+      "condition": {
+        "type": "turns_up_below",
+        "indicator_id": "stc",
+        "series_id": "stc",
+        "threshold": 25
+      },
+      "actions": [
+        {
+          "type": "log",
+          "level": "info"
+        }
+      ]
+    },
+    {
+      "id": "stc_turn_down_above_75",
+      "name": "STC turns down above 75",
+      "enabled": false,
+      "once_per_bar": true,
+      "cooldown_seconds": 0,
+      "condition": {
+        "type": "turns_down_above",
+        "indicator_id": "stc",
+        "series_id": "stc",
+        "threshold": 75
+      },
+      "actions": [
+        {
+          "type": "log",
+          "level": "info"
+        }
+      ]
+    }
+  ]
+}

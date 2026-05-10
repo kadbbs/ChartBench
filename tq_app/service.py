@@ -17,6 +17,7 @@ from tq_app.data_sources import DataSource, create_data_source, get_available_da
 from tq_app.data_sources.binance import BINANCE_GRANULARITY_MAP
 from tq_app.indicators import build_indicator_registry
 from tq_app.models import IndicatorMeta, IndicatorResult
+from tq_app.signals import SignalEngine
 
 TV_UP = "#089981"
 TV_DOWN = "#f23645"
@@ -59,6 +60,7 @@ class MarketDataService:
         self._data_sources: dict[tuple[str, str, int, str, int, int, int], DataSource] = {}
         self._contracts_by_provider: dict[str, list[dict[str, Any]]] = {}
         self.indicators = build_indicator_registry(project_root)
+        self.signals = SignalEngine(project_root)
 
     def start(self) -> None:
         self._get_data_source(
@@ -157,6 +159,7 @@ class MarketDataService:
             "contracts": contracts,
             "indicators": indicator_meta,
             "default_indicator_ids": self.indicators.default_ids(),
+            "signals": self.signals.describe(),
         }
 
     def get_snapshot(
@@ -202,7 +205,7 @@ class MarketDataService:
         last_close = float(normalized.iloc[-1]["close"])
         prev_close = float(normalized.iloc[-2]["close"]) if len(normalized) > 1 else last_close
 
-        return {
+        snapshot = {
             "symbol": effective_symbol,
             "symbol_label": self._symbol_label(effective_provider, effective_symbol),
             "provider": effective_provider,
@@ -224,6 +227,8 @@ class MarketDataService:
             "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
             "stream": source_status,
         }
+        snapshot["signals"] = self.signals.evaluate(snapshot)
+        return snapshot
 
     def wait_for_update(
         self,

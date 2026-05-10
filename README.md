@@ -17,6 +17,7 @@
 - 支持十字光标联动和时间标签映射
 - 指标只保留 `ATR Bands`、`MACD`、`STC` 和 `多空线`
 - 支持后端快照接口补充历史 K 线、指标和侧栏信息
+- 支持可配置 Signal / Action 工作流，当前安全动作只实现日志与 no-op
 
 ## 实时链路
 
@@ -128,6 +129,35 @@ docker run -d \
 ```text
 /api/health
 ```
+
+## Signal / Action 工作流
+
+默认不启用任何规则。复制示例文件后再按需开启：
+
+```bash
+cp signal_rules.example.json signal_rules.json
+```
+
+规则文件支持通过环境变量覆盖：
+
+```env
+SIGNAL_RULES_FILE=/app/signal_rules.json
+SIGNAL_RULES_JSON={"rules":[]}
+```
+
+当前已实现的条件类型：
+
+- `crosses_above`
+- `crosses_below`
+- `turns_up_below`
+- `turns_down_above`
+
+当前已实现的安全动作：
+
+- `log`
+- `noop`
+
+`feishu`、`open_position`、`close_position` 和 `trade` 现在只会返回 `action_not_implemented`，不会真实发消息或交易。
 
 ## API
 
