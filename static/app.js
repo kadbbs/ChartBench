@@ -2172,6 +2172,7 @@ function wsIntervalForProvider(provider, durationSeconds) {
   const providerIntervals = {
     binance: {
       60: "1m",
+      180: "3m",
       300: "5m",
       900: "15m",
       1800: "30m",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import threading
+import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -19,7 +20,7 @@ from tq_app.models import IndicatorMeta, IndicatorResult
 
 TV_UP = "#089981"
 TV_DOWN = "#f23645"
-DEFAULT_DURATION_OPTIONS = [60, 300, 900, 1800, 3600, 86400]
+DEFAULT_DURATION_OPTIONS = [60, 180, 300, 900, 1800, 3600, 86400]
 DEFAULT_BAR_MODES = [
     {"id": "time", "label": "时间 K 线"},
     {"id": "tick", "label": "Tick 图"},
@@ -76,6 +77,55 @@ class MarketDataService:
             self._data_sources.clear()
         for data_source in data_sources:
             data_source.stop()
+
+    def get_health(self) -> dict[str, Any]:
+        self.start()
+        now = time.time()
+        stale_after_seconds = max(60, int(self.duration_seconds) * 3)
+        with self._source_lock:
+            sources = list(self._data_sources.items())
+
+        source_states: list[dict[str, Any]] = []
+        healthy = True
+        for key, data_source in sources:
+            provider, symbol, duration_seconds, bar_mode, range_ticks, brick_length, data_length = key
+            status = data_source.status()
+            last_message_at = status.get("last_message_at")
+            last_update_at = status.get("last_update_at")
+            freshness_at = last_message_at or last_update_at
+            last_message_age = now - float(last_message_at) if last_message_at else None
+            last_update_age = now - float(freshness_at) if freshness_at else None
+            stream_state = str(status.get("stream_state") or "")
+            source_healthy = (
+                status.get("error") is None
+                and int(status.get("version") or 0) > 0
+                and stream_state in {"connected", "live", "history_ready"}
+                and last_update_age is not None
+                and last_update_age <= stale_after_seconds
+            )
+            if not source_healthy:
+                healthy = False
+            source_states.append(
+                {
+                    "provider": provider,
+                    "symbol": symbol,
+                    "duration_seconds": duration_seconds,
+                    "bar_mode": bar_mode,
+                    "range_ticks": range_ticks,
+                    "brick_length": brick_length,
+                    "data_length": data_length,
+                    "healthy": source_healthy,
+                    "last_message_age": last_message_age,
+                    "last_update_age": last_update_age,
+                    "status": status,
+                }
+            )
+
+        return {
+            "healthy": healthy,
+            "stale_after_seconds": stale_after_seconds,
+            "sources": source_states,
+        }
 
     def get_config(self, provider: str | None = None) -> dict[str, Any]:
         effective_provider = self._resolve_provider(provider)

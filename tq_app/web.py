@@ -41,6 +41,11 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
 
+    @app.get("/api/health")
+    def api_health() -> Any:
+        payload = service.get_health()
+        return jsonify(payload), 200 if payload.get("healthy") else 503
+
     @app.get("/api/stream")
     def api_stream() -> Response:
         parsed = _parse_snapshot_request()

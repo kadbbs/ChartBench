@@ -110,6 +110,25 @@ http://0.0.0.0:8050
 
 `--provider` 仅支持 `binance`。
 
+## 24x7 运行
+
+容器部署建议带自动重启策略：
+
+```bash
+docker build -t tq-chart:latest .
+docker run -d \
+  --name tq-chart \
+  --restart unless-stopped \
+  -p 8050:8050 \
+  tq-chart:latest
+```
+
+健康检查地址：
+
+```text
+/api/health
+```
+
 ## API
 
 ### `GET /api/config`
@@ -119,6 +138,10 @@ http://0.0.0.0:8050
 ### `GET /api/snapshot`
 
 返回 K 线快照、成交量、指标结果、最新价、最新时间和侧栏合约信息。
+
+### `GET /api/health`
+
+返回后端行情线程状态、最后消息时间和健康检查结果。Docker healthcheck 使用这个接口。
 
 示例：
 

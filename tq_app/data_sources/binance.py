@@ -21,6 +21,7 @@ BINANCE_FAPI_BASE = "https://fapi.binance.com"
 BINANCE_WS_BASE = "wss://fstream.binance.com"
 BINANCE_GRANULARITY_MAP = {
     60: "1m",
+    180: "3m",
     300: "5m",
     900: "15m",
     1800: "30m",
@@ -34,7 +35,9 @@ BINANCE_GRANULARITY_MAP = {
 MAX_KLINE_LIMIT = 1500
 LATEST_KLINE_LIMIT = 5
 WS_RECV_TIMEOUT_SECONDS = 8
-WS_RECONNECT_DELAY_SECONDS = 2
+WS_RECONNECT_MIN_DELAY_SECONDS = 1
+WS_RECONNECT_MAX_DELAY_SECONDS = 30
+HISTORY_RETRY_MAX_DELAY_SECONDS = 60
 
 
 def _configured_rest_bases() -> list[str]:
@@ -163,15 +166,21 @@ class BinanceDataSource(DataSource):
         self._error: str | None = None
         self._version = 0
         self._last_refresh_at = 0.0
+        self._last_update_at: float | None = None
         self._last_message_at: float | None = None
         self._last_kline_at: float | None = None
         self._stream_state = "starting"
         self._stream_url: str | None = None
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            if self._bars is None or self._bars.empty:
+                self._ready.clear()
+            self._error = None
+            self._stream_state = "starting"
         self._thread = threading.Thread(target=self._run, name=f"binance-{self.symbol}-{self.duration_seconds}", daemon=True)
         self._thread.start()
 
@@ -207,6 +216,7 @@ class BinanceDataSource(DataSource):
             self._bars = frame.copy()
             self._error = None
             self._last_refresh_at = time.monotonic()
+            self._last_update_at = time.time()
             self._version += 1
             self._condition.notify_all()
         self._ready.set()
@@ -226,6 +236,7 @@ class BinanceDataSource(DataSource):
             self._bars = frame.copy()
             self._error = None
             self._last_refresh_at = time.monotonic()
+            self._last_update_at = time.time()
             self._version += 1
             status = self._status_locked()
             self._condition.notify_all()
@@ -236,6 +247,7 @@ class BinanceDataSource(DataSource):
         return {
             "version": self._version,
             "last_refresh_at": self._last_refresh_at or None,
+            "last_update_at": self._last_update_at,
             "last_message_at": self._last_message_at,
             "last_kline_at": self._last_kline_at,
             "stream_state": self._stream_state,
@@ -261,14 +273,9 @@ class BinanceDataSource(DataSource):
             loop.close()
 
     async def _stream_loop(self) -> None:
-        frame = self._fetch_history_bars()
-        with self._lock:
-            self._bars = frame.copy()
-            self._error = None
-            self._last_refresh_at = time.monotonic()
-            self._version += 1
-            self._condition.notify_all()
-        self._ready.set()
+        await self._load_initial_history()
+        if self._stop_event.is_set():
+            return
 
         interval = BINANCE_GRANULARITY_MAP.get(self.duration_seconds)
         if interval is None:
@@ -276,6 +283,7 @@ class BinanceDataSource(DataSource):
 
         bases = _configured_ws_bases()
         stream_index = 0
+        failure_count = 0
         symbol = self.symbol.lower()
         streams = f"{symbol}@aggTrade/{symbol}@kline_{interval}"
         while not self._stop_event.is_set():
@@ -289,6 +297,7 @@ class BinanceDataSource(DataSource):
                     with self._lock:
                         self._stream_state = "connected"
                         self._error = None
+                    failure_count = 0
                     while not self._stop_event.is_set():
                         try:
                             message = await asyncio.wait_for(websocket.recv(), timeout=WS_RECV_TIMEOUT_SECONDS)
@@ -300,8 +309,39 @@ class BinanceDataSource(DataSource):
                     self._error = None if self._bars is not None else str(exc)
                     self._stream_state = "reconnecting"
                 stream_index += 1
-                if self._stop_event.wait(WS_RECONNECT_DELAY_SECONDS):
+                failure_count += 1
+                delay = min(WS_RECONNECT_MAX_DELAY_SECONDS, WS_RECONNECT_MIN_DELAY_SECONDS * (2 ** min(failure_count - 1, 5)))
+                if await self._sleep_or_stop(delay):
                     break
+
+    async def _load_initial_history(self) -> None:
+        failure_count = 0
+        while not self._stop_event.is_set():
+            try:
+                frame = self._fetch_history_bars()
+            except Exception as exc:
+                failure_count += 1
+                delay = min(HISTORY_RETRY_MAX_DELAY_SECONDS, WS_RECONNECT_MIN_DELAY_SECONDS * (2 ** min(failure_count - 1, 6)))
+                with self._lock:
+                    self._error = str(exc)
+                    self._stream_state = "reconnecting"
+                    self._condition.notify_all()
+                    self._ready.set()
+                await self._sleep_or_stop(delay)
+                continue
+            with self._lock:
+                self._bars = frame.copy()
+                self._error = None
+                self._last_refresh_at = time.monotonic()
+                self._last_update_at = time.time()
+                self._version += 1
+                self._stream_state = "history_ready"
+                self._condition.notify_all()
+                self._ready.set()
+            return
+
+    async def _sleep_or_stop(self, delay: float) -> bool:
+        return await asyncio.to_thread(self._stop_event.wait, delay)
 
     def _fetch_history_bars(self) -> pd.DataFrame:
         if self.bar_mode != "time":
@@ -462,6 +502,7 @@ class BinanceDataSource(DataSource):
         self._error = None
         self._version += 1
         self._last_message_at = time.time()
+        self._last_update_at = self._last_message_at
         if from_kline:
             self._last_kline_at = self._last_message_at
         self._stream_state = "live"

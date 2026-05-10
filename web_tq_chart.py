@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import socket
 import threading
 import sys
@@ -170,6 +171,18 @@ def main() -> None:
     app = create_app(service, project_root)
     server = MultiServerThread(app, args.host, args.port)
     url = display_url(args.host, args.port)
+    shutdown_requested = threading.Event()
+
+    def request_shutdown(signum=None, frame=None) -> None:
+        if shutdown_requested.is_set():
+            return
+        signal_name = signal.Signals(signum).name if signum is not None else "KeyboardInterrupt"
+        print(f"收到退出信号: {signal_name}，正在关闭服务...")
+        shutdown_requested.set()
+        server.shutdown()
+
+    for item in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(item, request_shutdown)
 
     print(f"数据源: {args.provider}")
     print("图表地址:")
@@ -181,9 +194,10 @@ def main() -> None:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
     try:
-        server.join()
+        while server.is_alive() and not shutdown_requested.is_set():
+            server.join(timeout=1)
     except KeyboardInterrupt:
-        pass
+        request_shutdown()
     finally:
         server.shutdown()
         service.stop()
