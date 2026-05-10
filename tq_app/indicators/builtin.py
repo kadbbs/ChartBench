@@ -13,6 +13,10 @@ TV_ACCENT = "#2962ff"
 TV_SIGNAL = "#ff9800"
 TV_UPPER = "#ff6d6d"
 TV_LOWER = "#00c076"
+TV_STC_UP = "rgba(38, 166, 154, 0.8)"
+TV_STC_DOWN = "rgba(239, 83, 80, 0.8)"
+TV_STC_BAND = "rgba(120, 144, 156, 0.16)"
+TV_STC_GUIDE = "rgba(148, 163, 184, 0.36)"
 
 
 def _line_points(df: pd.DataFrame, column: str) -> list[dict[str, Any]]:
@@ -29,6 +33,27 @@ def _histogram_points(df: pd.DataFrame, column: str) -> list[dict[str, Any]]:
         color = TV_DOWN if (value or 0) >= 0 else TV_LOWER
         points.append({"time": int(row.time), "value": value, "color": color})
     return points
+
+
+def _colored_line_points(df: pd.DataFrame, column: str, trend_column: str, up_color: str, down_color: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for row in df[["time", column, trend_column]].rename(columns={column: "value", trend_column: "trend"}).itertuples(index=False):
+        value = None if pd.isna(row.value) else float(row.value)
+        if value is None:
+            points.append({"time": int(row.time)})
+            continue
+        points.append(
+            {
+                "time": int(row.time),
+                "value": value,
+                "color": up_color if bool(row.trend) else down_color,
+            }
+        )
+    return points
+
+
+def _constant_line_points(df: pd.DataFrame, value: float) -> list[dict[str, Any]]:
+    return [{"time": int(row.time), "value": float(value)} for row in df[["time"]].itertuples(index=False)]
 
 
 class AtrBandsIndicator(Indicator):
@@ -160,6 +185,117 @@ class MacdIndicator(Indicator):
         )
 
 
+class StcIndicator(Indicator):
+    meta = IndicatorMeta(
+        id="stc",
+        name="STC",
+        pane="indicator",
+        description="Schaff Trend Cycle，按 TradingView [SHK] STC 默认参数 12/26/50/0.5 计算。",
+        enabled_by_default=True,
+        params=[
+            {"key": "length", "label": "Length", "type": "int", "default": 12, "min": 1, "max": 500, "step": 1},
+            {"key": "fast_length", "label": "FastLength", "type": "int", "default": 26, "min": 1, "max": 500, "step": 1},
+            {"key": "slow_length", "label": "SlowLength", "type": "int", "default": 50, "min": 1, "max": 500, "step": 1},
+            {"key": "factor", "label": "Factor", "type": "float", "default": 0.5, "min": 0.01, "max": 1, "step": 0.01},
+        ],
+    )
+
+    def build(self, bars: pd.DataFrame, params: dict[str, Any] | None = None) -> IndicatorResult:
+        resolved = self.resolve_params(params)
+        length = max(1, int(resolved.get("length", 12)))
+        fast_length = max(1, int(resolved.get("fast_length", 26)))
+        slow_length = max(1, int(resolved.get("slow_length", 50)))
+        factor = min(max(float(resolved.get("factor", 0.5)), 0.01), 1.0)
+
+        df = bars.copy()
+        fast_ma = df["close"].ewm(span=fast_length, adjust=False).mean()
+        slow_ma = df["close"].ewm(span=slow_length, adjust=False).mean()
+        macd_source = fast_ma - slow_ma
+        macd_low = macd_source.rolling(length, min_periods=1).min()
+        macd_range = macd_source.rolling(length, min_periods=1).max() - macd_low
+
+        first_stochastic: list[float] = []
+        smoothed_first: list[float] = []
+        second_stochastic: list[float] = []
+        stc_values: list[float] = []
+
+        previous_first = 0.0
+        previous_second = 0.0
+        for index, macd_value in enumerate(macd_source.tolist()):
+            range_value = float(macd_range.iloc[index])
+            if range_value > 0:
+                first_value = (float(macd_value) - float(macd_low.iloc[index])) / range_value * 100
+            else:
+                first_value = previous_first
+            first_stochastic.append(first_value)
+            previous_first = first_value
+
+            if index == 0:
+                smoothed_value = first_value
+            else:
+                smoothed_value = smoothed_first[-1] + factor * (first_value - smoothed_first[-1])
+            smoothed_first.append(smoothed_value)
+
+            smoothed_series = pd.Series(smoothed_first)
+            smooth_low = float(smoothed_series.rolling(length, min_periods=1).min().iloc[-1])
+            smooth_range = float(smoothed_series.rolling(length, min_periods=1).max().iloc[-1] - smooth_low)
+            if smooth_range > 0:
+                second_value = (smoothed_value - smooth_low) / smooth_range * 100
+            else:
+                second_value = previous_second
+            second_stochastic.append(second_value)
+            previous_second = second_value
+
+            if index == 0:
+                stc_value = second_value
+            else:
+                stc_value = stc_values[-1] + factor * (second_value - stc_values[-1])
+            stc_values.append(stc_value)
+
+        df["stc"] = stc_values
+        df["stc_up"] = df["stc"] > df["stc"].shift(1)
+
+        return IndicatorResult(
+            id=self.meta.id,
+            name=self.meta.name,
+            pane=self.meta.pane,
+            series=[
+                SeriesDefinition(
+                    id="stc",
+                    name=f"STC({length},{fast_length},{slow_length})",
+                    pane="indicator",
+                    series_type="line",
+                    data=_colored_line_points(df, "stc", "stc_up", TV_STC_UP, TV_STC_DOWN),
+                    options={"color": TV_STC_UP, "lineWidth": 2, "priceLineVisible": False},
+                ),
+                SeriesDefinition(
+                    id="stc_upper",
+                    name="75",
+                    pane="indicator",
+                    series_type="line",
+                    data=_constant_line_points(df, 75),
+                    options={
+                        "color": TV_STC_GUIDE,
+                        "lineWidth": 1,
+                        "priceLineVisible": False,
+                        "lastValueVisible": False,
+                        "fillToSeriesId": "stc_lower",
+                        "fillColor": TV_STC_BAND,
+                    },
+                ),
+                SeriesDefinition(
+                    id="stc_lower",
+                    name="25",
+                    pane="indicator",
+                    series_type="line",
+                    data=_constant_line_points(df, 25),
+                    options={"color": TV_STC_GUIDE, "lineWidth": 1, "priceLineVisible": False, "lastValueVisible": False},
+                ),
+            ],
+        )
+
+
 def register_builtin_indicators(registry: IndicatorRegistry) -> None:
     registry.register(AtrBandsIndicator())
     registry.register(MacdIndicator())
+    registry.register(StcIndicator())

@@ -15,7 +15,7 @@
 - 支持 Binance 时间 K 线周期切换
 - 支持主图、成交量、多副图 pane
 - 支持十字光标联动和时间标签映射
-- 指标只保留 `ATR Bands`、`MACD` 和 `多空线`
+- 指标只保留 `ATR Bands`、`MACD`、`STC` 和 `多空线`
 - 支持后端快照接口补充历史 K 线、指标和侧栏信息
 
 ## 实时链路
@@ -123,7 +123,7 @@ http://0.0.0.0:8050
 示例：
 
 ```text
-/api/snapshot?provider=binance&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands
+/api/snapshot?provider=binance&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands,stc
 ```
 
 ## 验证
@@ -136,7 +136,7 @@ node --check static/app.js
 ## 当前边界
 
 - 当前实时推送只覆盖 `binance + time`
-- ATR、MACD 和多空线仍由后端计算，不是纯前端指标引擎
+- ATR、MACD、STC 和多空线仍由后端计算，不是纯前端指标引擎
 - WebGL 订单流 pane 已消费真实逐笔成交和盘口快照，但还不是完整 DOM 回放引擎
 
 ## License

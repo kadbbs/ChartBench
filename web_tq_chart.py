@@ -118,7 +118,7 @@ def display_url(host: str, port: int) -> str:
 def listening_summary(host: str, port: int) -> list[str]:
     normalized_host = host.strip()
     if normalized_host in {"0.0.0.0", ""}:
-        return [f"http://0.0.0.0:{port}"]
+        return [f"http://0.0.0.0:{port}", f"http://[::]:{port}"]
     if normalized_host == "::":
         return [f"http://[::]:{port}"]
     return [display_url(normalized_host, port)]
