@@ -140,7 +140,7 @@ class MarketDataService:
             effective_brick_length,
             effective_data_length,
         )
-        bars = data_source.get_bars()
+        bars, source_status = data_source.get_bars_with_status()
         normalized = self._with_chart_time(bars, effective_bar_mode)
 
         results: list[IndicatorResult] = []
@@ -172,7 +172,7 @@ class MarketDataService:
             "last_close": last_close,
             "last_color": TV_UP if last_close >= prev_close else TV_DOWN,
             "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
-            "stream": data_source.status(),
+            "stream": source_status,
         }
 
     def wait_for_update(
@@ -299,7 +299,7 @@ class MarketDataService:
     @staticmethod
     def _provider_hint(provider: str) -> str:
         if provider == BINANCE_PROVIDER:
-            return "当前使用 Binance USD-M 公共行情。浏览器只连接本机后端；后端通过 Binance REST 定时刷新 K 线，不使用 WebSocket。"
+            return "当前使用 Binance USD-M 公共行情。浏览器只连接本机后端；后端用 REST 初始化历史 K 线，并通过 Binance 官方 market WebSocket 的 aggTrade 与 kline 更新当前 K 线。"
         return ""
 
     def _refresh_interval_ms(self, provider: str) -> int:

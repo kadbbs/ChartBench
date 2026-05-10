@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -11,10 +13,12 @@ from urllib.request import urlopen
 
 import pandas as pd
 from dotenv import load_dotenv
+from websockets.asyncio.client import connect as ws_connect
 
 from .base import DataSource
 
 BINANCE_FAPI_BASE = "https://fapi.binance.com"
+BINANCE_WS_BASE = "wss://fstream.binance.com"
 BINANCE_GRANULARITY_MAP = {
     60: "1m",
     300: "5m",
@@ -29,6 +33,8 @@ BINANCE_GRANULARITY_MAP = {
 }
 MAX_KLINE_LIMIT = 1500
 LATEST_KLINE_LIMIT = 5
+WS_RECV_TIMEOUT_SECONDS = 8
+WS_RECONNECT_DELAY_SECONDS = 2
 
 
 def _configured_rest_bases() -> list[str]:
@@ -46,6 +52,25 @@ def _configured_rest_bases() -> list[str]:
         "https://fapi2.binance.com",
         "https://fapi3.binance.com",
     ]
+
+
+def _configured_ws_bases() -> list[str]:
+    raw = os.getenv("BINANCE_WS_BASES", "").strip()
+    if raw:
+        bases = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        if bases:
+            return bases
+    single = os.getenv("BINANCE_WS_BASE", "").strip().rstrip("/")
+    if single:
+        return [single]
+    return [BINANCE_WS_BASE]
+
+
+def _market_stream_url(base: str, streams: str) -> str:
+    normalized = base.strip().rstrip("/")
+    if normalized.endswith(("/market", "/public", "/private")):
+        return f"{normalized}/stream?streams={streams}"
+    return f"{normalized}/market/stream?streams={streams}"
 
 
 def _binance_get_json(path: str, params: dict[str, Any] | None = None, project_root: Path | None = None) -> Any:
@@ -130,62 +155,153 @@ class BinanceDataSource(DataSource):
         self.bar_mode = bar_mode
         self.range_ticks = range_ticks
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._ready = threading.Event()
         self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._bars: pd.DataFrame | None = None
         self._error: str | None = None
         self._version = 0
         self._last_refresh_at = 0.0
+        self._last_message_at: float | None = None
+        self._last_kline_at: float | None = None
+        self._stream_state = "starting"
+        self._stream_url: str | None = None
 
     def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
         self._stop_event.clear()
-        self._ready.set()
+        self._thread = threading.Thread(target=self._run, name=f"binance-{self.symbol}-{self.duration_seconds}", daemon=True)
+        self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
 
     def wait_for_update(self, last_version: int | None, timeout: float) -> int:
-        time.sleep(max(timeout, 0))
-        with self._lock:
+        self.start()
+        self._ready.wait(timeout=10)
+        with self._condition:
+            if last_version is None or self._version != last_version:
+                return self._version
+            self._condition.wait_for(lambda: self._version != last_version or self._stop_event.is_set(), timeout=timeout)
             return self._version
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "version": self._version,
-                "last_refresh_at": self._last_refresh_at or None,
-                "stream_state": "rest_polling",
-                "stream_url": None,
-                "error": self._error,
-            }
+            return self._status_locked()
 
     def get_bars(self) -> pd.DataFrame:
         self.start()
         self._ready.wait(timeout=10)
-        refresh_interval = max(float(self.refresh_ms or 0) / 1000.0, 0.5)
-        has_cached_bars = False
         with self._lock:
             if self._error:
                 raise RuntimeError(self._error)
             if self._bars is not None and not self._bars.empty:
-                if time.monotonic() - self._last_refresh_at < refresh_interval:
-                    return self._bars.copy()
-                has_cached_bars = True
+                return self._bars.copy()
 
-        frame = self._fetch_latest_bars() if has_cached_bars else self._fetch_history_bars()
+        frame = self._fetch_history_bars()
         with self._lock:
-            if has_cached_bars and self._bars is not None and not self._bars.empty:
-                merged = pd.concat([self._bars, frame], ignore_index=True)
-                merged = merged.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
-                self._bars = merged.tail(self.data_length).reset_index(drop=True)
-            else:
-                self._bars = frame.copy()
+            self._bars = frame.copy()
             self._error = None
             self._last_refresh_at = time.monotonic()
             self._version += 1
+            self._condition.notify_all()
         self._ready.set()
+        return frame
+
+    def get_bars_with_status(self) -> tuple[pd.DataFrame, dict[str, Any]]:
+        self.start()
+        self._ready.wait(timeout=10)
         with self._lock:
-            return self._bars.copy()
+            if self._error:
+                raise RuntimeError(self._error)
+            if self._bars is not None and not self._bars.empty:
+                return self._bars.copy(), self._status_locked()
+
+        frame = self._fetch_history_bars()
+        with self._lock:
+            self._bars = frame.copy()
+            self._error = None
+            self._last_refresh_at = time.monotonic()
+            self._version += 1
+            status = self._status_locked()
+            self._condition.notify_all()
+        self._ready.set()
+        return frame, status
+
+    def _status_locked(self) -> dict[str, Any]:
+        return {
+            "version": self._version,
+            "last_refresh_at": self._last_refresh_at or None,
+            "last_message_at": self._last_message_at,
+            "last_kline_at": self._last_kline_at,
+            "stream_state": self._stream_state,
+            "stream_url": self._stream_url,
+            "error": self._error,
+        }
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._stream_loop())
+        except Exception as exc:
+            with self._lock:
+                self._error = str(exc)
+            self._ready.set()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+    async def _stream_loop(self) -> None:
+        frame = self._fetch_history_bars()
+        with self._lock:
+            self._bars = frame.copy()
+            self._error = None
+            self._last_refresh_at = time.monotonic()
+            self._version += 1
+            self._condition.notify_all()
+        self._ready.set()
+
+        interval = BINANCE_GRANULARITY_MAP.get(self.duration_seconds)
+        if interval is None:
+            return
+
+        bases = _configured_ws_bases()
+        stream_index = 0
+        symbol = self.symbol.lower()
+        streams = f"{symbol}@aggTrade/{symbol}@kline_{interval}"
+        while not self._stop_event.is_set():
+            base = bases[stream_index % len(bases)]
+            stream_url = _market_stream_url(base, streams)
+            try:
+                with self._lock:
+                    self._stream_state = "connecting"
+                    self._stream_url = stream_url
+                async with ws_connect(stream_url, ping_interval=None, close_timeout=1, compression=None) as websocket:
+                    with self._lock:
+                        self._stream_state = "connected"
+                        self._error = None
+                    while not self._stop_event.is_set():
+                        try:
+                            message = await asyncio.wait_for(websocket.recv(), timeout=WS_RECV_TIMEOUT_SECONDS)
+                        except asyncio.TimeoutError:
+                            raise RuntimeError(f"Binance WS 无行情消息: {stream_url}")
+                        self._handle_ws_message(message)
+            except Exception as exc:
+                with self._lock:
+                    self._error = None if self._bars is not None else str(exc)
+                    self._stream_state = "reconnecting"
+                stream_index += 1
+                if self._stop_event.wait(WS_RECONNECT_DELAY_SECONDS):
+                    break
 
     def _fetch_history_bars(self) -> pd.DataFrame:
         if self.bar_mode != "time":
@@ -194,7 +310,7 @@ class BinanceDataSource(DataSource):
         if interval is None:
             raise RuntimeError(f"Binance 暂不支持 {self.duration_seconds} 秒周期。")
 
-        remaining = max(int(self.data_length), 1)
+        remaining = max(int(self.data_length), 1) + 1
         end_time = int(time.time() * 1000)
         rows: list[list[Any]] = []
         seen: set[int] = set()
@@ -224,7 +340,7 @@ class BinanceDataSource(DataSource):
             if oldest_ts is None:
                 break
             end_time = oldest_ts - 1
-            remaining = self.data_length - len(rows)
+            remaining = (self.data_length + 1) - len(rows)
             if len(batch) < limit:
                 break
 
@@ -233,7 +349,20 @@ class BinanceDataSource(DataSource):
         frame = self._rows_to_frame(rows)
         if frame.empty:
             raise RuntimeError(f"Binance 中暂无 {self.symbol} 的可用 K 线。")
+        frame = self._drop_open_bar(frame)
+        if frame.empty:
+            raise RuntimeError(f"Binance 中暂无 {self.symbol} 的已收盘 K 线。")
         return frame.tail(self.data_length).reset_index(drop=True)
+
+    def _drop_open_bar(self, frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        duration_ms = int(self.duration_seconds) * 1000
+        now_ms = int(time.time() * 1000)
+        last_open_ms = int(pd.Timestamp(frame.iloc[-1]["datetime"]).timestamp() * 1000)
+        if last_open_ms + duration_ms > now_ms:
+            return frame.iloc[:-1].reset_index(drop=True)
+        return frame
 
     def _fetch_latest_bars(self) -> pd.DataFrame:
         if self.bar_mode != "time":
@@ -253,6 +382,91 @@ class BinanceDataSource(DataSource):
         if frame.empty:
             raise RuntimeError(f"Binance 中暂无 {self.symbol} 的可用 K 线。")
         return frame.reset_index(drop=True)
+
+    def _handle_ws_message(self, message: Any) -> None:
+        if isinstance(message, bytes):
+            message = message.decode("utf-8")
+        if not message:
+            return
+        payload = json.loads(message)
+        stream = str(payload.get("stream", "")).lower() if isinstance(payload, dict) else ""
+        data = payload.get("data", payload) if isinstance(payload, dict) else {}
+        if not isinstance(data, dict):
+            return
+        if stream.endswith("@aggtrade") or data.get("e") == "aggTrade":
+            self._apply_agg_trade(data)
+            return
+        if "@kline_" in stream or data.get("e") == "kline":
+            kline = data.get("k", data)
+            if isinstance(kline, dict):
+                self._apply_kline(kline)
+
+    def _apply_agg_trade(self, trade: dict[str, Any]) -> None:
+        timestamp_ms = int(float(trade.get("T") or trade.get("E") or 0))
+        price = float(trade.get("p"))
+        if timestamp_ms <= 0:
+            return
+        bucket_start_ms = (timestamp_ms // (self.duration_seconds * 1000)) * self.duration_seconds * 1000
+        bar_time = pd.to_datetime(bucket_start_ms, unit="ms", utc=True)
+
+        with self._lock:
+            base = self._bars.copy() if self._bars is not None else pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+            existing = base.index[base["datetime"] == bar_time].tolist() if not base.empty else []
+            if not existing:
+                # Let the official kline stream create each candle so open/volume match Binance.
+                return
+            index = existing[-1]
+            base.at[index, "high"] = max(float(base.at[index, "high"]), price)
+            base.at[index, "low"] = min(float(base.at[index, "low"]), price)
+            base.at[index, "close"] = price
+            self._commit_bars_locked(base)
+
+    def _apply_kline(self, kline: dict[str, Any]) -> None:
+        row = [
+            kline.get("t"),
+            kline.get("o"),
+            kline.get("h"),
+            kline.get("l"),
+            kline.get("c"),
+            kline.get("v"),
+        ]
+        updates = self._rows_to_frame([row])
+        if updates.empty:
+            return
+        if self._last_kline_at is None:
+            self._ensure_kline_matches_rest(updates.iloc[-1])
+        with self._lock:
+            base = self._bars.copy() if self._bars is not None else pd.DataFrame(columns=updates.columns)
+            merged = pd.concat([base, updates], ignore_index=True)
+            self._commit_bars_locked(merged, from_kline=True)
+
+    def _ensure_kline_matches_rest(self, update: pd.Series) -> None:
+        latest = self._fetch_latest_bars()
+        if latest.empty:
+            return
+        update_time = pd.Timestamp(update["datetime"])
+        matched = latest[latest["datetime"] == update_time]
+        if matched.empty:
+            return
+        rest_open = float(matched.iloc[-1]["open"])
+        ws_open = float(update["open"])
+        if abs(rest_open - ws_open) > 1e-9:
+            raise RuntimeError(
+                f"Binance WS 与 REST K 线不一致: {self.symbol} {update_time.isoformat()} "
+                f"ws_open={ws_open} rest_open={rest_open}"
+            )
+
+    def _commit_bars_locked(self, frame: pd.DataFrame, from_kline: bool = False) -> None:
+        frame = frame.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
+        self._bars = frame.tail(self.data_length).reset_index(drop=True)
+        self._error = None
+        self._version += 1
+        self._last_message_at = time.time()
+        if from_kline:
+            self._last_kline_at = self._last_message_at
+        self._stream_state = "live"
+        self._condition.notify_all()
+        self._ready.set()
 
     @staticmethod
     def _rows_to_frame(rows: list[list[Any]]) -> pd.DataFrame:

@@ -2165,7 +2165,7 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return false;
+  return provider === "binance" && barMode === "time";
 }
 
 function wsIntervalForProvider(provider, durationSeconds) {
@@ -2233,7 +2233,7 @@ function startRealtimeMonitor() {
     if (!shouldUseBrowserPush()) {
       return;
     }
-    const isConnected = false;
+    const isConnected = state.wsConnection && state.wsConnection.readyState === EventSource.OPEN;
     const referenceTime = state.wsLastMessageAt || state.wsOpenedAt || 0;
     const lastMessageAge = referenceTime > 0 ? Date.now() - referenceTime : Number.POSITIVE_INFINITY;
     if (isConnected && lastMessageAge <= WS_STALE_MS) {
@@ -2637,10 +2637,79 @@ function handleBinanceWsMessage(event) {
 }
 
 function connectRealtimeStream() {
+  const signature = requestedWsSignature();
+  const provider = getRequestedProvider();
+  if (!signature) {
+    disconnectRealtimeStream();
+    return;
+  }
+  if (state.wsConnection && state.wsActiveSignature === signature) {
+    return;
+  }
+
   disconnectRealtimeStream();
+  const params = buildSnapshotParams();
+  const socket = new EventSource(`/api/stream?${params.toString()}`);
+  state.wsConnection = socket;
+  state.wsConnectingSignature = signature;
+
+  socket.onopen = () => {
+    if (state.wsConnection !== socket) {
+      socket.close();
+      return;
+    }
+    state.wsActiveSignature = signature;
+    state.wsConnectingSignature = "";
+    state.wsOpenedAt = Date.now();
+    els.error.textContent = "";
+    if (els.metaStatus) {
+      els.metaStatus.textContent = `Backend ${provider} stream connected`;
+    }
+    startRealtimeMonitor();
+  };
+
+  socket.addEventListener("snapshot", (event) => {
+    if (state.wsConnection !== socket || state.wsActiveSignature !== signature) {
+      return;
+    }
+    try {
+      state.wsLastMessageAt = Date.now();
+      applySnapshot(JSON.parse(event.data));
+    } catch (error) {
+      els.error.textContent = error.message;
+    }
+  });
+
+  socket.addEventListener("heartbeat", () => {
+    if (state.wsConnection === socket && state.wsActiveSignature === signature) {
+      state.wsLastMessageAt = Date.now();
+    }
+  });
+
+  socket.addEventListener("stream-error", (event) => {
+    if (state.wsConnection !== socket) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      els.error.textContent = payload.error || "后端行情流异常。";
+    } catch {
+      els.error.textContent = "后端行情流异常。";
+    }
+  });
+
+  socket.onerror = () => {
+    if (state.wsConnection === socket) {
+      els.error.textContent = "后端行情流连接异常，浏览器将自动重连。";
+    }
+  };
 }
 
 function syncRealtimeTransport() {
+  if (shouldUseBrowserPush()) {
+    connectRealtimeStream();
+    return;
+  }
   disconnectRealtimeStream();
 }
 

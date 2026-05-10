@@ -7,7 +7,7 @@
 - 数据源：`binance`
 - 默认合约：`BTCUSDT`
 - 默认周期：`1m`
-- 实时方式：前端定时请求后端 `/api/snapshot`，后端通过 Binance Futures REST API 刷新 K 线
+- 实时方式：浏览器只连接本机后端；后端通过 Binance Futures REST 初始化历史 K 线，并通过 Binance Futures WebSocket 更新当前 K 线
 
 ## 当前能力
 
@@ -16,16 +16,18 @@
 - 支持主图、成交量、多副图 pane
 - 支持十字光标联动和时间标签映射
 - 指标只保留 `ATR Bands`、`MACD` 和 `多空线`
-- 支持通过后端快照接口刷新 K 线、指标和侧栏信息
+- 支持后端快照接口补充历史 K 线、指标和侧栏信息
 
 ## 实时链路
 
-- K 线、合约目录与指标：
+- 历史 K 线、合约目录与指标：
   后端通过 Binance Futures REST API 拉取并计算
+- 当前 K 线：
+  后端订阅 Binance Futures 官方 `fstream.binance.com/market` 的 `aggTrade` 和 `kline` WebSocket；`kline` 负责创建官方 K 线，`aggTrade` 只推动已存在当前 K 线的最新价/高低点
 - 前端：
-  定时请求本机后端 `/api/snapshot`
+  只连接本机后端 `/api/stream`
 
-当前链路不使用 WebSocket。
+浏览器不直连 Binance。
 
 ## 项目结构
 
@@ -71,6 +73,14 @@ BINANCE_FAPI_BASE=https://fapi.binance.com
 BINANCE_FAPI_BASES=https://fapi.binance.com,https://fapi1.binance.com,https://fapi2.binance.com
 ```
 
+WebSocket 默认只使用 Binance 官方 USD-M Futures market stream 地址：
+
+```env
+BINANCE_WS_BASE=wss://fstream.binance.com
+```
+
+后端会自动拼成 `wss://fstream.binance.com/market/stream?...`。不建议把 `BINANCE_WS_BASE` 指向非官方 Futures 行情域名；后端会在首根实时 K 线上校验 REST 与 WS 的开盘价，避免历史 K 和实时 K 接到不同数据源。
+
 ## 启动
 
 ```bash
@@ -80,8 +90,10 @@ BINANCE_FAPI_BASES=https://fapi.binance.com,https://fapi1.binance.com,https://fa
 默认地址：
 
 ```text
-http://127.0.0.1:8050
+http://0.0.0.0:8050
 ```
+
+部署到服务器后请使用服务器公网 IP 或域名访问，例如 `http://<server-ip>:8050`。
 
 常用参数：
 

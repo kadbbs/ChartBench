@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,9 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
                 snapshot = service.get_snapshot(**parsed)
                 stream_meta = snapshot.get("stream") or {}
                 last_version = int(stream_meta.get("version") or 0)
-                if stream_meta.get("last_message_at") is None:
+                ready_deadline = time.monotonic() + 3.0
+                while stream_meta.get("last_kline_at") is None and time.monotonic() < ready_deadline:
+                    remaining = max(ready_deadline - time.monotonic(), 0.1)
                     next_version = service.wait_for_update(
                         symbol=parsed.get("symbol"),
                         provider=parsed.get("provider"),
@@ -64,7 +67,7 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
                         brick_length=parsed.get("brick_length"),
                         data_length=parsed.get("data_length"),
                         last_version=last_version,
-                        timeout=3.0,
+                        timeout=min(0.5, remaining),
                     )
                     if next_version != last_version:
                         snapshot = service.get_snapshot(**parsed)

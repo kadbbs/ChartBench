@@ -21,6 +21,9 @@ class DataSource(ABC):
     def get_bars(self) -> pd.DataFrame:
         raise NotImplementedError
 
+    def get_bars_with_status(self) -> tuple[pd.DataFrame, dict[str, Any]]:
+        return self.get_bars(), self.status()
+
     def configure(self, **kwargs) -> None:
         return None
 
