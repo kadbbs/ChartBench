@@ -1,18 +1,18 @@
-# Binance Chart Workbench
+# Bitget Chart Workbench
 
-当前分支只保留 Binance USD-M 公共行情链路。
+当前分支只保留 Bitget USDT-FUTURES 公共行情链路。
 
 默认目标：
 
-- 数据源：`binance`
+- 数据源：`bitget`
 - 默认合约：`BTCUSDT`
 - 默认周期：`1m`
-- 实时方式：浏览器只连接本机后端；后端通过 Binance Futures REST 初始化历史 K 线，并通过 Binance Futures WebSocket 更新当前 K 线
+- 实时方式：浏览器只连接本机后端；后端通过 Bitget REST 初始化历史 K 线，并通过 Bitget WebSocket 更新当前 K 线
 
 ## 当前能力
 
-- 支持 Binance 合约目录和合约切换
-- 支持 Binance 时间 K 线周期切换
+- 支持 Bitget 合约目录和合约切换
+- 支持 Bitget 时间 K 线周期切换
 - 支持主图、成交量、多副图 pane
 - 支持十字光标联动和时间标签映射
 - 指标只保留 `ATR Bands`、`MACD`、`STC` 和 `多空线`
@@ -21,13 +21,13 @@
 ## 实时链路
 
 - 历史 K 线、合约目录与指标：
-  后端通过 Binance Futures REST API 拉取并计算
+  后端通过 Bitget REST API 拉取并计算
 - 当前 K 线：
-  后端订阅 Binance Futures 官方 `fstream.binance.com/market` 的 `aggTrade` 和 `kline` WebSocket；`kline` 负责创建官方 K 线，`aggTrade` 只推动已存在当前 K 线的最新价/高低点
+  后端订阅 Bitget 官方公共 WebSocket K 线频道，收到实时 K 线后更新本地缓存
 - 前端：
   只连接本机后端 `/api/stream`
 
-浏览器不直连 Binance。
+浏览器不直连 Bitget。
 
 ## 项目结构
 
@@ -43,7 +43,7 @@
 │   ├── contracts.py
 │   ├── data_sources/
 │   │   ├── base.py
-│   │   ├── binance.py
+│   │   ├── bitget.py
 │   │   └── registry.py
 │   └── indicators/
 ├── orderflow/
@@ -61,25 +61,34 @@ pip install -r requirements.txt
 
 ## 环境变量
 
-默认不需要配置。若需要指定 Binance Futures REST 节点，可在 `.env` 中设置：
+默认不需要配置。若需要指定 Bitget REST 或 WebSocket 节点，可在 `.env` 中设置：
 
 ```env
-BINANCE_FAPI_BASE=https://fapi.binance.com
+BITGET_API_BASE=https://api.bitget.com
+BITGET_WS_PUBLIC_URL=wss://ws.bitget.com/v2/ws/public
 ```
 
-也可以配置多个备用 REST 节点：
+默认产品类型为 `USDT-FUTURES`。如需调整合约目录，可配置：
 
 ```env
-BINANCE_FAPI_BASES=https://fapi.binance.com,https://fapi1.binance.com,https://fapi2.binance.com
+BITGET_PRODUCT_TYPES=USDT-FUTURES
+BITGET_DEFAULT_PRODUCT_TYPE=USDT-FUTURES
 ```
 
-WebSocket 默认只使用 Binance 官方 USD-M Futures market stream 地址：
+K 线默认使用 Bitget 官方 `MARKET` 成交价口径，对应 App 中普通成交价 K 线。若需要对齐标记价或指数价 K 线，可配置：
 
 ```env
-BINANCE_WS_BASE=wss://fstream.binance.com
+BITGET_KLINE_TYPE=MARKET
+# 可选：MARK / INDEX
 ```
 
-后端会自动拼成 `wss://fstream.binance.com/market/stream?...`。不建议把 `BINANCE_WS_BASE` 指向非官方 Futures 行情域名；后端会在首根实时 K 线上校验 REST 与 WS 的开盘价，避免历史 K 和实时 K 接到不同数据源。
+如果需要展示账户摘要，可配置只读 API 信息：
+
+```env
+BITGET_API_KEY=
+BITGET_API_SECRET=
+BITGET_API_PASSPHRASE=
+```
 
 ## 启动
 
@@ -99,7 +108,7 @@ http://0.0.0.0:8050
 
 ```bash
 ./myvenv/bin/python web_tq_chart.py \
-  --provider binance \
+  --provider bitget \
   --symbol BTCUSDT \
   --duration 60 \
   --length 800 \
@@ -108,7 +117,7 @@ http://0.0.0.0:8050
   --port 8050
 ```
 
-`--provider` 仅支持 `binance`。
+`--provider` 仅支持 `bitget`。
 
 ## 24x7 运行
 
@@ -146,7 +155,7 @@ docker run -d \
 示例：
 
 ```text
-/api/snapshot?provider=binance&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands,stc
+/api/snapshot?provider=bitget&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands,stc
 ```
 
 ## 验证
@@ -158,7 +167,7 @@ node --check static/app.js
 
 ## 当前边界
 
-- 当前实时推送只覆盖 `binance + time`
+- 当前实时推送只覆盖 `bitget + time`
 - ATR、MACD、STC 和多空线仍由后端计算，不是纯前端指标引擎
 - WebGL 订单流 pane 已消费真实逐笔成交和盘口快照，但还不是完整 DOM 回放引擎
 

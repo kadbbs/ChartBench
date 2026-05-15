@@ -2165,23 +2165,22 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return provider === "binance" && barMode === "time";
+  return provider === "bitget" && barMode === "time";
 }
 
 function wsIntervalForProvider(provider, durationSeconds) {
   const providerIntervals = {
-    binance: {
+    bitget: {
       60: "1m",
-      180: "3m",
       300: "5m",
       900: "15m",
       1800: "30m",
-      3600: "1h",
-      7200: "2h",
-      14400: "4h",
-      21600: "6h",
-      43200: "12h",
-      86400: "1d",
+      3600: "1H",
+      7200: "2H",
+      14400: "4H",
+      21600: "6H",
+      43200: "12H",
+      86400: "1D",
     },
   };
   return providerIntervals[provider]?.[durationSeconds] || null;
@@ -2425,7 +2424,7 @@ function registerTradeId(tradeId) {
   return true;
 }
 
-function applyBinanceTradeUpdate(rawTrade) {
+function applyRealtimeTradeUpdate(rawTrade) {
   const timestampMs = Number(rawTrade.T || rawTrade.E || rawTrade.ts);
   const price = Number(rawTrade.p || rawTrade.price);
   const size = Number(rawTrade.q || rawTrade.size);
@@ -2487,7 +2486,7 @@ function applyBinanceTradeUpdate(rawTrade) {
   scheduleRealtimeMicrostructureRefresh();
 }
 
-function applyBinanceOrderBookSnapshot(book) {
+function applyRealtimeOrderBookSnapshot(book) {
   const normalizeLevels = (levels) =>
     (Array.isArray(levels) ? levels : [])
       .map((level) => {
@@ -2542,7 +2541,7 @@ function scheduleIndicatorSnapshotSync() {
   }, INDICATOR_SYNC_MS);
 }
 
-function applyBinanceWsCandleUpdate(rawKline) {
+function applyRealtimeWsCandleUpdate(rawKline) {
   if (!rawKline || typeof rawKline !== "object") {
     return;
   }
@@ -2616,7 +2615,7 @@ function applyBinanceWsCandleUpdate(rawKline) {
   }
 }
 
-function handleBinanceWsMessage(event) {
+function handleRealtimeWsMessage(event) {
   if (typeof event.data !== "string" || !event.data) {
     return;
   }
@@ -2625,15 +2624,15 @@ function handleBinanceWsMessage(event) {
   const stream = String(payload.stream || "").toLowerCase();
   const data = payload.data || {};
   if (stream.includes("@kline_")) {
-    applyBinanceWsCandleUpdate(data.k || data);
+    applyRealtimeWsCandleUpdate(data.k || data);
     return;
   }
   if (stream.includes("@aggtrade")) {
-    applyBinanceTradeUpdate(data);
+    applyRealtimeTradeUpdate(data);
     return;
   }
   if (stream.includes("@depth")) {
-    applyBinanceOrderBookSnapshot(data);
+    applyRealtimeOrderBookSnapshot(data);
   }
 }
 
@@ -2744,7 +2743,7 @@ function isIndicatorEnabled(indicatorId) {
 
 function buildDefaultTerminalTemplate() {
   return {
-    provider: state.config?.provider || "binance",
+    provider: state.config?.provider || "bitget",
     symbol: state.config?.symbol || "BTCUSDT",
     duration_seconds: state.config?.duration_seconds || 60,
     bar_mode: state.config?.bar_mode || "time",
@@ -2831,14 +2830,18 @@ function syncToolbarToggles() {
 
 async function applyTerminalTemplate(template) {
   const nextTemplate = template || buildDefaultTerminalTemplate();
+  const availableProviders = new Set(state.config?.providers || [state.config?.provider].filter(Boolean));
+  const nextProvider = availableProviders.has(String(nextTemplate.provider || ""))
+    ? String(nextTemplate.provider)
+    : state.config.provider;
   state.terminalToggles = {
     ...state.terminalToggles,
     ...(nextTemplate.toggles || {}),
   };
   syncToolbarToggles();
 
-  if (els.toolbarProvider) els.toolbarProvider.value = String(nextTemplate.provider || state.config.provider);
-  if (els.providerSelect) els.providerSelect.value = String(nextTemplate.provider || state.config.provider);
+  if (els.toolbarProvider) els.toolbarProvider.value = nextProvider;
+  if (els.providerSelect) els.providerSelect.value = nextProvider;
   if (els.toolbarSymbol) els.toolbarSymbol.value = String(nextTemplate.symbol || state.config.symbol);
   if (els.symbolSelect) els.symbolSelect.value = String(nextTemplate.symbol || state.config.symbol);
   if (els.toolbarDuration) els.toolbarDuration.value = String(nextTemplate.duration_seconds || state.config.duration_seconds);

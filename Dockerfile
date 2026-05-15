@@ -28,5 +28,5 @@ EXPOSE 8050
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8050/api/health || exit 1
 
-# Command to run the application with binance as default provider
-CMD ["python", "web_tq_chart.py", "--provider", "binance", "--symbol", "BTCUSDT", "--host", "0.0.0.0", "--port", "8050"]
+# Command to run the application with bitget as default provider
+CMD ["python", "web_tq_chart.py", "--provider", "bitget", "--symbol", "BTCUSDT", "--host", "0.0.0.0", "--port", "8050"]

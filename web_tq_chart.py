@@ -14,7 +14,7 @@ from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
 
-DEFAULT_PROVIDER = "binance"
+DEFAULT_PROVIDER = "bitget"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_DURATION_SECONDS = 60
 DEFAULT_DATA_LENGTH = 800
@@ -126,8 +126,8 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Binance 行情浏览器图表工作台")
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 binance")
+    parser = argparse.ArgumentParser(description="Bitget 行情浏览器图表工作台")
+    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 bitget")
     parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="合约代码，例如 BTCUSDT")
     parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_SECONDS, help="K 线周期，单位秒")
     parser.add_argument("--length", type=int, default=DEFAULT_DATA_LENGTH, help="拉取 K 线数量")
