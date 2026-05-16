@@ -90,11 +90,61 @@ BITGET_API_SECRET=
 BITGET_API_PASSPHRASE=
 ```
 
+如果需要通过 Resend 发送邮件提醒，可配置：
+
+```env
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=onboarding@resend.dev
+```
+
+实盘执行模块默认只 dry-run，不会真实下单。确认信号、日志和邮件都正常后，才显式打开：
+
+```env
+LIVE_TRADING_ENABLED=false
+LIVE_TRADING_DRY_RUN=true
+LIVE_TRADING_LOG_ONLY=true
+LIVE_TRADING_ORDER_SIZE=
+LIVE_TRADING_MARGIN_MODE=crossed
+LIVE_TRADING_MARGIN_COIN=USDT
+LIVE_TRADING_PRODUCT_TYPE=USDT-FUTURES
+LIVE_TRADING_POSITION_MODE=one_way_mode
+LIVE_TRADING_SIGNAL_MODE=any
+LIVE_TRADING_STRATEGY=stc_extreme_contrarian
+LIVE_TRADING_USE_CLOSED_BAR=true
+LIVE_TRADING_EMAIL_ENABLED=true
+LIVE_TRADING_EMAIL_TO=2924428540@qq.com
+```
+
 ## 启动
 
 ```bash
 ./myvenv/bin/python web_tq_chart.py
 ```
+
+邮件发送函数可直接调用：
+
+```python
+from tq_app.notifications import send_resend_email
+
+send_resend_email(
+    to="2924428540@qq.com",
+    subject="Hello World",
+    html="<p>Congrats on sending your <strong>first email</strong>!</p>",
+)
+```
+
+执行一次实盘决策：
+
+```bash
+./myvenv/bin/python run_live_trading.py --symbol BTCUSDT --duration 180
+```
+
+模块会读取合并指标、STC、MACD 等已计算信息；默认使用上一根已收完的 K 线信号。当前默认策略是观察模式：
+
+- 空单观察信号：`merged_dkx_hull_ut` 同一根 K 线出现 `Sell` 或 `卖` 任一信号，且 STC 在 `75` 上方并为红色。
+- 多单观察信号：`merged_dkx_hull_ut` 同一根 K 线出现 `Buy` 或 `买` 任一信号，且 STC 在 `25` 下方并为绿色。
+
+`LIVE_TRADING_LOG_ONLY=true` 时只打印日志、写入 `logs/live_trading_orders.jsonl` 并发送邮件，不构造真实下单请求。
 
 默认地址：
 
