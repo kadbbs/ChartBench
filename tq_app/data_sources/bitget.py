@@ -27,6 +27,7 @@ DEFAULT_KLINE_TYPE = "MARKET"
 VALID_KLINE_TYPES = {"MARKET", "MARK", "INDEX"}
 BITGET_GRANULARITY_MAP = {
     60: "1m",
+    180: "3m",
     300: "5m",
     900: "15m",
     1800: "30m",

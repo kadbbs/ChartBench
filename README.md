@@ -6,7 +6,7 @@
 
 - 数据源：`bitget`
 - 默认合约：`BTCUSDT`
-- 默认周期：`1m`
+- 默认周期：`3m`
 - 实时方式：浏览器只连接本机后端；后端通过 Bitget REST 初始化历史 K 线，并通过 Bitget WebSocket 更新当前 K 线
 
 ## 当前能力
@@ -110,7 +110,7 @@ http://0.0.0.0:8050
 ./myvenv/bin/python web_tq_chart.py \
   --provider bitget \
   --symbol BTCUSDT \
-  --duration 60 \
+  --duration 180 \
   --length 800 \
   --bar-mode time \
   --host 0.0.0.0 \
@@ -155,7 +155,7 @@ docker run -d \
 示例：
 
 ```text
-/api/snapshot?provider=bitget&symbol=BTCUSDT&duration_seconds=60&bar_mode=time&data_length=200&indicators=macd,atr_bands,stc
+/api/snapshot?provider=bitget&symbol=BTCUSDT&duration_seconds=180&bar_mode=time&data_length=200&indicators=macd,atr_bands,stc
 ```
 
 ## 验证

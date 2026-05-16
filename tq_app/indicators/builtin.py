@@ -52,6 +52,29 @@ def _colored_line_points(df: pd.DataFrame, column: str, trend_column: str, up_co
     return points
 
 
+def _colored_segment_points(df: pd.DataFrame, column: str, trend_column: str, up_color: str, down_color: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    segment_trend = df[trend_column].shift(-1)
+    segment_trend.iloc[-1:] = df[trend_column].iloc[-1:]
+    render_df = df[["time", column, trend_column]].copy()
+    render_df["segment_trend"] = segment_trend
+
+    for row in render_df.rename(columns={column: "value", trend_column: "trend"}).itertuples(index=False):
+        value = None if pd.isna(row.value) else float(row.value)
+        if value is None:
+            points.append({"time": int(row.time)})
+            continue
+        trend = row.segment_trend if not pd.isna(row.segment_trend) else row.trend
+        points.append(
+            {
+                "time": int(row.time),
+                "value": value,
+                "color": up_color if bool(trend) else down_color,
+            }
+        )
+    return points
+
+
 def _constant_line_points(df: pd.DataFrame, value: float) -> list[dict[str, Any]]:
     return [{"time": int(row.time), "value": float(value)} for row in df[["time"]].itertuples(index=False)]
 
@@ -275,7 +298,7 @@ class StcIndicator(Indicator):
                     name=f"STC({length},{fast_length},{slow_length})",
                     pane="indicator",
                     series_type="line",
-                    data=_colored_line_points(df, "stc", "stc_up", TV_STC_UP, TV_STC_DOWN),
+                    data=_colored_segment_points(df, "stc", "stc_up", TV_STC_UP, TV_STC_DOWN),
                     options={"color": TV_STC_UP, "lineWidth": 2, "priceLineVisible": False},
                 ),
                 SeriesDefinition(

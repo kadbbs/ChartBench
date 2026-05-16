@@ -2172,6 +2172,7 @@ function wsIntervalForProvider(provider, durationSeconds) {
   const providerIntervals = {
     bitget: {
       60: "1m",
+      180: "3m",
       300: "5m",
       900: "15m",
       1800: "30m",
@@ -3641,6 +3642,40 @@ function sanitizePricePaneIndicators(snapshot) {
   };
 }
 
+function applyIndicatorBarColors(snapshot) {
+  if (!state.terminalToggles.candle || !Array.isArray(snapshot.candles) || snapshot.candles.length === 0) {
+    return snapshot;
+  }
+  const colorByTime = new Map();
+  (snapshot.indicators || []).forEach((indicator) => {
+    (indicator.series || []).forEach((series) => {
+      (series.options?.barColors || []).forEach((item) => {
+        if (Number.isFinite(Number(item?.time)) && item?.color) {
+          colorByTime.set(Number(item.time), item.color);
+        }
+      });
+    });
+  });
+  if (colorByTime.size === 0) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    candles: snapshot.candles.map((candle) => {
+      const color = colorByTime.get(Number(candle.time));
+      if (!color) {
+        return candle;
+      }
+      return {
+        ...candle,
+        color,
+        borderColor: color,
+        wickColor: color,
+      };
+    }),
+  };
+}
+
 function augmentTerminalPanels(snapshot) {
   return snapshot;
 }
@@ -4179,7 +4214,7 @@ function rebuildCharts() {
 
 function createSeries(paneEntry, definition) {
   const chart = paneEntry.chart;
-  const { fillToSeriesId, fillColor, markers, ...renderOptions } = definition.options || {};
+  const { fillToSeriesId, fillColor, markers, barColors, ...renderOptions } = definition.options || {};
   switch (definition.series_type) {
     case "line":
       return chart.addLineSeries(renderOptions);
@@ -4296,7 +4331,7 @@ function applySnapshot(snapshot) {
   const sanitizedSnapshot = sanitizePricePaneIndicators(snapshot);
   const augmentedSnapshot = augmentTerminalPanels(sanitizedSnapshot);
   const trimmedSnapshot = trimSnapshotForDisplay(augmentedSnapshot);
-  const displaySnapshot = trimmedSnapshot;
+  const displaySnapshot = applyIndicatorBarColors(trimmedSnapshot);
   const configuredIds = new Set(state.config.indicators.map((item) => item.id));
   state.runtimeIndicators = displaySnapshot.indicators.filter((item) => !configuredIds.has(item.id));
   const requiredPaneIds = new Set(paneLayoutFor([...state.config.indicators.filter((item) => state.selectedIndicators.includes(item.id)), ...state.runtimeIndicators]));
