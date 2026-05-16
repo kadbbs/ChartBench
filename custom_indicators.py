@@ -263,8 +263,8 @@ class MergedDkxHullUtIndicator(Indicator):
             },
             {"key": "color_hull", "label": "Color Hull by trend?", "type": "bool", "default": True},
             {"key": "hull_line_width", "label": "Hull Line Thickness", "type": "int", "default": 1, "min": 1, "max": 6, "step": 1},
-            {"key": "ut_sensitivity", "label": "UT Sensitivity", "type": "float", "default": 1.0, "min": 0.01, "max": 100, "step": 0.1},
-            {"key": "ut_atr_period", "label": "ATR Period", "type": "int", "default": 10, "min": 1, "max": 500, "step": 1},
+            {"key": "ut_sensitivity", "label": "UT Sensitivity", "type": "float", "default": 2.0, "min": 0.01, "max": 100, "step": 0.1},
+            {"key": "ut_atr_period", "label": "ATR Period", "type": "int", "default": 6, "min": 1, "max": 500, "step": 1},
             {"key": "ut_use_heikin_ashi", "label": "Use Heikin Ashi?", "type": "bool", "default": False},
         ],
     )
@@ -352,7 +352,7 @@ class MergedDkxHullUtIndicator(Indicator):
                 "time": int(row.time),
                 "position": "belowBar",
                 "color": "#4caf50",
-                "shape": "arrowUp",
+                "shape": "square",
                 "size": 1,
                 "text": "买",
             }
@@ -362,8 +362,8 @@ class MergedDkxHullUtIndicator(Indicator):
             {
                 "time": int(row.time),
                 "position": "aboveBar",
-                "color": "#ff5252",
-                "shape": "arrowDown",
+                "color": "#f23645",
+                "shape": "square",
                 "size": 1,
                 "text": "卖",
             }
@@ -374,7 +374,7 @@ class MergedDkxHullUtIndicator(Indicator):
                 "time": int(row.time),
                 "position": "belowBar",
                 "color": "#4caf50",
-                "shape": "arrowUp",
+                "shape": "square",
                 "size": 1,
                 "text": "Buy",
             }
@@ -384,8 +384,8 @@ class MergedDkxHullUtIndicator(Indicator):
             {
                 "time": int(row.time),
                 "position": "aboveBar",
-                "color": "#ff5252",
-                "shape": "arrowDown",
+                "color": "#f23645",
+                "shape": "square",
                 "size": 1,
                 "text": "Sell",
             }
@@ -397,11 +397,11 @@ class MergedDkxHullUtIndicator(Indicator):
             for row in df.loc[df["ut_buy"], ["time"]].itertuples(index=False)
         ]
         bar_colors.extend(
-            {"time": int(row.time), "color": "#ff5252"}
+            {"time": int(row.time), "color": "#f23645"}
             for row in df.loc[df["ut_sell"], ["time"]].itertuples(index=False)
         )
 
-        hull_up_color = "#ff5252" if color_hull else "#ff9800"
+        hull_up_color = "#f23645" if color_hull else "#ff9800"
         hull_down_color = "#4caf50" if color_hull else "#ff9800"
 
         return IndicatorResult(
@@ -420,7 +420,7 @@ class MergedDkxHullUtIndicator(Indicator):
                         "lineWidth": 2,
                         "priceLineVisible": False,
                         "lastValueVisible": False,
-                        "markers": markers,
+                        "candleMarkers": markers,
                         "barColors": bar_colors,
                     },
                 ),
@@ -444,7 +444,7 @@ class MergedDkxHullUtIndicator(Indicator):
                         "priceLineVisible": False,
                         "lastValueVisible": False,
                         "fillToSeriesId": "shull_up",
-                        "fillColor": "rgba(255, 82, 82, 0.60)" if color_hull else "rgba(255, 152, 0, 0.60)",
+                        "fillColor": "rgba(242, 54, 69, 0.60)" if color_hull else "rgba(255, 152, 0, 0.60)",
                     },
                 ),
                 SeriesDefinition(

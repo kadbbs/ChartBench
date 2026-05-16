@@ -4214,7 +4214,7 @@ function rebuildCharts() {
 
 function createSeries(paneEntry, definition) {
   const chart = paneEntry.chart;
-  const { fillToSeriesId, fillColor, markers, barColors, ...renderOptions } = definition.options || {};
+  const { fillToSeriesId, fillColor, markers, candleMarkers, barColors, ...renderOptions } = definition.options || {};
   switch (definition.series_type) {
     case "line":
       return chart.addLineSeries(renderOptions);
@@ -4353,6 +4353,7 @@ function applySnapshot(snapshot) {
   });
   updateOrderflowRendererContexts();
   const activeBandPrimaryKeys = new Set();
+  const candleMarkers = [];
 
   if (state.currentPriceLine) {
     candleSeries.removePriceLine(state.currentPriceLine);
@@ -4396,6 +4397,9 @@ function applySnapshot(snapshot) {
       if (typeof series.setMarkers === "function") {
         series.setMarkers(seriesDefinition.options?.markers || []);
       }
+      if (Array.isArray(seriesDefinition.options?.candleMarkers)) {
+        candleMarkers.push(...seriesDefinition.options.candleMarkers);
+      }
 
       if (seriesDefinition.options?.fillToSeriesId) {
         activeBandPrimaryKeys.add(key);
@@ -4415,6 +4419,10 @@ function applySnapshot(snapshot) {
       .filter((key) => key.startsWith(`indicator:${indicator.id}:`) && !activeSeriesKeys.has(key))
       .forEach((key) => removeSeriesByKey(key));
   });
+
+  if (typeof candleSeries?.setMarkers === "function") {
+    candleSeries.setMarkers(candleMarkers.sort((left, right) => Number(left.time) - Number(right.time)));
+  }
 
   [...state.bandPrimitiveByKey.keys()]
     .filter((key) => !activeBandPrimaryKeys.has(key))
