@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import socket
 import threading
@@ -24,6 +25,20 @@ DEFAULT_PORT = 8050
 DEFAULT_BAR_MODE = "time"
 DEFAULT_RANGE_TICKS = 10
 DEFAULT_BRICK_LENGTH = 10000
+
+
+def env_default_str(name: str, fallback: str) -> str:
+    return os.getenv(name, "").strip() or fallback
+
+
+def env_default_int(name: str, fallback: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
 
 
 def runtime_project_root() -> Path:
@@ -126,27 +141,28 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
+    load_dotenv(runtime_project_root() / ".env")
     parser = argparse.ArgumentParser(description="Bitget 行情浏览器图表工作台")
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 bitget")
-    parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="合约代码，例如 BTCUSDT")
-    parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_SECONDS, help="K 线周期，单位秒")
-    parser.add_argument("--length", type=int, default=DEFAULT_DATA_LENGTH, help="拉取 K 线数量")
-    parser.add_argument("--brick-length", type=int, default=DEFAULT_BRICK_LENGTH, help="Range Bar / Renko 保留砖块数量")
-    parser.add_argument("--refresh-ms", type=int, default=DEFAULT_REFRESH_MS, help="刷新间隔，单位毫秒")
+    parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 bitget")
+    parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL), help="合约代码，例如 BTCUSDT")
+    parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS), help="K 线周期，单位秒")
+    parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH), help="拉取 K 线数量")
+    parser.add_argument("--brick-length", type=int, default=env_default_int("TQ_DEFAULT_BRICK_LENGTH", DEFAULT_BRICK_LENGTH), help="Range Bar / Renko 保留砖块数量")
+    parser.add_argument("--refresh-ms", type=int, default=env_default_int("TQ_DEFAULT_REFRESH_MS", DEFAULT_REFRESH_MS), help="刷新间隔，单位毫秒")
     parser.add_argument(
         "--bar-mode",
-        default=DEFAULT_BAR_MODE,
+        default=env_default_str("TQ_DEFAULT_BAR_MODE", DEFAULT_BAR_MODE),
         choices=["time", "tick", "range", "renko"],
         help="图表类型: time / tick / range / renko",
     )
     parser.add_argument(
         "--range-ticks",
         type=int,
-        default=DEFAULT_RANGE_TICKS,
+        default=env_default_int("TQ_DEFAULT_RANGE_TICKS", DEFAULT_RANGE_TICKS),
         help="Range Bar / Renko 的价格跨度，单位 tick",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口")
+    parser.add_argument("--host", default=env_default_str("TQ_DEFAULT_HOST", DEFAULT_HOST), help="监听地址")
+    parser.add_argument("--port", type=int, default=env_default_int("TQ_DEFAULT_PORT", DEFAULT_PORT), help="监听端口")
     parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器")
     return parser.parse_args()
 

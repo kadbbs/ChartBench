@@ -75,6 +75,21 @@ BITGET_PRODUCT_TYPES=USDT-FUTURES
 BITGET_DEFAULT_PRODUCT_TYPE=USDT-FUTURES
 ```
 
+默认启动参数也可以放在 `.env` 中；命令行参数会临时覆盖这些默认值：
+
+```env
+TQ_DEFAULT_PROVIDER=bitget
+TQ_DEFAULT_SYMBOL=BTCUSDT
+TQ_DEFAULT_DURATION_SECONDS=180
+TQ_DEFAULT_DATA_LENGTH=800
+TQ_DEFAULT_REFRESH_MS=200
+TQ_DEFAULT_BAR_MODE=time
+TQ_DEFAULT_RANGE_TICKS=10
+TQ_DEFAULT_BRICK_LENGTH=10000
+TQ_DEFAULT_HOST=0.0.0.0
+TQ_DEFAULT_PORT=8050
+```
+
 K 线默认使用 Bitget 官方 `MARKET` 成交价口径，对应 App 中普通成交价 K 线。若需要对齐标记价或指数价 K 线，可配置：
 
 ```env
@@ -139,12 +154,23 @@ send_resend_email(
 ./myvenv/bin/python run_live_trading.py --symbol BTCUSDT --duration 180
 ```
 
+常驻连续执行实盘决策：
+
+```bash
+./myvenv/bin/python run_live_trading.py --symbol BTCUSDT --duration 180 --continuous
+```
+
+常驻模式会复用同一个 Bitget 行情服务，等待行情版本更新后重新计算信号。默认使用上一根已收完 K 线，并按目标 K 线时间去重，避免同一根 K 线在 WebSocket 多次更新时反复执行。
+常驻进程启动后会发送一封启动邮件，便于确认服务已经上线。
+
 模块会读取合并指标、STC、MACD 等已计算信息；默认使用上一根已收完的 K 线信号。当前默认策略是观察模式：
 
 - 空单观察信号：`merged_dkx_hull_ut` 同一根 K 线出现 `Sell` 或 `卖` 任一信号，且 STC 在 `75` 上方并为红色。
 - 多单观察信号：`merged_dkx_hull_ut` 同一根 K 线出现 `Buy` 或 `买` 任一信号，且 STC 在 `25` 下方并为绿色。
 
 `LIVE_TRADING_LOG_ONLY=true` 时只打印日志、写入 `logs/live_trading_orders.jsonl` 并发送邮件，不构造真实下单请求。
+
+真实下单前会查询 Bitget 当前持仓；若同一合约已有同方向仓位，模块会跳过开仓、写入订单日志并发送邮件提醒。
 
 默认地址：
 

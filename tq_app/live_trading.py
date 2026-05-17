@@ -190,6 +190,30 @@ class LiveTradingEngine:
         self.config = config or LiveTradingConfig.from_env(project_root)
         self.logger = _build_logger(self.config.log_path)
 
+    def send_startup_email(self, *, symbol: str, duration_seconds: int, continuous: bool) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        mode = "常驻实盘" if continuous else "单次实盘"
+        status = "观察模式" if self.config.log_only else ("DRY-RUN" if self.config.dry_run or not self.config.enabled else "真实交易")
+        subject = f"[TQ Live] {mode}已启动 {symbol.upper()} {duration_seconds}s {status}"
+        html = (
+            "<h3>TQ Live Trading Started</h3>"
+            f"<p><b>Mode:</b> {mode}</p>"
+            f"<p><b>Status:</b> {status}</p>"
+            f"<p><b>Symbol:</b> {symbol.upper()}</p>"
+            f"<p><b>Duration:</b> {duration_seconds}s</p>"
+            f"<p><b>Enabled:</b> {self.config.enabled}</p>"
+            f"<p><b>Dry Run:</b> {self.config.dry_run}</p>"
+            f"<p><b>Log Only:</b> {self.config.log_only}</p>"
+            f"<p><b>Strategy:</b> {self.config.strategy}</p>"
+            f"<p><b>Use Closed Bar:</b> {self.config.use_closed_bar}</p>"
+            f"<p><b>Started At:</b> {datetime.now(DISPLAY_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}</p>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("启动邮件发送失败: %s", exc)
+
     def evaluate_snapshot(self, snapshot: dict[str, Any]) -> TradeDecision:
         candles = snapshot.get("candles") or []
         symbol = str(snapshot.get("symbol") or "").upper()
@@ -297,6 +321,23 @@ class LiveTradingEngine:
 
         try:
             client = BitgetFuturesTradeClient(self.project_root)
+            same_side_position = self._same_side_position(client, decision)
+            if same_side_position is not None:
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=True,
+                    enabled=self.config.enabled,
+                    request=request,
+                    response={
+                        "sameSidePosition": True,
+                        "message": "已存在同方向仓位，跳过开仓。",
+                        "position": same_side_position,
+                    },
+                )
+                self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
             if self.config.leverage:
                 client.set_leverage(
                     symbol=decision.symbol,
@@ -325,6 +366,66 @@ class LiveTradingEngine:
         self._log_result(result)
         self._send_email(result)
         return result
+
+    def _same_side_position(
+        self,
+        client: BitgetFuturesTradeClient,
+        decision: TradeDecision,
+    ) -> dict[str, Any] | None:
+        payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
+        positions = payload.get("data") or []
+        expected_hold_side = {"buy": "long", "sell": "short"}.get(decision.side or "")
+        if not expected_hold_side:
+            return None
+
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            symbol = str(position.get("symbol") or "").upper()
+            if symbol != decision.symbol:
+                continue
+            hold_side = str(position.get("holdSide") or position.get("posSide") or "").lower()
+            if hold_side and hold_side != expected_hold_side:
+                continue
+            if self.config.position_mode == "one_way_mode" and not hold_side:
+                side_from_net = self._one_way_position_side(position)
+                if side_from_net != expected_hold_side:
+                    continue
+            if self._position_size(position) > 0:
+                return {
+                    "symbol": symbol,
+                    "holdSide": hold_side or expected_hold_side,
+                    "total": str(position.get("total", "") or ""),
+                    "available": str(position.get("available", "") or ""),
+                    "locked": str(position.get("locked", "") or ""),
+                    "marginSize": str(position.get("marginSize", "") or ""),
+                    "unrealizedPL": str(position.get("unrealizedPL", "") or ""),
+                }
+        return None
+
+    @staticmethod
+    def _position_size(position: dict[str, Any]) -> float:
+        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
+            try:
+                value = abs(float(position.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return 0.0
+
+    @staticmethod
+    def _one_way_position_side(position: dict[str, Any]) -> str | None:
+        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
+            try:
+                value = float(position.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return "long"
+            if value < 0:
+                return "short"
+        return None
 
     def _marker_texts_at(self, snapshot: dict[str, Any], bar_time: int) -> list[str]:
         texts: list[str] = []
@@ -490,7 +591,8 @@ class LiveTradingEngine:
         if not self.config.email_enabled or not self.config.email_to:
             return
         decision = result.decision
-        status = "失败" if result.error else ("DRY-RUN" if result.dry_run else "已下单")
+        response = result.response or {}
+        status = "失败" if result.error else ("已持仓跳过" if response.get("sameSidePosition") else ("DRY-RUN" if result.dry_run else "已下单"))
         side_label = {"buy": "多单观察", "sell": "空单观察"}.get(decision.side or "", decision.side or "-")
         price_label = f"{decision.bar_close:.2f}" if decision.bar_close is not None else "-"
         subject = f"[TQ Live] {status} {side_label} {decision.symbol} {price_label} {decision.bar_time_label or decision.bar_time}"
