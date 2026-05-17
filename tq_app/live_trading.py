@@ -9,6 +9,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -47,6 +48,19 @@ class LiveTradingConfig:
     signal_mode: str = "any"
     strategy: str = "stc_extreme_contrarian"
     use_closed_bar: bool = True
+    tpsl_enabled: bool = True
+    entry_price_source: str = "mark_price"
+    tpsl_trigger_type: str = "mark_price"
+    atr_period: int = 14
+    stop_atr_multiplier: str = "2"
+    tp1_r_multiple: str = "1"
+    tp1_size_ratio: str = "0.5"
+    tp2_r_multiple: str = "1.5"
+    price_decimals: int = 2
+    size_decimals: int = 6
+    tpsl_retry_attempts: int = 3
+    tpsl_retry_delay_seconds: float = 1.0
+    close_on_tpsl_failure: bool = False
     email_enabled: bool = True
     email_to: str = ""
     log_path: Path = DEFAULT_LOG_PATH
@@ -71,6 +85,19 @@ class LiveTradingConfig:
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
             strategy=os.getenv("LIVE_TRADING_STRATEGY", "stc_extreme_contrarian").strip().lower(),
             use_closed_bar=_env_bool("LIVE_TRADING_USE_CLOSED_BAR", True),
+            tpsl_enabled=_env_bool("LIVE_TRADING_TPSL_ENABLED", True),
+            entry_price_source=os.getenv("LIVE_TRADING_ENTRY_PRICE_SOURCE", "mark_price").strip().lower(),
+            tpsl_trigger_type=os.getenv("LIVE_TRADING_TPSL_TRIGGER_TYPE", "mark_price").strip().lower(),
+            atr_period=_env_int("LIVE_TRADING_ATR_PERIOD", 14),
+            stop_atr_multiplier=os.getenv("LIVE_TRADING_STOP_ATR_MULTIPLIER", "2").strip(),
+            tp1_r_multiple=os.getenv("LIVE_TRADING_TP1_R_MULTIPLE", "1").strip(),
+            tp1_size_ratio=os.getenv("LIVE_TRADING_TP1_SIZE_RATIO", "0.5").strip(),
+            tp2_r_multiple=os.getenv("LIVE_TRADING_TP2_R_MULTIPLE", "1.5").strip(),
+            price_decimals=_env_int("LIVE_TRADING_PRICE_DECIMALS", 2),
+            size_decimals=_env_int("LIVE_TRADING_SIZE_DECIMALS", 6),
+            tpsl_retry_attempts=_env_int("LIVE_TRADING_TPSL_RETRY_ATTEMPTS", 3),
+            tpsl_retry_delay_seconds=_env_float("LIVE_TRADING_TPSL_RETRY_DELAY_SECONDS", 1.0),
+            close_on_tpsl_failure=_env_bool("LIVE_TRADING_CLOSE_ON_TPSL_FAILURE", False),
             email_enabled=_env_bool("LIVE_TRADING_EMAIL_ENABLED", True),
             email_to=os.getenv("LIVE_TRADING_EMAIL_TO", "").strip(),
             log_path=project_root / os.getenv("LIVE_TRADING_LOG_PATH", str(DEFAULT_LOG_PATH)).strip(),
@@ -95,6 +122,7 @@ class TradeDecision:
     bar_low: float | None = None
     bar_close: float | None = None
     bar_time_label: str = ""
+    atr_value: float | None = None
     client_oid: str | None = None
 
 
@@ -128,6 +156,24 @@ class BitgetFuturesTradeClient:
 
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v2/mix/order/place-order", body=payload)
+
+    def place_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v2/mix/order/place-tpsl-order", body=payload)
+
+    def close_position_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v2/mix/order/close-positions", body=payload)
+
+    def get_ticker(self, *, symbol: str, product_type: str) -> dict[str, Any]:
+        query = urlencode({"symbol": symbol, "productType": product_type})
+        with urlopen(f"{self.api_base}/api/v2/mix/market/ticker?{query}", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        code = str(payload.get("code", ""))
+        if code and code != "00000":
+            raise RuntimeError(f"Bitget ticker 返回错误 {code}: {payload.get('msg') or payload}")
+        data = payload.get("data") or []
+        if not data:
+            raise RuntimeError(f"Bitget 中暂无 {symbol} 的 ticker。")
+        return dict(data[0])
 
     def set_leverage(
         self,
@@ -207,6 +253,7 @@ class LiveTradingEngine:
             f"<p><b>Log Only:</b> {self.config.log_only}</p>"
             f"<p><b>Strategy:</b> {self.config.strategy}</p>"
             f"<p><b>Use Closed Bar:</b> {self.config.use_closed_bar}</p>"
+            f"<p><b>TP/SL Enabled:</b> {self.config.tpsl_enabled}</p>"
             f"<p><b>Started At:</b> {datetime.now(DISPLAY_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}</p>"
         )
         try:
@@ -231,6 +278,7 @@ class LiveTradingEngine:
         bar_high = _optional_float(target_candle.get("high"))
         bar_low = _optional_float(target_candle.get("low"))
         bar_close = _optional_float(target_candle.get("close"))
+        atr_value = self._atr_at(snapshot, bar_time)
         bar_time_label = self._bar_time_label(snapshot, bar_time)
         if side is None:
             return TradeDecision(
@@ -248,6 +296,7 @@ class LiveTradingEngine:
                 bar_low=bar_low,
                 bar_close=bar_close,
                 bar_time_label=bar_time_label,
+                atr_value=atr_value,
             )
 
         client_oid = self._client_oid(symbol, side, bar_time)
@@ -266,6 +315,7 @@ class LiveTradingEngine:
             bar_low=bar_low,
             bar_close=bar_close,
             bar_time_label=bar_time_label,
+            atr_value=atr_value,
             client_oid=client_oid,
         )
 
@@ -305,8 +355,27 @@ class LiveTradingEngine:
             self._send_email(result)
             return result
 
+        if self.config.tpsl_enabled and decision.atr_value is None:
+            result = TradeExecutionResult(
+                decision=decision,
+                dry_run=self.config.dry_run,
+                enabled=self.config.enabled,
+                error="缺少 ATR，拒绝开仓以避免裸仓。",
+            )
+            self._log_result(result)
+            self._send_email(result)
+            return result
+
         request = self._order_request(decision)
         if self.config.dry_run or not self.config.enabled:
+            if self.config.tpsl_enabled:
+                try:
+                    request["plannedTpsl"] = self._build_tpsl_requests(
+                        decision=decision,
+                        entry_price=self._dry_run_entry_price(decision),
+                    )
+                except Exception as exc:
+                    request["plannedTpslError"] = str(exc)
             result = TradeExecutionResult(
                 decision=decision,
                 dry_run=True,
@@ -319,6 +388,10 @@ class LiveTradingEngine:
             self._send_email(result)
             return result
 
+        order_response: dict[str, Any] | None = None
+        tpsl_requests: list[dict[str, Any]] = []
+        protection_responses: list[dict[str, Any]] = []
+        entry_price: Decimal | None = None
         try:
             client = BitgetFuturesTradeClient(self.project_root)
             same_side_position = self._same_side_position(client, decision)
@@ -345,13 +418,21 @@ class LiveTradingEngine:
                     margin_coin=self.config.margin_coin,
                     leverage=self.config.leverage,
                 )
-            response = client.place_order(request)
+            entry_price = self._entry_price(client, decision)
+            tpsl_requests = self._build_tpsl_requests(decision=decision, entry_price=entry_price) if self.config.tpsl_enabled else []
+            order_response = client.place_order(request)
+            protection_responses = self._place_tpsl_orders_with_retry(client, decision, request, order_response, tpsl_requests)
             result = TradeExecutionResult(
                 decision=decision,
                 dry_run=False,
                 enabled=True,
                 request=request,
-                response=response,
+                response={
+                    "entryPrice": _decimal_to_string(entry_price),
+                    "order": order_response,
+                    "tpslRequests": tpsl_requests,
+                    "tpslResponses": protection_responses,
+                },
             )
         except Exception as exc:
             result = TradeExecutionResult(
@@ -359,6 +440,12 @@ class LiveTradingEngine:
                 dry_run=False,
                 enabled=True,
                 request=request,
+                response={
+                    "entryPrice": _decimal_to_string(entry_price) if entry_price is not None else None,
+                    "order": order_response,
+                    "tpslRequests": tpsl_requests,
+                    "tpslResponses": protection_responses,
+                },
                 error=str(exc),
             )
 
@@ -366,6 +453,198 @@ class LiveTradingEngine:
         self._log_result(result)
         self._send_email(result)
         return result
+
+    def _place_tpsl_orders_with_retry(
+        self,
+        client: BitgetFuturesTradeClient,
+        decision: TradeDecision,
+        order_request: dict[str, Any],
+        order_response: dict[str, Any] | None,
+        tpsl_requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        responses: list[dict[str, Any]] = []
+        attempts = max(int(self.config.tpsl_retry_attempts), 1)
+        delay = max(float(self.config.tpsl_retry_delay_seconds), 0.0)
+
+        for tpsl_request in tpsl_requests:
+            last_error: Exception | None = None
+            for attempt in range(1, attempts + 1):
+                try:
+                    response = client.place_tpsl_order(tpsl_request)
+                    responses.append({"request": tpsl_request, "response": response, "attempt": attempt})
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    self.logger.warning(
+                        "保护单提交失败，准备重试: attempt=%s/%s request=%s error=%s",
+                        attempt,
+                        attempts,
+                        json.dumps(tpsl_request, ensure_ascii=False),
+                        exc,
+                    )
+                    if attempt < attempts and delay > 0:
+                        time.sleep(delay)
+            else:
+                error_text = str(last_error) if last_error is not None else "未知保护单提交失败"
+                self._send_tpsl_emergency_email(
+                    decision=decision,
+                    order_request=order_request,
+                    order_response=order_response,
+                    tpsl_request=tpsl_request,
+                    placed_tpsl_responses=responses,
+                    error=error_text,
+                    close_response=None,
+                )
+                if self.config.close_on_tpsl_failure:
+                    close_response = self._close_position_after_tpsl_failure(client, decision)
+                    self._send_tpsl_emergency_email(
+                        decision=decision,
+                        order_request=order_request,
+                        order_response=order_response,
+                        tpsl_request=tpsl_request,
+                        placed_tpsl_responses=responses,
+                        error=error_text,
+                        close_response=close_response,
+                    )
+                raise RuntimeError(f"保护单提交失败，已重试 {attempts} 次: {error_text}")
+
+        return responses
+
+    def _close_position_after_tpsl_failure(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> dict[str, Any]:
+        payload = {
+            "symbol": decision.symbol,
+            "productType": self.config.product_type,
+        }
+        if self.config.position_mode == "hedge_mode":
+            payload["holdSide"] = "long" if decision.side == "buy" else "short"
+        try:
+            response = client.close_position_order(payload)
+            self.logger.error("保护单失败后已尝试自动平仓: %s", json.dumps({"request": payload, "response": response}, ensure_ascii=False))
+            return {"request": payload, "response": response}
+        except Exception as exc:
+            self.logger.error("保护单失败后自动平仓也失败: %s", exc)
+            return {"request": payload, "error": str(exc)}
+
+    def _send_tpsl_emergency_email(
+        self,
+        *,
+        decision: TradeDecision,
+        order_request: dict[str, Any],
+        order_response: dict[str, Any] | None,
+        tpsl_request: dict[str, Any],
+        placed_tpsl_responses: list[dict[str, Any]],
+        error: str,
+        close_response: dict[str, Any] | None,
+    ) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        close_status = "未启用自动平仓" if close_response is None else "已尝试自动平仓"
+        subject = f"[TQ Live][URGENT] 保护单失败 {decision.symbol} {decision.side or '-'} {decision.bar_time_label or decision.bar_time}"
+        html = (
+            "<h3>TQ Live Trading URGENT</h3>"
+            "<p><b>Status:</b> 保护单提交失败，可能存在裸仓风险。</p>"
+            f"<p><b>Symbol:</b> {decision.symbol}</p>"
+            f"<p><b>Side:</b> {decision.side or '-'}</p>"
+            f"<p><b>Time:</b> {decision.bar_time_label or decision.bar_time}</p>"
+            f"<p><b>Error:</b> {error}</p>"
+            f"<p><b>Close Action:</b> {close_status}</p>"
+            f"<pre>{json.dumps({'orderRequest': order_request, 'orderResponse': order_response, 'failedTpslRequest': tpsl_request, 'placedTpslResponses': placed_tpsl_responses, 'closeResponse': close_response}, ensure_ascii=False, indent=2)}</pre>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("保护单紧急邮件发送失败: %s", exc)
+
+    def _entry_price(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> Decimal:
+        if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
+            return _to_decimal(decision.bar_close)
+        ticker = client.get_ticker(symbol=decision.symbol, product_type=self.config.product_type)
+        field_by_source = {
+            "mark_price": "markPrice",
+            "market": "lastPr",
+            "last": "lastPr",
+            "index_price": "indexPrice",
+        }
+        field = field_by_source.get(self.config.entry_price_source, "markPrice")
+        raw_value = ticker.get(field)
+        if raw_value in (None, ""):
+            raise RuntimeError(f"ticker 中缺少 {field}，拒绝开仓以避免无法计算保护单。")
+        return _to_decimal(raw_value)
+
+    def _dry_run_entry_price(self, decision: TradeDecision) -> Decimal:
+        if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
+            return _to_decimal(decision.bar_close)
+        if decision.bar_close is None:
+            raise RuntimeError("缺少 bar_close，无法预估 dry-run 保护单。")
+        return _to_decimal(decision.bar_close)
+
+    def _build_tpsl_requests(self, *, decision: TradeDecision, entry_price: Decimal) -> list[dict[str, Any]]:
+        if decision.side not in {"buy", "sell"}:
+            return []
+        if decision.atr_value is None:
+            raise RuntimeError("缺少 ATR，无法计算止盈止损。")
+        size = _to_decimal(self.config.size)
+        if size <= 0:
+            raise RuntimeError("LIVE_TRADING_ORDER_SIZE 必须大于 0。")
+
+        atr = _to_decimal(decision.atr_value)
+        stop_multiplier = _to_decimal(self.config.stop_atr_multiplier)
+        risk = atr * stop_multiplier
+        if risk <= 0:
+            raise RuntimeError("ATR 或止损倍数无效，无法计算 R。")
+
+        tp1_ratio = min(max(_to_decimal(self.config.tp1_size_ratio), Decimal("0")), Decimal("1"))
+        tp1_size = _quantize_decimal(size * tp1_ratio, self.config.size_decimals)
+        tp2_size = _quantize_decimal(size - tp1_size, self.config.size_decimals)
+        if tp1_size <= 0 or tp2_size <= 0:
+            raise RuntimeError("止盈分仓数量无效，请调整 LIVE_TRADING_TP1_SIZE_RATIO 或下单数量。")
+
+        direction = Decimal("1") if decision.side == "buy" else Decimal("-1")
+        stop_price = entry_price - direction * risk
+        tp1_price = entry_price + direction * risk * _to_decimal(self.config.tp1_r_multiple)
+        tp2_price = entry_price + direction * risk * _to_decimal(self.config.tp2_r_multiple)
+        if stop_price <= 0 or tp1_price <= 0 or tp2_price <= 0:
+            raise RuntimeError("止盈止损价格计算结果无效，请检查 ATR 和 R 参数。")
+        hold_side = self._tpsl_hold_side(decision.side)
+
+        return [
+            self._tpsl_request(decision, "loss_plan", stop_price, size, self._child_client_oid(decision.client_oid, "sl")),
+            self._tpsl_request(decision, "profit_plan", tp1_price, tp1_size, self._child_client_oid(decision.client_oid, "tp1"), hold_side=hold_side),
+            self._tpsl_request(decision, "profit_plan", tp2_price, tp2_size, self._child_client_oid(decision.client_oid, "tp2"), hold_side=hold_side),
+        ]
+
+    def _tpsl_request(
+        self,
+        decision: TradeDecision,
+        plan_type: str,
+        trigger_price: Decimal,
+        size: Decimal,
+        client_oid: str,
+        hold_side: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "marginCoin": self.config.margin_coin,
+            "productType": self.config.product_type,
+            "symbol": decision.symbol,
+            "planType": plan_type,
+            "triggerPrice": _decimal_to_string(_quantize_decimal(trigger_price, self.config.price_decimals)),
+            "triggerType": self.config.tpsl_trigger_type,
+            "executePrice": "0",
+            "holdSide": hold_side or self._tpsl_hold_side(decision.side or ""),
+            "size": _decimal_to_string(size),
+            "clientOid": client_oid[:64],
+        }
+
+    @staticmethod
+    def _child_client_oid(parent_oid: str | None, suffix: str) -> str:
+        base = parent_oid or f"tq-live-{int(time.time())}"
+        suffix_text = f"-{suffix}"
+        return f"{base[:64 - len(suffix_text)]}{suffix_text}"
+
+    def _tpsl_hold_side(self, side: str) -> str:
+        if self.config.position_mode == "hedge_mode":
+            return "long" if side == "buy" else "short"
+        return side
 
     def _same_side_position(
         self,
@@ -447,6 +726,33 @@ class LiveTradingEngine:
             return datetime.fromtimestamp(bar_time, tz=DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return str(bar_time)
+
+    def _atr_at(self, snapshot: dict[str, Any], bar_time: int) -> float | None:
+        candles = snapshot.get("candles") or []
+        period = max(int(self.config.atr_period), 1)
+        target_index: int | None = None
+        for index, candle in enumerate(candles):
+            if int(candle.get("time") or 0) == bar_time:
+                target_index = index
+                break
+        if target_index is None or target_index <= 0 or target_index + 1 < period:
+            return None
+
+        true_ranges: list[Decimal] = []
+        start_index = target_index - period + 1
+        for index in range(start_index, target_index + 1):
+            candle = candles[index]
+            previous = candles[index - 1]
+            try:
+                high = _to_decimal(candle.get("high"))
+                low = _to_decimal(candle.get("low"))
+                prev_close = _to_decimal(previous.get("close"))
+            except (InvalidOperation, TypeError, ValueError):
+                return None
+            true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        if not true_ranges:
+            return None
+        return float(sum(true_ranges) / Decimal(len(true_ranges)))
 
     def _indicator_context_at(self, snapshot: dict[str, Any], bar_time: int) -> tuple[dict[str, float], dict[str, str]]:
         values: dict[str, float] = {}
@@ -624,6 +930,26 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _optional_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -633,6 +959,27 @@ def _optional_float(value: Any) -> float | None:
 
 def _format_price(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}"
+
+
+def _to_decimal(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError(f"无法转换为 Decimal: {value}") from exc
+
+
+def _quantize_decimal(value: Decimal, decimals: int) -> Decimal:
+    safe_decimals = max(int(decimals), 0)
+    quantizer = Decimal("1") if safe_decimals == 0 else Decimal("1").scaleb(-safe_decimals)
+    return value.quantize(quantizer, rounding=ROUND_DOWN)
+
+
+def _decimal_to_string(value: Decimal) -> str:
+    normalized = value.normalize()
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _is_red_color(color: str) -> bool:

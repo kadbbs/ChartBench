@@ -63,6 +63,34 @@ LIVE_TRADING_LOG_ONLY=false
 LIVE_TRADING_ORDER_SIZE=0.001
 ```
 
+止盈止损默认使用标记价作为开仓价格锚点，`2ATR = 1R`：
+
+```env
+LIVE_TRADING_TPSL_ENABLED=true
+LIVE_TRADING_ENTRY_PRICE_SOURCE=mark_price
+LIVE_TRADING_TPSL_TRIGGER_TYPE=mark_price
+LIVE_TRADING_ATR_PERIOD=14
+LIVE_TRADING_STOP_ATR_MULTIPLIER=2
+LIVE_TRADING_TP1_R_MULTIPLE=1
+LIVE_TRADING_TP1_SIZE_RATIO=0.5
+LIVE_TRADING_TP2_R_MULTIPLE=1.5
+LIVE_TRADING_PRICE_DECIMALS=2
+LIVE_TRADING_SIZE_DECIMALS=6
+LIVE_TRADING_TPSL_RETRY_ATTEMPTS=3
+LIVE_TRADING_TPSL_RETRY_DELAY_SECONDS=1
+LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=false
+```
+
+规则：
+
+- 止损：开仓标记价反向 `2ATR`，即 `1R`，全仓止损。
+- 第一档止盈：顺向 `1R`，平 `50%`。
+- 第二档止盈：顺向 `1.5R`，平剩余仓位。
+- 若开启 `LIVE_TRADING_TPSL_ENABLED=true` 但无法计算 ATR 或读取标记价，模块会拒绝开仓，避免裸仓。
+- 止盈止损计划单提交失败会自动重试，默认重试 `3` 次。
+- 若仍失败，会发送 `[URGENT]` 紧急邮件，邮件内包含开仓响应、失败保护单和已成功提交的保护单。
+- `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true` 时，保护单最终失败后会调用 Bitget `close-positions` 尝试市价平仓；默认关闭。
+
 默认安全状态是不真实下单：
 
 ```env
@@ -113,7 +141,10 @@ LIVE_TRADING_EMAIL_TO=
 6. 真实交易路径：查询当前持仓。
 7. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
 8. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
-9. 调用 Bitget `place-order` 下 market 单。
+9. 读取 Bitget ticker 标记价，按 ATR 计算止损和两档止盈。
+10. 调用 Bitget `place-order` 下 market 开仓单。
+11. 调用 Bitget `place-tpsl-order` 挂 1 个止损单和 2 个止盈单，每个保护单失败会自动重试。
+12. 保护单最终失败时发送紧急邮件；如启用 `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true`，会尝试自动平仓。
 
 当前只自动生成 market 单。`LIVE_TRADING_ORDER_TYPE=limit` 会报错，因为还没有限价价格逻辑。
 
@@ -164,6 +195,8 @@ logs/live_trading_orders.jsonl
 - 查询持仓：`GET /api/v2/mix/position/all-position`
 - 设置杠杆：`POST /api/v2/mix/account/set-leverage`
 - 下单：`POST /api/v2/mix/order/place-order`
+- 止盈止损计划单：`POST /api/v2/mix/order/place-tpsl-order`
+- 一键平仓：`POST /api/v2/mix/order/close-positions`
 
 签名方式是 Bitget v2 风格：
 
@@ -180,8 +213,9 @@ timestamp + method + request_path + body
 - 再跑 `LIVE_TRADING_LOG_ONLY=false`、`LIVE_TRADING_DRY_RUN=true` 检查订单请求。
 - 最后才打开 `LIVE_TRADING_ENABLED=true` 和 `LIVE_TRADING_DRY_RUN=false`。
 - `LIVE_TRADING_ORDER_SIZE` 需要按 Bitget 合约规格确认最小下单量。
+- `LIVE_TRADING_PRICE_DECIMALS` 和 `LIVE_TRADING_SIZE_DECIMALS` 需要按合约规格确认。
 - 已有同方向仓位会跳过开仓；反向仓位目前不会自动平仓或反手。
-- 当前没有止损、止盈、撤单、减仓、最大仓位、最大日亏损控制。
+- 当前已有基础止损和两档止盈、保护单失败重试和可选自动平仓，但没有撤单、动态追踪、最大仓位、最大日亏损控制。
 - 常驻进程建议交给 `systemd`、`supervisor` 或 Docker restart policy 托管。
 
 ## 快速验证
