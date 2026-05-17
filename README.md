@@ -163,6 +163,12 @@ send_resend_email(
 常驻模式会复用同一个 Bitget 行情服务，等待行情版本更新后重新计算信号。默认使用上一根已收完 K 线，并按目标 K 线时间去重，避免同一根 K 线在 WebSocket 多次更新时反复执行。
 常驻进程启动后会发送一封启动邮件，便于确认服务已经上线。
 
+部署前可先跑 Bitget 私有接口和合约配置预检查：
+
+```bash
+./myvenv/bin/python run_live_trading.py --preflight
+```
+
 模块会读取合并指标、STC、MACD 等已计算信息；默认使用上一根已收完的 K 线信号。当前默认策略是观察模式：
 
 - 空单观察信号：`merged_dkx_hull_ut` 同一根 K 线出现 `Sell` 或 `卖` 任一信号，且 STC 在 `75` 上方并为红色。

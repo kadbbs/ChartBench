@@ -16,6 +16,12 @@
 ./myvenv/bin/python run_live_trading.py --continuous
 ```
 
+只执行 Bitget 私有接口和合约配置预检查：
+
+```bash
+./myvenv/bin/python run_live_trading.py --preflight
+```
+
 常驻进程启动后会发送一封启动邮件，标题包含合约、周期和当前运行状态。
 
 脚本会从 `.env` 读取默认合约、周期、K 线数量等配置。命令行参数优先级更高，例如：
@@ -79,6 +85,8 @@ LIVE_TRADING_SIZE_DECIMALS=6
 LIVE_TRADING_TPSL_RETRY_ATTEMPTS=3
 LIVE_TRADING_TPSL_RETRY_DELAY_SECONDS=1
 LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=false
+LIVE_TRADING_TPSL_MONITOR_ENABLED=true
+LIVE_TRADING_TPSL_MONITOR_INTERVAL_SECONDS=30
 ```
 
 规则：
@@ -90,6 +98,7 @@ LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=false
 - 止盈止损计划单提交失败会自动重试，默认重试 `3` 次。
 - 若仍失败，会发送 `[URGENT]` 紧急邮件，邮件内包含开仓响应、失败保护单和已成功提交的保护单。
 - `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true` 时，保护单最终失败后会调用 Bitget `close-positions` 尝试市价平仓；默认关闭。
+- 常驻进程会定期查询已挂保护单状态；止损、止盈触发成交、触发失败或取消时会发送邮件并标记已通知。
 
 默认安全状态是不真实下单：
 
@@ -138,13 +147,15 @@ LIVE_TRADING_EMAIL_TO=
 3. `LIVE_TRADING_LOG_ONLY=true`：观察模式，只写订单日志和发邮件，不构造真实下单请求。
 4. `LIVE_TRADING_ORDER_SIZE` 为空：拒绝下单，并发送邮件。
 5. `LIVE_TRADING_DRY_RUN=true` 或 `LIVE_TRADING_ENABLED=false`：构造请求但不发送到 Bitget。
-6. 真实交易路径：查询当前持仓。
-7. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
-8. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
-9. 读取 Bitget ticker 标记价，按 ATR 计算止损和两档止盈。
-10. 调用 Bitget `place-order` 下 market 开仓单。
-11. 调用 Bitget `place-tpsl-order` 挂 1 个止损单和 2 个止盈单，每个保护单失败会自动重试。
-12. 保护单最终失败时发送紧急邮件；如启用 `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true`，会尝试自动平仓。
+6. 真实交易路径：执行 Bitget preflight，检查私有接口、合约、ticker、下单数量和精度。
+7. 查询当前持仓。
+8. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
+9. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
+10. 读取 Bitget ticker 标记价，按 ATR 计算止损和两档止盈。
+11. 调用 Bitget `place-order` 下 market 开仓单。
+12. 调用 Bitget `place-tpsl-order` 挂 1 个止损单和 2 个止盈单，每个保护单失败会自动重试。
+13. 保护单最终失败时发送紧急邮件；如启用 `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true`，会尝试自动平仓。
+14. 常驻循环按 `LIVE_TRADING_TPSL_MONITOR_INTERVAL_SECONDS` 查询保护单历史状态并发送触发通知。
 
 当前只自动生成 market 单。`LIVE_TRADING_ORDER_TYPE=limit` 会报错，因为还没有限价价格逻辑。
 
@@ -197,6 +208,8 @@ logs/live_trading_orders.jsonl
 - 下单：`POST /api/v2/mix/order/place-order`
 - 止盈止损计划单：`POST /api/v2/mix/order/place-tpsl-order`
 - 一键平仓：`POST /api/v2/mix/order/close-positions`
+- 当前触发单查询：`GET /api/v2/mix/order/orders-plan-pending`
+- 历史触发单查询：`GET /api/v2/mix/order/orders-plan-history`
 
 签名方式是 Bitget v2 风格：
 
@@ -236,4 +249,10 @@ LIVE_TRADING_LOG_ONLY=true ./myvenv/bin/python run_live_trading.py
 
 ```bash
 LIVE_TRADING_LOG_ONLY=true ./myvenv/bin/python run_live_trading.py --continuous
+```
+
+实盘预检查：
+
+```bash
+./myvenv/bin/python run_live_trading.py --preflight
 ```

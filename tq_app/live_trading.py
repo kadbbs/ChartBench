@@ -61,6 +61,8 @@ class LiveTradingConfig:
     tpsl_retry_attempts: int = 3
     tpsl_retry_delay_seconds: float = 1.0
     close_on_tpsl_failure: bool = False
+    tpsl_monitor_enabled: bool = True
+    tpsl_monitor_interval_seconds: float = 30.0
     email_enabled: bool = True
     email_to: str = ""
     log_path: Path = DEFAULT_LOG_PATH
@@ -98,6 +100,8 @@ class LiveTradingConfig:
             tpsl_retry_attempts=_env_int("LIVE_TRADING_TPSL_RETRY_ATTEMPTS", 3),
             tpsl_retry_delay_seconds=_env_float("LIVE_TRADING_TPSL_RETRY_DELAY_SECONDS", 1.0),
             close_on_tpsl_failure=_env_bool("LIVE_TRADING_CLOSE_ON_TPSL_FAILURE", False),
+            tpsl_monitor_enabled=_env_bool("LIVE_TRADING_TPSL_MONITOR_ENABLED", True),
+            tpsl_monitor_interval_seconds=_env_float("LIVE_TRADING_TPSL_MONITOR_INTERVAL_SECONDS", 30.0),
             email_enabled=_env_bool("LIVE_TRADING_EMAIL_ENABLED", True),
             email_to=os.getenv("LIVE_TRADING_EMAIL_TO", "").strip(),
             log_path=project_root / os.getenv("LIVE_TRADING_LOG_PATH", str(DEFAULT_LOG_PATH)).strip(),
@@ -137,6 +141,13 @@ class TradeExecutionResult:
     already_executed: bool = False
 
 
+@dataclass(slots=True)
+class PreflightResult:
+    ok: bool
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+
+
 class BitgetFuturesTradeClient:
     def __init__(self, project_root: Path, api_base: str | None = None) -> None:
         load_dotenv(project_root / ".env")
@@ -152,6 +163,46 @@ class BitgetFuturesTradeClient:
             "GET",
             "/api/v2/mix/position/all-position",
             params={"productType": product_type, "marginCoin": margin_coin},
+        )
+
+    def get_pending_plan_order(
+        self,
+        *,
+        product_type: str,
+        client_oid: str | None = None,
+        order_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/api/v2/mix/order/orders-plan-pending",
+            params={
+                "productType": product_type,
+                "planType": "profit_loss",
+                "clientOid": client_oid,
+                "orderId": order_id,
+                "symbol": symbol,
+            },
+        )
+
+    def get_history_plan_order(
+        self,
+        *,
+        product_type: str,
+        client_oid: str | None = None,
+        order_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/api/v2/mix/order/orders-plan-history",
+            params={
+                "productType": product_type,
+                "planType": "profit_loss",
+                "clientOid": client_oid,
+                "orderId": order_id,
+                "symbol": symbol,
+            },
         )
 
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +225,16 @@ class BitgetFuturesTradeClient:
         if not data:
             raise RuntimeError(f"Bitget 中暂无 {symbol} 的 ticker。")
         return dict(data[0])
+
+    def get_contracts(self, *, product_type: str) -> list[dict[str, Any]]:
+        query = urlencode({"productType": product_type})
+        with urlopen(f"{self.api_base}/api/v2/mix/market/contracts?{query}", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        code = str(payload.get("code", ""))
+        if code and code != "00000":
+            raise RuntimeError(f"Bitget contracts 返回错误 {code}: {payload.get('msg') or payload}")
+        data = payload.get("data") or []
+        return [dict(item) for item in data if isinstance(item, dict)]
 
     def set_leverage(
         self,
@@ -260,6 +321,115 @@ class LiveTradingEngine:
             send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
         except Exception as exc:
             self.logger.warning("启动邮件发送失败: %s", exc)
+
+    def run_preflight(self, *, symbol: str) -> PreflightResult:
+        checks: list[dict[str, Any]] = []
+
+        def add_check(name: str, ok: bool, detail: Any = None) -> None:
+            checks.append({"name": name, "ok": ok, "detail": detail})
+
+        try:
+            if not self.config.size:
+                add_check("order_size", False, "LIVE_TRADING_ORDER_SIZE 为空")
+                return PreflightResult(ok=False, checks=checks, error="LIVE_TRADING_ORDER_SIZE 为空")
+            size = _to_decimal(self.config.size)
+            add_check("order_size", size > 0, self.config.size)
+            if size <= 0:
+                return PreflightResult(ok=False, checks=checks, error="LIVE_TRADING_ORDER_SIZE 必须大于 0")
+
+            client = BitgetFuturesTradeClient(self.project_root)
+            add_check("api_credentials", True, "Bitget API 凭据已加载")
+
+            positions_payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
+            add_check("private_positions", True, {"code": positions_payload.get("code"), "items": len(positions_payload.get("data") or [])})
+
+            ticker = client.get_ticker(symbol=symbol, product_type=self.config.product_type)
+            mark_price = ticker.get("markPrice")
+            last_price = ticker.get("lastPr")
+            add_check("ticker", bool(mark_price or last_price), {"markPrice": mark_price, "lastPr": last_price})
+
+            contracts = client.get_contracts(product_type=self.config.product_type)
+            contract = next((item for item in contracts if str(item.get("symbol") or "").upper() == symbol.upper()), None)
+            add_check("contract", contract is not None, self._contract_preflight_detail(contract))
+            if contract is None:
+                return PreflightResult(ok=False, checks=checks, error=f"未找到 Bitget 合约: {symbol}")
+
+            precision_ok, precision_detail = self._preflight_precision(size=size, contract=contract)
+            add_check("precision", precision_ok, precision_detail)
+            if not precision_ok:
+                return PreflightResult(ok=False, checks=checks, error="价格或数量精度配置可能不符合合约规格")
+
+            if self.config.tpsl_enabled:
+                tpsl_ok = self.config.atr_period > 0 and _to_decimal(self.config.stop_atr_multiplier) > 0
+                add_check(
+                    "tpsl_config",
+                    tpsl_ok,
+                    {
+                        "atr_period": self.config.atr_period,
+                        "stop_atr_multiplier": self.config.stop_atr_multiplier,
+                        "tp1_r_multiple": self.config.tp1_r_multiple,
+                        "tp1_size_ratio": self.config.tp1_size_ratio,
+                        "tp2_r_multiple": self.config.tp2_r_multiple,
+                    },
+                )
+                if not tpsl_ok:
+                    return PreflightResult(ok=False, checks=checks, error="止盈止损参数无效")
+
+            return PreflightResult(ok=all(bool(item.get("ok")) for item in checks), checks=checks)
+        except Exception as exc:
+            add_check("exception", False, str(exc))
+            return PreflightResult(ok=False, checks=checks, error=str(exc))
+
+    def _contract_preflight_detail(self, contract: dict[str, Any] | None) -> dict[str, Any]:
+        if not contract:
+            return {}
+        keys = [
+            "symbol",
+            "symbolStatus",
+            "minTradeNum",
+            "sizeMultiplier",
+            "priceEndStep",
+            "volumePlace",
+            "pricePlace",
+        ]
+        return {key: contract.get(key) for key in keys if key in contract}
+
+    def _preflight_precision(self, *, size: Decimal, contract: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        detail = {
+            "configured_size": self.config.size,
+            "configured_price_decimals": self.config.price_decimals,
+            "configured_size_decimals": self.config.size_decimals,
+            "contract": self._contract_preflight_detail(contract),
+        }
+        min_trade = contract.get("minTradeNum")
+        if min_trade not in (None, ""):
+            min_trade_value = _to_decimal(min_trade)
+            detail["minTradeNum"] = str(min_trade_value)
+            if size < min_trade_value:
+                detail["error"] = "下单数量小于 minTradeNum"
+                return False, detail
+
+        volume_place = contract.get("volumePlace")
+        if volume_place not in (None, ""):
+            try:
+                contract_size_decimals = int(volume_place)
+                detail["contract_size_decimals"] = contract_size_decimals
+                if self.config.size_decimals > contract_size_decimals:
+                    detail["warning"] = "配置的数量小数位多于合约 volumePlace"
+            except (TypeError, ValueError):
+                pass
+
+        price_place = contract.get("pricePlace")
+        if price_place not in (None, ""):
+            try:
+                contract_price_decimals = int(price_place)
+                detail["contract_price_decimals"] = contract_price_decimals
+                if self.config.price_decimals > contract_price_decimals:
+                    detail["warning"] = "配置的价格小数位多于合约 pricePlace"
+            except (TypeError, ValueError):
+                pass
+
+        return True, detail
 
     def evaluate_snapshot(self, snapshot: dict[str, Any]) -> TradeDecision:
         candles = snapshot.get("candles") or []
@@ -388,6 +558,20 @@ class LiveTradingEngine:
             self._send_email(result)
             return result
 
+        preflight = self.run_preflight(symbol=decision.symbol)
+        if not preflight.ok:
+            result = TradeExecutionResult(
+                decision=decision,
+                dry_run=False,
+                enabled=self.config.enabled,
+                request=request,
+                response={"preflight": asdict(preflight)},
+                error=f"Bitget 实盘预检查失败: {preflight.error or 'unknown'}",
+            )
+            self._log_result(result)
+            self._send_email(result)
+            return result
+
         order_response: dict[str, Any] | None = None
         tpsl_requests: list[dict[str, Any]] = []
         protection_responses: list[dict[str, Any]] = []
@@ -453,6 +637,94 @@ class LiveTradingEngine:
         self._log_result(result)
         self._send_email(result)
         return result
+
+    def check_tracked_tpsl_orders(self) -> None:
+        if not self.config.tpsl_monitor_enabled:
+            return
+        state = self._read_state()
+        tracked_orders = [item for item in state.get("tracked_tpsl") or [] if isinstance(item, dict)]
+        pending = [item for item in tracked_orders if not item.get("notified")]
+        if not pending:
+            return
+
+        try:
+            client = BitgetFuturesTradeClient(self.project_root)
+        except Exception as exc:
+            self.logger.warning("保护单监控初始化失败: %s", exc)
+            return
+
+        changed = False
+        for item in pending:
+            try:
+                status_payload = self._tpsl_status(client, item)
+            except Exception as exc:
+                self.logger.warning("保护单状态查询失败: item=%s error=%s", json.dumps(item, ensure_ascii=False), exc)
+                continue
+
+            status = status_payload.get("status")
+            if status not in {"executed", "fail_execute", "cancelled"}:
+                item["last_status"] = status or "live"
+                continue
+
+            item["notified"] = True
+            item["notified_at"] = int(time.time() * 1000)
+            item["last_status"] = status
+            item["status_payload"] = status_payload
+            changed = True
+            self._send_tpsl_trigger_email(item, status_payload)
+
+        if changed:
+            state["tracked_tpsl"] = tracked_orders[-500:]
+            self._write_state(state)
+
+    def _tpsl_status(self, client: BitgetFuturesTradeClient, item: dict[str, Any]) -> dict[str, Any]:
+        client_oid = str(item.get("clientOid") or "").strip() or None
+        order_id = str(item.get("orderId") or "").strip() or None
+        symbol = str(item.get("symbol") or "").strip() or None
+
+        history = client.get_history_plan_order(
+            product_type=self.config.product_type,
+            client_oid=client_oid,
+            order_id=order_id,
+            symbol=symbol,
+        )
+        history_items = self._extract_plan_orders(history)
+        if history_items:
+            matched = history_items[0]
+            return {
+                "status": str(matched.get("planStatus") or matched.get("status") or "").lower(),
+                "source": "history",
+                "order": matched,
+                "raw": history,
+            }
+
+        pending = client.get_pending_plan_order(
+            product_type=self.config.product_type,
+            client_oid=client_oid,
+            order_id=order_id,
+            symbol=symbol,
+        )
+        pending_items = self._extract_plan_orders(pending)
+        if pending_items:
+            matched = pending_items[0]
+            return {
+                "status": str(matched.get("planStatus") or matched.get("status") or "live").lower(),
+                "source": "pending",
+                "order": matched,
+                "raw": pending,
+            }
+
+        return {"status": "unknown", "source": "none", "raw": {"history": history, "pending": pending}}
+
+    @staticmethod
+    def _extract_plan_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict):
+            orders = data.get("entrustedList") or data.get("orderList") or []
+            return [item for item in orders if isinstance(item, dict)]
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
 
     def _place_tpsl_orders_with_retry(
         self,
@@ -873,8 +1145,52 @@ class LiveTradingEngine:
         if result.decision.client_oid:
             state = self._read_state()
             client_oids = list(dict.fromkeys([*(state.get("client_oids") or []), result.decision.client_oid]))[-500:]
-            self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.config.state_path.write_text(json.dumps({"client_oids": client_oids}, ensure_ascii=False, indent=2), encoding="utf-8")
+            state["client_oids"] = client_oids
+            self._add_tracked_tpsl_orders(state, result)
+            self._write_state(state)
+
+    def _add_tracked_tpsl_orders(self, state: dict[str, Any], result: TradeExecutionResult) -> None:
+        response = result.response or {}
+        tpsl_responses = response.get("tpslResponses") if isinstance(response, dict) else None
+        if not isinstance(tpsl_responses, list):
+            return
+
+        existing_keys = {
+            str(item.get("clientOid") or item.get("orderId") or "")
+            for item in (state.get("tracked_tpsl") or [])
+            if isinstance(item, dict)
+        }
+        tracked = [item for item in state.get("tracked_tpsl") or [] if isinstance(item, dict)]
+        for item in tpsl_responses:
+            if not isinstance(item, dict):
+                continue
+            request = item.get("request") if isinstance(item.get("request"), dict) else {}
+            response = item.get("response") if isinstance(item.get("response"), dict) else {}
+            data = response.get("data") if isinstance(response.get("data"), dict) else {}
+            client_oid = str(data.get("clientOid") or request.get("clientOid") or "").strip()
+            order_id = str(data.get("orderId") or "").strip()
+            key = client_oid or order_id
+            if not key or key in existing_keys:
+                continue
+            tracked.append(
+                {
+                    "clientOid": client_oid,
+                    "orderId": order_id,
+                    "symbol": result.decision.symbol,
+                    "side": result.decision.side,
+                    "label": self._tpsl_label(client_oid),
+                    "planType": str(request.get("planType") or ""),
+                    "triggerPrice": str(request.get("triggerPrice") or ""),
+                    "size": str(request.get("size") or ""),
+                    "bar_time": result.decision.bar_time,
+                    "bar_time_label": result.decision.bar_time_label,
+                    "created_at": int(time.time() * 1000),
+                    "notified": False,
+                    "last_status": "live",
+                }
+            )
+            existing_keys.add(key)
+        state["tracked_tpsl"] = tracked[-500:]
 
     def _read_state(self) -> dict[str, Any]:
         if not self.config.state_path.exists():
@@ -883,6 +1199,10 @@ class LiveTradingEngine:
             return json.loads(self.config.state_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def _write_state(self, state: dict[str, Any]) -> None:
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config.state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _log_result(self, result: TradeExecutionResult) -> None:
         decision = result.decision
@@ -921,6 +1241,46 @@ class LiveTradingEngine:
             send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
         except Exception as exc:
             self.logger.warning("邮件发送失败: %s", exc)
+
+    def _send_tpsl_trigger_email(self, item: dict[str, Any], status_payload: dict[str, Any]) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        status = str(status_payload.get("status") or "").lower()
+        status_label = {
+            "executed": "已触发成交",
+            "fail_execute": "触发失败",
+            "cancelled": "已取消",
+        }.get(status, status or "未知")
+        label = str(item.get("label") or "保护单")
+        symbol = str(item.get("symbol") or "")
+        side = str(item.get("side") or "")
+        subject = f"[TQ Live] {label} {status_label} {symbol} {side}"
+        html = (
+            "<h3>TQ Live TP/SL Update</h3>"
+            f"<p><b>Status:</b> {status_label}</p>"
+            f"<p><b>Label:</b> {label}</p>"
+            f"<p><b>Symbol:</b> {symbol}</p>"
+            f"<p><b>Side:</b> {side}</p>"
+            f"<p><b>Trigger Price:</b> {item.get('triggerPrice') or '-'}</p>"
+            f"<p><b>Size:</b> {item.get('size') or '-'}</p>"
+            f"<p><b>Signal Time:</b> {item.get('bar_time_label') or item.get('bar_time') or '-'}</p>"
+            f"<pre>{json.dumps({'tracked': item, 'status': status_payload}, ensure_ascii=False, indent=2)}</pre>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("保护单触发邮件发送失败: %s", exc)
+
+    @staticmethod
+    def _tpsl_label(client_oid: str) -> str:
+        lowered = client_oid.lower()
+        if lowered.endswith("-sl"):
+            return "止损"
+        if lowered.endswith("-tp1"):
+            return "止盈1"
+        if lowered.endswith("-tp2"):
+            return "止盈2"
+        return "保护单"
 
 
 def _env_bool(name: str, default: bool) -> bool:

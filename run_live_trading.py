@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--brick-length", type=int, default=env_default_int("TQ_DEFAULT_BRICK_LENGTH", DEFAULT_BRICK_LENGTH))
     parser.add_argument("--refresh-ms", type=int, default=env_default_int("TQ_DEFAULT_REFRESH_MS", DEFAULT_REFRESH_MS))
     parser.add_argument("--continuous", action="store_true", help="常驻运行，收到新行情后连续执行实盘决策。")
+    parser.add_argument("--preflight", action="store_true", help="只执行 Bitget 实盘预检查，不进行信号评估或下单。")
     parser.add_argument("--poll-timeout", type=float, default=15.0, help="常驻模式等待行情更新的超时时间，单位秒。")
     parser.add_argument("--heartbeat-seconds", type=float, default=300.0, help="常驻模式心跳日志间隔，单位秒。")
     return parser.parse_args()
@@ -85,6 +86,13 @@ def main() -> None:
     try:
         service.start()
         engine = LiveTradingEngine(project_root, LiveTradingConfig.from_env(project_root))
+        if args.preflight:
+            preflight = engine.run_preflight(symbol=args.symbol)
+            print(json.dumps(asdict(preflight), ensure_ascii=False, default=str, indent=2))
+            if not preflight.ok:
+                raise SystemExit(1)
+            return
+
         if not args.continuous:
             _snapshot, decision = evaluate_snapshot(service, engine, args)
             result = engine.execute_decision(decision)
@@ -107,9 +115,14 @@ def main() -> None:
         last_version: int | None = None
         last_evaluated_bar_time: int | None = None
         last_heartbeat_at = time.monotonic()
+        last_tpsl_check_at = 0.0
 
         while not shutdown_requested:
             try:
+                now = time.monotonic()
+                if now - last_tpsl_check_at >= max(engine.config.tpsl_monitor_interval_seconds, 1.0):
+                    engine.check_tracked_tpsl_orders()
+                    last_tpsl_check_at = now
                 snapshot, decision = evaluate_snapshot(service, engine, args)
                 stream_meta = snapshot.get("stream") or {}
                 last_version = int(stream_meta.get("version") or 0)
@@ -141,6 +154,9 @@ def main() -> None:
                 if args.heartbeat_seconds > 0 and now - last_heartbeat_at >= args.heartbeat_seconds:
                     print(json.dumps({"heartbeat": True, "version": last_version, "ts": int(time.time() * 1000)}, ensure_ascii=False))
                     last_heartbeat_at = now
+                if now - last_tpsl_check_at >= max(engine.config.tpsl_monitor_interval_seconds, 1.0):
+                    engine.check_tracked_tpsl_orders()
+                    last_tpsl_check_at = now
     finally:
         service.stop()
 
