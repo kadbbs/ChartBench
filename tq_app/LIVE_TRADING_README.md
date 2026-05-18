@@ -69,6 +69,22 @@ LIVE_TRADING_LOG_ONLY=false
 LIVE_TRADING_ORDER_SIZE=0.001
 ```
 
+开仓订单类型：
+
+```env
+LIVE_TRADING_ENTRY_ORDER_TYPE=market
+LIVE_TRADING_MAKER_PRICE_LEVELS=3
+LIVE_TRADING_MAKER_RETRY_ATTEMPTS=3
+LIVE_TRADING_MAKER_RETRY_DELAY_SECONDS=0.3
+LIVE_TRADING_MAKER_FALLBACK_TO_MARKET=false
+```
+
+- `market`：直接市价开仓，然后立刻挂止盈止损。
+- `maker`：提交 `post_only` 限价挂单。买单挂在 `best_bid - 3*tick`，卖单挂在 `best_ask + 3*tick`。挂单成交后，常驻监控会再按成交均价挂止盈止损。
+- maker 模式如果因为到达交易所时会吃单而被 `post_only` 拒绝，会在同一根信号内重新取盘口、重新计算价格并重试，默认 `3` 次。
+- `LIVE_TRADING_MAKER_FALLBACK_TO_MARKET=true` 时，maker 重试仍失败会降级为 market 开仓，并立刻挂止盈止损。默认示例关闭，避免无意吃 taker。
+- maker 单不保证成交；如果一直不成交，就不会开仓，也不会挂止盈止损。
+
 止盈止损默认使用标记价作为开仓价格锚点，`2ATR = 1R`：
 
 ```env
@@ -151,11 +167,12 @@ LIVE_TRADING_EMAIL_TO=
 7. 查询当前持仓。
 8. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
 9. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
-10. 读取 Bitget ticker 标记价，按 ATR 计算止损和两档止盈。
-11. 调用 Bitget `place-order` 下 market 开仓单。
-12. 调用 Bitget `place-tpsl-order` 挂 1 个止损单和 2 个止盈单，每个保护单失败会自动重试。
-13. 保护单最终失败时发送紧急邮件；如启用 `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true`，会尝试自动平仓。
-14. 常驻循环按 `LIVE_TRADING_TPSL_MONITOR_INTERVAL_SECONDS` 查询保护单历史状态并发送触发通知。
+10. market 模式读取 Bitget ticker 标记价，按 ATR 计算止损和两档止盈。
+11. market 模式调用 Bitget `place-order` 下 market 开仓单，并立刻挂 1 个止损单和 2 个止盈单。
+12. maker 模式读取盘口，提交 `post_only` limit 开仓单；若被拒绝则重新取盘口重试，成功提交后记录到 state 等待成交。
+13. maker 开仓成交后，常驻监控按实际成交均价计算并挂止盈止损。
+14. 保护单失败会自动重试；最终失败时发送紧急邮件，如启用 `LIVE_TRADING_CLOSE_ON_TPSL_FAILURE=true`，会尝试自动平仓。
+15. 常驻循环按 `LIVE_TRADING_TPSL_MONITOR_INTERVAL_SECONDS` 查询保护单历史状态并发送触发通知。
 
 当前只自动生成 market 单。`LIVE_TRADING_ORDER_TYPE=limit` 会报错，因为还没有限价价格逻辑。
 

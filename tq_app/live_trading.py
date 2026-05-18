@@ -43,6 +43,10 @@ class LiveTradingConfig:
     position_mode: str = "one_way_mode"
     order_type: str = "market"
     force: str = "gtc"
+    maker_price_levels: int = 3
+    maker_retry_attempts: int = 3
+    maker_retry_delay_seconds: float = 0.3
+    maker_fallback_to_market: bool = False
     size: str = ""
     leverage: str = ""
     signal_mode: str = "any"
@@ -80,8 +84,12 @@ class LiveTradingConfig:
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
             margin_mode=os.getenv("LIVE_TRADING_MARGIN_MODE", "crossed").strip().lower(),
             position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "one_way_mode").strip().lower(),
-            order_type=os.getenv("LIVE_TRADING_ORDER_TYPE", "market").strip().lower(),
+            order_type=os.getenv("LIVE_TRADING_ENTRY_ORDER_TYPE", os.getenv("LIVE_TRADING_ORDER_TYPE", "market")).strip().lower(),
             force=os.getenv("LIVE_TRADING_FORCE", "gtc").strip().lower(),
+            maker_price_levels=_env_int("LIVE_TRADING_MAKER_PRICE_LEVELS", 3),
+            maker_retry_attempts=_env_int("LIVE_TRADING_MAKER_RETRY_ATTEMPTS", 3),
+            maker_retry_delay_seconds=_env_float("LIVE_TRADING_MAKER_RETRY_DELAY_SECONDS", 0.3),
+            maker_fallback_to_market=_env_bool("LIVE_TRADING_MAKER_FALLBACK_TO_MARKET", False),
             size=os.getenv("LIVE_TRADING_ORDER_SIZE", "").strip(),
             leverage=os.getenv("LIVE_TRADING_LEVERAGE", "").strip(),
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
@@ -235,6 +243,25 @@ class BitgetFuturesTradeClient:
             raise RuntimeError(f"Bitget contracts 返回错误 {code}: {payload.get('msg') or payload}")
         data = payload.get("data") or []
         return [dict(item) for item in data if isinstance(item, dict)]
+
+    def get_merge_depth(self, *, symbol: str, product_type: str, limit: str = "5") -> dict[str, Any]:
+        query = urlencode({"symbol": symbol, "productType": product_type, "limit": limit})
+        with urlopen(f"{self.api_base}/api/v2/mix/market/merge-depth?{query}", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        code = str(payload.get("code", ""))
+        if code and code != "00000":
+            raise RuntimeError(f"Bitget depth 返回错误 {code}: {payload.get('msg') or payload}")
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Bitget depth 返回格式异常: {payload}")
+        return data
+
+    def get_order_detail(self, *, symbol: str, product_type: str, client_oid: str | None = None, order_id: str | None = None) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/api/v2/mix/order/detail",
+            params={"symbol": symbol, "productType": product_type, "clientOid": client_oid, "orderId": order_id},
+        )
 
     def set_leverage(
         self,
@@ -536,13 +563,18 @@ class LiveTradingEngine:
             self._send_email(result)
             return result
 
-        request = self._order_request(decision)
         if self.config.dry_run or not self.config.enabled:
+            try:
+                dry_run_maker_price = self._dry_run_maker_price(decision)
+                request = self._order_request(decision, maker_price=dry_run_maker_price)
+            except Exception as exc:
+                dry_run_maker_price = None
+                request = {"error": f"构造开仓请求失败: {exc}"}
             if self.config.tpsl_enabled:
                 try:
                     request["plannedTpsl"] = self._build_tpsl_requests(
                         decision=decision,
-                        entry_price=self._dry_run_entry_price(decision),
+                        entry_price=dry_run_maker_price or self._dry_run_entry_price(decision),
                     )
                 except Exception as exc:
                     request["plannedTpslError"] = str(exc)
@@ -560,6 +592,10 @@ class LiveTradingEngine:
 
         preflight = self.run_preflight(symbol=decision.symbol)
         if not preflight.ok:
+            try:
+                request = self._order_request(decision, maker_price=self._dry_run_maker_price(decision))
+            except Exception as exc:
+                request = {"error": f"构造开仓请求失败: {exc}"}
             result = TradeExecutionResult(
                 decision=decision,
                 dry_run=False,
@@ -572,6 +608,7 @@ class LiveTradingEngine:
             self._send_email(result)
             return result
 
+        request: dict[str, Any] | None = None
         order_response: dict[str, Any] | None = None
         tpsl_requests: list[dict[str, Any]] = []
         protection_responses: list[dict[str, Any]] = []
@@ -602,6 +639,50 @@ class LiveTradingEngine:
                     margin_coin=self.config.margin_coin,
                     leverage=self.config.leverage,
                 )
+            if self._use_maker_entry():
+                maker_result = self._place_maker_entry_with_retry(client, decision)
+                request = maker_result["request"]
+                order_response = maker_result["response"]
+                entry_price = maker_result["entry_price"]
+                if maker_result.get("fallback_to_market"):
+                    tpsl_requests = self._build_tpsl_requests(decision=decision, entry_price=entry_price) if self.config.tpsl_enabled else []
+                    protection_responses = self._place_tpsl_orders_with_retry(client, decision, request, order_response, tpsl_requests)
+                    result = TradeExecutionResult(
+                        decision=decision,
+                        dry_run=False,
+                        enabled=True,
+                        request=request,
+                        response={
+                            "entryPrice": _decimal_to_string(entry_price),
+                            "order": order_response,
+                            "makerAttempts": maker_result["attempts"],
+                            "fallbackToMarket": True,
+                            "tpslRequests": tpsl_requests,
+                            "tpslResponses": protection_responses,
+                        },
+                    )
+                    self._record_execution(result)
+                    self._log_result(result)
+                    self._send_email(result)
+                    return result
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=False,
+                    enabled=True,
+                    request=request,
+                    response={
+                        "entryPrice": _decimal_to_string(entry_price),
+                        "order": order_response,
+                        "makerEntryPending": True,
+                        "makerAttempts": maker_result["attempts"],
+                        "message": "Maker post-only 开仓单已提交，等待成交后再挂止盈止损。",
+                    },
+                )
+                self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
+            request = self._order_request(decision)
             entry_price = self._entry_price(client, decision)
             tpsl_requests = self._build_tpsl_requests(decision=decision, entry_price=entry_price) if self.config.tpsl_enabled else []
             order_response = client.place_order(request)
@@ -641,6 +722,7 @@ class LiveTradingEngine:
     def check_tracked_tpsl_orders(self) -> None:
         if not self.config.tpsl_monitor_enabled:
             return
+        self._check_tracked_entry_orders()
         state = self._read_state()
         tracked_orders = [item for item in state.get("tracked_tpsl") or [] if isinstance(item, dict)]
         pending = [item for item in tracked_orders if not item.get("notified")]
@@ -675,6 +757,61 @@ class LiveTradingEngine:
 
         if changed:
             state["tracked_tpsl"] = tracked_orders[-500:]
+            self._write_state(state)
+
+    def _check_tracked_entry_orders(self) -> None:
+        state = self._read_state()
+        tracked_entries = [item for item in state.get("tracked_entries") or [] if isinstance(item, dict)]
+        pending = [item for item in tracked_entries if not item.get("protection_placed") and not item.get("notified")]
+        if not pending:
+            return
+        try:
+            client = BitgetFuturesTradeClient(self.project_root)
+        except Exception as exc:
+            self.logger.warning("maker 开仓监控初始化失败: %s", exc)
+            return
+
+        changed = False
+        for item in pending:
+            try:
+                detail = client.get_order_detail(
+                    symbol=str(item.get("symbol") or ""),
+                    product_type=self.config.product_type,
+                    client_oid=str(item.get("clientOid") or "") or None,
+                    order_id=str(item.get("orderId") or "") or None,
+                )
+                data = detail.get("data") if isinstance(detail.get("data"), dict) else {}
+                status = str(data.get("status") or data.get("state") or "").lower()
+                item["last_status"] = status or "unknown"
+                item["order_detail"] = data
+                if status in {"filled", "full_fill", "full-filled"}:
+                    decision = self._decision_from_tracked_entry(item)
+                    fill_price = _to_decimal(data.get("priceAvg") or data.get("fillPrice") or item.get("price"))
+                    tpsl_requests = self._build_tpsl_requests(decision=decision, entry_price=fill_price) if self.config.tpsl_enabled else []
+                    tpsl_responses = self._place_tpsl_orders_with_retry(client, decision, {"trackedMakerEntry": item}, detail, tpsl_requests)
+                    fake_result = TradeExecutionResult(
+                        decision=decision,
+                        dry_run=False,
+                        enabled=True,
+                        request={"trackedMakerEntry": item},
+                        response={"entryPrice": _decimal_to_string(fill_price), "tpslRequests": tpsl_requests, "tpslResponses": tpsl_responses},
+                    )
+                    self._add_tracked_tpsl_orders(state, fake_result)
+                    item["protection_placed"] = True
+                    item["notified"] = True
+                    item["notified_at"] = int(time.time() * 1000)
+                    changed = True
+                    self._send_maker_entry_filled_email(item, fake_result.response or {})
+                elif status in {"cancelled", "canceled"}:
+                    item["notified"] = True
+                    item["notified_at"] = int(time.time() * 1000)
+                    changed = True
+                    self._send_maker_entry_cancelled_email(item)
+            except Exception as exc:
+                self.logger.warning("maker 开仓状态处理失败: item=%s error=%s", json.dumps(item, ensure_ascii=False), exc)
+
+        if changed:
+            state["tracked_entries"] = tracked_entries[-500:]
             self._write_state(state)
 
     def _tpsl_status(self, client: BitgetFuturesTradeClient, item: dict[str, Any]) -> dict[str, Any]:
@@ -782,6 +919,83 @@ class LiveTradingEngine:
 
         return responses
 
+    def _place_maker_entry_with_retry(
+        self,
+        client: BitgetFuturesTradeClient,
+        decision: TradeDecision,
+    ) -> dict[str, Any]:
+        attempts = max(int(self.config.maker_retry_attempts), 1)
+        delay = max(float(self.config.maker_retry_delay_seconds), 0.0)
+        attempt_records: list[dict[str, Any]] = []
+        last_error: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            maker_price: Decimal | None = None
+            request: dict[str, Any] | None = None
+            try:
+                maker_price = self._maker_entry_price(client, decision)
+                request = self._order_request(decision, maker_price=maker_price)
+                response = client.place_order(request)
+                attempt_records.append(
+                    {
+                        "attempt": attempt,
+                        "entryPrice": _decimal_to_string(maker_price),
+                        "request": request,
+                        "response": response,
+                        "ok": True,
+                    }
+                )
+                return {
+                    "entry_price": maker_price,
+                    "request": request,
+                    "response": response,
+                    "attempts": attempt_records,
+                }
+            except Exception as exc:
+                last_error = exc
+                attempt_records.append(
+                    {
+                        "attempt": attempt,
+                        "entryPrice": _decimal_to_string(maker_price) if maker_price is not None else None,
+                        "request": request,
+                        "error": str(exc),
+                        "ok": False,
+                    }
+                )
+                self.logger.warning(
+                    "maker post-only 开仓失败，准备重试: attempt=%s/%s error=%s",
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                if attempt < attempts and delay > 0:
+                    time.sleep(delay)
+
+        if self.config.maker_fallback_to_market:
+            market_request = self._market_order_request(decision)
+            fallback_entry_price = self._entry_price(client, decision)
+            response = client.place_order(market_request)
+            attempt_records.append(
+                {
+                    "attempt": "fallback_market",
+                    "entryPrice": _decimal_to_string(fallback_entry_price),
+                    "request": market_request,
+                    "response": response,
+                    "ok": True,
+                }
+            )
+            self._send_maker_fallback_email(decision, attempt_records)
+            return {
+                "entry_price": fallback_entry_price,
+                "request": market_request,
+                "response": response,
+                "attempts": attempt_records,
+                "fallback_to_market": True,
+            }
+
+        self._send_maker_entry_failed_email(decision, attempt_records, str(last_error) if last_error is not None else "未知 maker 开仓失败")
+        raise RuntimeError(f"maker post-only 开仓失败，已重试 {attempts} 次: {last_error}")
+
     def _close_position_after_tpsl_failure(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> dict[str, Any]:
         payload = {
             "symbol": decision.symbol,
@@ -842,6 +1056,51 @@ class LiveTradingEngine:
         if raw_value in (None, ""):
             raise RuntimeError(f"ticker 中缺少 {field}，拒绝开仓以避免无法计算保护单。")
         return _to_decimal(raw_value)
+
+    def _use_maker_entry(self) -> bool:
+        return self.config.order_type in {"maker", "post_only", "post-only"}
+
+    def _maker_entry_price(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> Decimal:
+        depth = client.get_merge_depth(symbol=decision.symbol, product_type=self.config.product_type, limit="5")
+        bids = depth.get("bids") or []
+        asks = depth.get("asks") or []
+        if not bids or not asks:
+            raise RuntimeError("盘口为空，无法生成 maker 开仓价格。")
+        best_bid = _to_decimal(bids[0][0])
+        best_ask = _to_decimal(asks[0][0])
+        tick = self._price_tick(client, decision.symbol)
+        levels = max(int(self.config.maker_price_levels), 0)
+        if decision.side == "buy":
+            price = best_bid - tick * levels
+        elif decision.side == "sell":
+            price = best_ask + tick * levels
+        else:
+            raise RuntimeError(f"未知开仓方向: {decision.side}")
+        if price <= 0:
+            raise RuntimeError("maker 开仓价格计算结果无效。")
+        return _quantize_decimal(price, self.config.price_decimals)
+
+    def _dry_run_maker_price(self, decision: TradeDecision) -> Decimal | None:
+        if not self._use_maker_entry():
+            return None
+        if decision.bar_close is None:
+            raise RuntimeError("缺少 bar_close，无法预估 maker 价格。")
+        tick = Decimal("1") if self.config.price_decimals <= 0 else Decimal("1").scaleb(-self.config.price_decimals)
+        levels = max(int(self.config.maker_price_levels), 0)
+        base = _to_decimal(decision.bar_close)
+        price = base - tick * levels if decision.side == "buy" else base + tick * levels
+        return _quantize_decimal(price, self.config.price_decimals)
+
+    def _price_tick(self, client: BitgetFuturesTradeClient, symbol: str) -> Decimal:
+        contracts = client.get_contracts(product_type=self.config.product_type)
+        contract = next((item for item in contracts if str(item.get("symbol") or "").upper() == symbol.upper()), None)
+        if not contract:
+            return Decimal("1") if self.config.price_decimals <= 0 else Decimal("1").scaleb(-self.config.price_decimals)
+        price_place = _env_int_from_value(contract.get("pricePlace"), self.config.price_decimals)
+        end_step = _to_decimal(contract.get("priceEndStep") or "1")
+        base_tick = Decimal("1") if price_place <= 0 else Decimal("1").scaleb(-price_place)
+        tick = base_tick * end_step
+        return tick if tick > 0 else (Decimal("1") if self.config.price_decimals <= 0 else Decimal("1").scaleb(-self.config.price_decimals))
 
     def _dry_run_entry_price(self, decision: TradeDecision) -> Decimal:
         if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
@@ -1101,7 +1360,8 @@ class LiveTradingEngine:
             return None
         return "buy" if has_buy else "sell"
 
-    def _order_request(self, decision: TradeDecision) -> dict[str, Any]:
+    def _order_request(self, decision: TradeDecision, maker_price: Decimal | None = None) -> dict[str, Any]:
+        order_type = "limit" if self._use_maker_entry() else self.config.order_type
         request = {
             "symbol": decision.symbol,
             "productType": self.config.product_type,
@@ -1109,15 +1369,35 @@ class LiveTradingEngine:
             "marginCoin": self.config.margin_coin,
             "size": self.config.size,
             "side": decision.side,
-            "orderType": self.config.order_type,
+            "orderType": order_type,
             "clientOid": decision.client_oid,
         }
-        if self.config.order_type == "limit":
+        if self._use_maker_entry():
+            if maker_price is None:
+                raise ValueError("maker 开仓需要先计算 post-only limit 价格。")
+            request["price"] = _decimal_to_string(_quantize_decimal(maker_price, self.config.price_decimals))
+            request["force"] = "post_only"
+        elif self.config.order_type == "limit":
             raise ValueError("当前实盘模块只自动生成 market 订单；limit 订单需要显式补价格逻辑。")
         if self.config.position_mode == "hedge_mode":
             request["tradeSide"] = "open"
-        if self.config.force and self.config.order_type == "limit":
+        if self.config.force and order_type == "limit" and not self._use_maker_entry():
             request["force"] = self.config.force
+        return request
+
+    def _market_order_request(self, decision: TradeDecision) -> dict[str, Any]:
+        request = {
+            "symbol": decision.symbol,
+            "productType": self.config.product_type,
+            "marginMode": self.config.margin_mode,
+            "marginCoin": self.config.margin_coin,
+            "size": self.config.size,
+            "side": decision.side,
+            "orderType": "market",
+            "clientOid": self._child_client_oid(decision.client_oid, "mkt"),
+        }
+        if self.config.position_mode == "hedge_mode":
+            request["tradeSide"] = "open"
         return request
 
     def _client_oid(self, symbol: str, side: str, bar_time: int | None) -> str:
@@ -1146,8 +1426,42 @@ class LiveTradingEngine:
             state = self._read_state()
             client_oids = list(dict.fromkeys([*(state.get("client_oids") or []), result.decision.client_oid]))[-500:]
             state["client_oids"] = client_oids
+            self._add_tracked_entry_order(state, result)
             self._add_tracked_tpsl_orders(state, result)
             self._write_state(state)
+
+    def _add_tracked_entry_order(self, state: dict[str, Any], result: TradeExecutionResult) -> None:
+        response = result.response or {}
+        if not isinstance(response, dict) or not response.get("makerEntryPending"):
+            return
+        order_response = response.get("order") if isinstance(response.get("order"), dict) else {}
+        data = order_response.get("data") if isinstance(order_response.get("data"), dict) else {}
+        request = result.request or {}
+        client_oid = str(data.get("clientOid") or request.get("clientOid") or result.decision.client_oid or "").strip()
+        order_id = str(data.get("orderId") or "").strip()
+        tracked = [item for item in state.get("tracked_entries") or [] if isinstance(item, dict)]
+        existing_keys = {str(item.get("clientOid") or item.get("orderId") or "") for item in tracked}
+        key = client_oid or order_id
+        if not key or key in existing_keys:
+            return
+        tracked.append(
+            {
+                "clientOid": client_oid,
+                "orderId": order_id,
+                "symbol": result.decision.symbol,
+                "side": result.decision.side,
+                "size": str(request.get("size") or self.config.size),
+                "price": str(request.get("price") or ""),
+                "bar_time": result.decision.bar_time,
+                "bar_time_label": result.decision.bar_time_label,
+                "atr_value": result.decision.atr_value,
+                "created_at": int(time.time() * 1000),
+                "protection_placed": False,
+                "notified": False,
+                "last_status": "live",
+            }
+        )
+        state["tracked_entries"] = tracked[-500:]
 
     def _add_tracked_tpsl_orders(self, state: dict[str, Any], result: TradeExecutionResult) -> None:
         response = result.response or {}
@@ -1271,6 +1585,80 @@ class LiveTradingEngine:
         except Exception as exc:
             self.logger.warning("保护单触发邮件发送失败: %s", exc)
 
+    def _send_maker_entry_filled_email(self, item: dict[str, Any], response: dict[str, Any]) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        symbol = str(item.get("symbol") or "")
+        side = str(item.get("side") or "")
+        subject = f"[TQ Live] Maker开仓已成交并挂保护单 {symbol} {side}"
+        html = (
+            "<h3>TQ Live Maker Entry Filled</h3>"
+            f"<p><b>Symbol:</b> {symbol}</p>"
+            f"<p><b>Side:</b> {side}</p>"
+            f"<p><b>Entry Price:</b> {response.get('entryPrice') or item.get('price') or '-'}</p>"
+            f"<p><b>Signal Time:</b> {item.get('bar_time_label') or item.get('bar_time') or '-'}</p>"
+            f"<pre>{json.dumps({'entry': item, 'protection': response}, ensure_ascii=False, indent=2)}</pre>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("maker 成交邮件发送失败: %s", exc)
+
+    def _send_maker_entry_cancelled_email(self, item: dict[str, Any]) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        subject = f"[TQ Live] Maker开仓已取消 {item.get('symbol') or ''} {item.get('side') or ''}"
+        html = f"<h3>TQ Live Maker Entry Cancelled</h3><pre>{json.dumps(item, ensure_ascii=False, indent=2)}</pre>"
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("maker 取消邮件发送失败: %s", exc)
+
+    def _send_maker_entry_failed_email(self, decision: TradeDecision, attempts: list[dict[str, Any]], error: str) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        subject = f"[TQ Live] Maker开仓失败 {decision.symbol} {decision.side or '-'}"
+        html = (
+            "<h3>TQ Live Maker Entry Failed</h3>"
+            f"<p><b>Symbol:</b> {decision.symbol}</p>"
+            f"<p><b>Side:</b> {decision.side or '-'}</p>"
+            f"<p><b>Error:</b> {error}</p>"
+            f"<p><b>Signal Time:</b> {decision.bar_time_label or decision.bar_time or '-'}</p>"
+            f"<pre>{json.dumps({'attempts': attempts}, ensure_ascii=False, indent=2)}</pre>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("maker 失败邮件发送失败: %s", exc)
+
+    def _send_maker_fallback_email(self, decision: TradeDecision, attempts: list[dict[str, Any]]) -> None:
+        if not self.config.email_enabled or not self.config.email_to:
+            return
+        subject = f"[TQ Live] Maker失败已降级市价开仓 {decision.symbol} {decision.side or '-'}"
+        html = (
+            "<h3>TQ Live Maker Fallback</h3>"
+            "<p><b>Status:</b> maker post-only 重试失败，已按配置降级为 market 开仓。</p>"
+            f"<p><b>Symbol:</b> {decision.symbol}</p>"
+            f"<p><b>Side:</b> {decision.side or '-'}</p>"
+            f"<p><b>Signal Time:</b> {decision.bar_time_label or decision.bar_time or '-'}</p>"
+            f"<pre>{json.dumps({'attempts': attempts}, ensure_ascii=False, indent=2)}</pre>"
+        )
+        try:
+            send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
+        except Exception as exc:
+            self.logger.warning("maker 降级邮件发送失败: %s", exc)
+
+    def _decision_from_tracked_entry(self, item: dict[str, Any]) -> TradeDecision:
+        return TradeDecision(
+            action="place_order",
+            symbol=str(item.get("symbol") or "").upper(),
+            side=str(item.get("side") or "") or None,
+            bar_time=int(item.get("bar_time") or 0) or None,
+            atr_value=_optional_float(item.get("atr_value")),
+            bar_time_label=str(item.get("bar_time_label") or ""),
+            client_oid=str(item.get("clientOid") or ""),
+        )
+
     @staticmethod
     def _tpsl_label(client_oid: str) -> str:
         lowered = client_oid.lower()
@@ -1297,6 +1685,15 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
+        return default
+
+
+def _env_int_from_value(value: Any, default: int) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
         return default
 
 
