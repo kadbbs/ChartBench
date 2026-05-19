@@ -47,6 +47,9 @@ class LiveTradingConfig:
     maker_retry_attempts: int = 3
     maker_retry_delay_seconds: float = 0.3
     maker_fallback_to_market: bool = False
+    entry_time_filter_enabled: bool = False
+    entry_time_start: str = "20:00"
+    entry_time_end: str = "24:00"
     size: str = ""
     leverage: str = ""
     signal_mode: str = "any"
@@ -90,6 +93,9 @@ class LiveTradingConfig:
             maker_retry_attempts=_env_int("LIVE_TRADING_MAKER_RETRY_ATTEMPTS", 3),
             maker_retry_delay_seconds=_env_float("LIVE_TRADING_MAKER_RETRY_DELAY_SECONDS", 0.3),
             maker_fallback_to_market=_env_bool("LIVE_TRADING_MAKER_FALLBACK_TO_MARKET", False),
+            entry_time_filter_enabled=_env_bool("LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED", False),
+            entry_time_start=os.getenv("LIVE_TRADING_ENTRY_TIME_START", "20:00").strip(),
+            entry_time_end=os.getenv("LIVE_TRADING_ENTRY_TIME_END", "24:00").strip(),
             size=os.getenv("LIVE_TRADING_ORDER_SIZE", "").strip(),
             leverage=os.getenv("LIVE_TRADING_LEVERAGE", "").strip(),
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
@@ -469,12 +475,12 @@ class LiveTradingEngine:
         bar_time = int(target_candle["time"])
         marker_texts = self._marker_texts_at(snapshot, bar_time)
         indicator_values, indicator_colors = self._indicator_context_at(snapshot, bar_time)
-        side, reason = self._side_from_strategy(marker_texts, indicator_values, indicator_colors)
         last_close = float(target_candle.get("close") or snapshot.get("last_close") or 0)
         bar_open = _optional_float(target_candle.get("open"))
         bar_high = _optional_float(target_candle.get("high"))
         bar_low = _optional_float(target_candle.get("low"))
         bar_close = _optional_float(target_candle.get("close"))
+        side, reason = self._side_from_strategy(marker_texts, indicator_values, indicator_colors, bar_high=bar_high, bar_low=bar_low)
         atr_value = self._atr_at(snapshot, bar_time)
         bar_time_label = self._bar_time_label(snapshot, bar_time)
         if side is None:
@@ -530,6 +536,23 @@ class LiveTradingEngine:
             )
             self._log_result(result)
             return result
+        if self.config.log_only or self.config.dry_run or not self.config.enabled:
+            same_side_position = self._same_side_position_if_available(decision)
+            if same_side_position is not None:
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=True,
+                    enabled=self.config.enabled,
+                    response={
+                        "sameSidePosition": True,
+                        "message": "已存在同方向仓位，观察/邮件模式跳过开仓提醒。",
+                        "position": same_side_position,
+                    },
+                )
+                self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
         if self.config.log_only:
             result = TradeExecutionResult(
                 decision=decision,
@@ -629,6 +652,24 @@ class LiveTradingEngine:
                     },
                 )
                 self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
+            time_allowed, time_reason = self._entry_time_allowed()
+            if not time_allowed:
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=True,
+                    enabled=self.config.enabled,
+                    request=request,
+                    response={
+                        "entryTimeBlocked": True,
+                        "message": time_reason,
+                        "entryTimeStart": self.config.entry_time_start,
+                        "entryTimeEnd": self.config.entry_time_end,
+                        "timezone": str(DISPLAY_TIMEZONE),
+                    },
+                )
                 self._log_result(result)
                 self._send_email(result)
                 return result
@@ -1057,6 +1098,27 @@ class LiveTradingEngine:
             raise RuntimeError(f"ticker 中缺少 {field}，拒绝开仓以避免无法计算保护单。")
         return _to_decimal(raw_value)
 
+    def _entry_time_allowed(self, now: datetime | None = None) -> tuple[bool, str]:
+        if not self.config.entry_time_filter_enabled:
+            return True, "开仓时间过滤未启用。"
+        current = now or datetime.now(DISPLAY_TIMEZONE)
+        current_minutes = current.hour * 60 + current.minute
+        start_minutes = _parse_time_of_day_minutes(self.config.entry_time_start)
+        end_minutes = _parse_time_of_day_minutes(self.config.entry_time_end)
+
+        if start_minutes == end_minutes:
+            allowed = True
+        elif start_minutes < end_minutes:
+            allowed = start_minutes <= current_minutes < end_minutes
+        else:
+            allowed = current_minutes >= start_minutes or current_minutes < end_minutes
+
+        current_label = current.strftime("%Y-%m-%d %H:%M:%S %Z")
+        window_label = f"{self.config.entry_time_start}-{self.config.entry_time_end}"
+        if allowed:
+            return True, f"当前北京时间 {current_label} 在允许开仓时段 {window_label} 内。"
+        return False, f"当前北京时间 {current_label} 不在允许开仓时段 {window_label} 内，禁止新开仓。"
+
     def _use_maker_entry(self) -> bool:
         return self.config.order_type in {"maker", "post_only", "post-only"}
 
@@ -1213,6 +1275,14 @@ class LiveTradingEngine:
                 }
         return None
 
+    def _same_side_position_if_available(self, decision: TradeDecision) -> dict[str, Any] | None:
+        try:
+            client = BitgetFuturesTradeClient(self.project_root)
+            return self._same_side_position(client, decision)
+        except Exception as exc:
+            self.logger.warning("观察/邮件模式同向仓位检查失败，继续发送信号邮件: %s", exc)
+            return None
+
     @staticmethod
     def _position_size(position: dict[str, Any]) -> float:
         for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
@@ -1309,12 +1379,18 @@ class LiveTradingEngine:
         marker_texts: list[str],
         indicator_values: dict[str, float],
         indicator_colors: dict[str, str],
+        *,
+        bar_high: float | None = None,
+        bar_low: float | None = None,
     ) -> tuple[str | None, str]:
         if self.config.strategy == "stc_extreme_contrarian":
-            return self._stc_extreme_contrarian_side(marker_texts, indicator_values, indicator_colors)
+            return self._stc_extreme_contrarian_side(marker_texts, indicator_values, indicator_colors, bar_high=bar_high, bar_low=bar_low)
         side = self._side_from_marker_texts(marker_texts)
         if side is None:
             return None, f"目标 K 线没有满足 {self.config.signal_mode} 模式的交易信号"
+        hull_ok, hull_reason = self._hull_position_allows_side(side, indicator_values, bar_high=bar_high, bar_low=bar_low)
+        if not hull_ok:
+            return None, hull_reason
         return side, f"检测到 {','.join(marker_texts)} 信号"
 
     def _stc_extreme_contrarian_side(
@@ -1322,6 +1398,9 @@ class LiveTradingEngine:
         marker_texts: list[str],
         indicator_values: dict[str, float],
         indicator_colors: dict[str, str],
+        *,
+        bar_high: float | None = None,
+        bar_low: float | None = None,
     ) -> tuple[str | None, str]:
         texts = set(marker_texts)
         stc_value = indicator_values.get("stc.stc")
@@ -1332,15 +1411,72 @@ class LiveTradingEngine:
         has_any_sell = "Sell" in texts or "卖" in texts
 
         if has_any_sell and stc_value is not None and stc_value > 75 and stc_is_red:
-            return "sell", f"空单观察信号：Sell 或 卖 出现，且 STC={stc_value:.2f}>75 并为红色"
+            hull_ok, hull_reason = self._hull_position_allows_side("sell", indicator_values, bar_high=bar_high, bar_low=bar_low)
+            if not hull_ok:
+                return None, hull_reason
+            return "sell", f"空单观察信号：Sell 或 卖 出现，且 STC={stc_value:.2f}>75 并为红色；{hull_reason}"
         if has_any_buy and stc_value is not None and stc_value < 25 and stc_is_green:
-            return "buy", f"多单观察信号：Buy 或 买 出现，且 STC={stc_value:.2f}<25 并为绿色"
+            hull_ok, hull_reason = self._hull_position_allows_side("buy", indicator_values, bar_high=bar_high, bar_low=bar_low)
+            if not hull_ok:
+                return None, hull_reason
+            return "buy", f"多单观察信号：Buy 或 买 出现，且 STC={stc_value:.2f}<25 并为绿色；{hull_reason}"
 
         return (
             None,
             "未满足观察策略：空单需 Sell/卖 任一信号且 STC>75 红色；多单需 Buy/买 任一信号且 STC<25 绿色。"
             f" 当前 signals={','.join(marker_texts) or '-'}, STC={stc_value}, color={stc_color or '-'}",
         )
+
+    def _hull_position_allows_side(
+        self,
+        side: str,
+        indicator_values: dict[str, float],
+        *,
+        bar_high: float | None,
+        bar_low: float | None,
+    ) -> tuple[bool, str]:
+        if bar_high is None or bar_low is None:
+            return False, "缺少开仓 K 线 high/low，无法判断 Hull 与 K 线位置，禁止开仓。"
+
+        high = float(bar_high)
+        low = float(bar_low)
+        if side == "buy":
+            hull_values = self._hull_band_values(indicator_values, "buy")
+            if not hull_values:
+                return False, "缺少红带 Hull 指标值，无法判断多单位置，禁止开仓。"
+            if all(value < low for value in hull_values):
+                return True, f"红带在 K 线下方，允许多单：hull={_format_float_list(hull_values)}, low={_format_price(low)}"
+            return (
+                False,
+                f"红带未完全位于开仓 K 线下方，禁止多单：要求红带上下边界都 < low；"
+                f"hull={_format_float_list(hull_values)}, high={_format_price(high)}, low={_format_price(low)}",
+            )
+        if side == "sell":
+            hull_values = self._hull_band_values(indicator_values, "sell")
+            if not hull_values:
+                return False, "缺少绿带 Hull 指标值，无法判断空单位置，禁止开仓。"
+            if all(value > high for value in hull_values):
+                return True, f"绿带在 K 线上方，允许空单：hull={_format_float_list(hull_values)}, high={_format_price(high)}"
+            return (
+                False,
+                f"绿带未完全位于开仓 K 线上方，禁止空单：要求绿带上下边界都 > high；"
+                f"hull={_format_float_list(hull_values)}, high={_format_price(high)}, low={_format_price(low)}",
+            )
+        return False, f"未知开仓方向，无法判断 Hull 位置: {side}"
+
+    @staticmethod
+    def _hull_band_values(indicator_values: dict[str, float], side: str) -> list[float]:
+        keys = (
+            ("merged_dkx_hull_ut.mhull_up", "merged_dkx_hull_ut.shull_up")
+            if side == "buy"
+            else ("merged_dkx_hull_ut.mhull_down", "merged_dkx_hull_ut.shull_down")
+        )
+        values: list[float] = []
+        for key in keys:
+            value = indicator_values.get(key)
+            if value is not None:
+                values.append(float(value))
+        return values
 
     def _side_from_marker_texts(self, marker_texts: list[str]) -> str | None:
         texts = set(marker_texts)
@@ -1422,13 +1558,24 @@ class LiveTradingEngine:
         with self.config.order_log_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-        if result.decision.client_oid:
+        if self._should_update_execution_state(result):
             state = self._read_state()
             client_oids = list(dict.fromkeys([*(state.get("client_oids") or []), result.decision.client_oid]))[-500:]
             state["client_oids"] = client_oids
             self._add_tracked_entry_order(state, result)
             self._add_tracked_tpsl_orders(state, result)
             self._write_state(state)
+
+    @staticmethod
+    def _should_update_execution_state(result: TradeExecutionResult) -> bool:
+        if not result.decision.client_oid:
+            return False
+        if result.error:
+            return False
+        if result.dry_run or not result.enabled:
+            return False
+        response = result.response if isinstance(result.response, dict) else {}
+        return bool(response.get("order") or response.get("makerEntryPending") or response.get("tpslResponses"))
 
     def _add_tracked_entry_order(self, state: dict[str, Any], result: TradeExecutionResult) -> None:
         response = result.response or {}
@@ -1697,6 +1844,21 @@ def _env_int_from_value(value: Any, default: int) -> int:
         return default
 
 
+def _parse_time_of_day_minutes(value: str) -> int:
+    text = str(value or "").strip()
+    if text == "24:00":
+        return 24 * 60
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"时间格式无效: {value}，请使用 HH:MM，例如 20:00 或 24:00。")
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"时间范围无效: {value}，请使用 00:00 到 24:00。")
+    return hour * 60 + minute
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name, "").strip()
     if raw == "":
@@ -1716,6 +1878,10 @@ def _optional_float(value: Any) -> float | None:
 
 def _format_price(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}"
+
+
+def _format_float_list(values: list[float]) -> str:
+    return "[" + ", ".join(_format_price(value) for value in values) + "]"
 
 
 def _to_decimal(value: Any) -> Decimal:
