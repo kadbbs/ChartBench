@@ -50,6 +50,8 @@ class LiveTradingConfig:
     entry_time_filter_enabled: bool = False
     entry_time_start: str = "20:00"
     entry_time_end: str = "24:00"
+    htf_hull_filter_enabled: bool = True
+    htf_hull_duration_seconds: int = 3600
     size: str = ""
     leverage: str = ""
     signal_mode: str = "any"
@@ -96,6 +98,8 @@ class LiveTradingConfig:
             entry_time_filter_enabled=_env_bool("LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED", False),
             entry_time_start=os.getenv("LIVE_TRADING_ENTRY_TIME_START", "20:00").strip(),
             entry_time_end=os.getenv("LIVE_TRADING_ENTRY_TIME_END", "24:00").strip(),
+            htf_hull_filter_enabled=_env_bool("LIVE_TRADING_HTF_HULL_FILTER_ENABLED", True),
+            htf_hull_duration_seconds=_env_int("LIVE_TRADING_HTF_HULL_DURATION_SECONDS", 3600),
             size=os.getenv("LIVE_TRADING_ORDER_SIZE", "").strip(),
             leverage=os.getenv("LIVE_TRADING_LEVERAGE", "").strip(),
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
@@ -481,6 +485,13 @@ class LiveTradingEngine:
         bar_low = _optional_float(target_candle.get("low"))
         bar_close = _optional_float(target_candle.get("close"))
         side, reason = self._side_from_strategy(marker_texts, indicator_values, indicator_colors, bar_high=bar_high, bar_low=bar_low)
+        if side is not None:
+            htf_ok, htf_reason = self._higher_timeframe_hull_allows_side(side, snapshot.get("higher_timeframe"))
+            if not htf_ok:
+                side = None
+                reason = htf_reason
+            else:
+                reason = f"{reason}；{htf_reason}"
         atr_value = self._atr_at(snapshot, bar_time)
         bar_time_label = self._bar_time_label(snapshot, bar_time)
         if side is None:
@@ -1477,6 +1488,48 @@ class LiveTradingEngine:
             if value is not None:
                 values.append(float(value))
         return values
+
+    def _higher_timeframe_hull_allows_side(self, side: str, htf_snapshot: Any) -> tuple[bool, str]:
+        if not self.config.htf_hull_filter_enabled:
+            return True, "1h Hull 趋势过滤未启用。"
+        if not isinstance(htf_snapshot, dict):
+            return False, "缺少高周期 Hull 快照，无法确认 1h 趋势，禁止开仓。"
+
+        trend, detail = self._higher_timeframe_hull_trend(htf_snapshot)
+        duration = htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds
+        label = detail.get("bar_time_label") or detail.get("bar_time") or "-"
+        if trend == "buy":
+            if side == "sell":
+                return False, f"{duration}s Hull 为红色多趋势，禁止 5m 反向开空；1h={label}"
+            return True, f"{duration}s Hull 为红色多趋势，允许顺势开多；1h={label}"
+        if trend == "sell":
+            if side == "buy":
+                return False, f"{duration}s Hull 为绿色空趋势，禁止 5m 反向开多；1h={label}"
+            return True, f"{duration}s Hull 为绿色空趋势，允许顺势开空；1h={label}"
+        return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}"
+
+    def _higher_timeframe_hull_trend(self, htf_snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        candles = htf_snapshot.get("candles") or []
+        if not candles:
+            return None, {"reason": "高周期快照没有 K 线"}
+        target_index = -2 if self.config.use_closed_bar and len(candles) >= 2 else -1
+        target_candle = candles[target_index]
+        bar_time = int(target_candle.get("time") or 0)
+        indicator_values, _indicator_colors = self._indicator_context_at(htf_snapshot, bar_time)
+        red_band = self._hull_band_values(indicator_values, "buy")
+        green_band = self._hull_band_values(indicator_values, "sell")
+        detail = {
+            "bar_time": bar_time,
+            "bar_time_label": self._bar_time_label(htf_snapshot, bar_time),
+            "red_band": red_band,
+            "green_band": green_band,
+        }
+        if red_band and not green_band:
+            return "buy", detail
+        if green_band and not red_band:
+            return "sell", detail
+        detail["reason"] = "红带/绿带状态为空或同时存在"
+        return None, detail
 
     def _side_from_marker_texts(self, marker_texts: list[str]) -> str | None:
         texts = set(marker_texts)

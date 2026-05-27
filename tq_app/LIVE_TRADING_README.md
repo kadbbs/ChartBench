@@ -80,6 +80,8 @@ LIVE_TRADING_MAKER_FALLBACK_TO_MARKET=false
 LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED=false
 LIVE_TRADING_ENTRY_TIME_START=20:00
 LIVE_TRADING_ENTRY_TIME_END=24:00
+LIVE_TRADING_HTF_HULL_FILTER_ENABLED=true
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS=3600
 ```
 
 - `market`：直接市价开仓，然后立刻挂止盈止损。
@@ -88,6 +90,7 @@ LIVE_TRADING_ENTRY_TIME_END=24:00
 - `LIVE_TRADING_MAKER_FALLBACK_TO_MARKET=true` 时，maker 重试仍失败会降级为 market 开仓，并立刻挂止盈止损。默认示例关闭，避免无意吃 taker。
 - maker 单不保证成交；如果一直不成交，就不会开仓，也不会挂止盈止损。
 - `LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED=true` 时，只允许北京时间 `LIVE_TRADING_ENTRY_TIME_START <= 当前时间 < LIVE_TRADING_ENTRY_TIME_END` 之间新开仓。默认示例为 `20:00-24:00`；已有仓位、保护单监控、止盈止损不受这个限制。
+- `LIVE_TRADING_HTF_HULL_FILTER_ENABLED=true` 时，会额外读取 `LIVE_TRADING_HTF_HULL_DURATION_SECONDS=3600` 的 Hull 船体趋势。1h 红色多趋势禁止 5m 开空；1h 绿色空趋势禁止 5m 开多。
 
 止盈止损默认使用标记价作为开仓价格锚点，`2ATR = 1R`：
 
@@ -151,6 +154,7 @@ LIVE_TRADING_EMAIL_TO=
 - 空单观察：同一根 K 线出现 `Sell` 或 `卖`，并且 `STC > 75` 且 STC 为红色，同时绿色空头带 `mhull_down / shull_down` 必须整体位于开仓 K 线 high 上方。
 - 多单观察：同一根 K 线出现 `Buy` 或 `买`，并且 `STC < 25` 且 STC 为绿色，同时红色多头带 `mhull_up / shull_up` 必须整体位于开仓 K 线 low 下方。
 - 如果红带/绿带穿进开仓 K 线区间，视为中穿，不开仓。
+- 高周期过滤：默认再看 1h Hull 船体趋势，1h 红色多趋势时禁止 5m 反向开空，1h 绿色空趋势时禁止 5m 反向开多。
 
 如果策略名不是 `stc_extreme_contrarian`，会退回 marker 模式：
 

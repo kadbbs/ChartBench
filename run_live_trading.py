@@ -59,6 +59,17 @@ def evaluate_snapshot(
         data_length=args.length,
         indicator_ids=["merged_dkx_hull_ut", "stc", "macd"],
     )
+    if engine.config.htf_hull_filter_enabled:
+        snapshot["higher_timeframe"] = service.get_snapshot(
+            provider=args.provider,
+            symbol=args.symbol,
+            duration_seconds=engine.config.htf_hull_duration_seconds,
+            bar_mode=args.bar_mode,
+            range_ticks=args.range_ticks,
+            brick_length=args.brick_length,
+            data_length=args.length,
+            indicator_ids=["merged_dkx_hull_ut"],
+        )
     decision = engine.evaluate_snapshot(snapshot)
     return snapshot, decision
 
