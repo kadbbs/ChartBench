@@ -194,6 +194,31 @@ LIVE_TRADING_EMAIL_TO=
 tq-live-{symbol}-{side}-{bar_time}
 ```
 
+## K 线级回测
+
+当前分支提供独立回测入口：
+
+```bash
+./myvenv/bin/python run_backtest.py --symbol BTCUSDT --duration 300 --length 1000 --strategy live_decision
+```
+
+- `live_decision`：复用当前实盘信号判断，包括 5m 策略、1h Hull 趋势过滤和本地 Hull 带位置过滤。
+- 回测按 K 线级别撮合：信号在目标 K 线收完后确认，下一根 K 线 open 开仓。
+- 风控沿用实盘参数：`2ATR=1R`，`1R` 平 50%，`1.5R` 平剩余仓位。
+- 回测模块支持多策略扩展：新增策略只需要实现 `KlineStrategy.evaluate(snapshot)` 并在 `tq_app/backtesting/strategies.py` 注册。
+
+默认输出目录：
+
+```text
+backtest_outputs/latest/
+```
+
+输出文件：
+
+- `report.json`：参数、收益、胜率、最大回撤、交易明细。
+- `trades.csv`：开仓、平仓、分批止盈、R 倍数。
+- `candles.json`：K 线、成交量、开仓/平仓 markers，可供前端或脚本画图。
+
 记录文件：
 
 ```text
