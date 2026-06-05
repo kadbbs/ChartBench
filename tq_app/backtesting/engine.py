@@ -108,7 +108,7 @@ class BacktestEngine:
                 symbol=self.config.symbol,
                 provider=self.config.provider,
                 duration_seconds=self.live_config.htf_hull_duration_seconds,
-                indicator_ids=["merged_dkx_hull_ut"],
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
             )
             htf_snapshot = htf_builder.build_full(htf_bars)
 

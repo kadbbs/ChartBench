@@ -1515,21 +1515,39 @@ class LiveTradingEngine:
         target_index = -2 if self.config.use_closed_bar and len(candles) >= 2 else -1
         target_candle = candles[target_index]
         bar_time = int(target_candle.get("time") or 0)
-        indicator_values, _indicator_colors = self._indicator_context_at(htf_snapshot, bar_time)
+        indicator_values, indicator_colors = self._indicator_context_at(htf_snapshot, bar_time)
         red_band = self._hull_band_values(indicator_values, "buy")
         green_band = self._hull_band_values(indicator_values, "sell")
+        stc_color = indicator_colors.get("stc.stc", "")
+        stc_trend = self._stc_trend_from_color(stc_color)
         detail = {
             "bar_time": bar_time,
             "bar_time_label": self._bar_time_label(htf_snapshot, bar_time),
             "red_band": red_band,
             "green_band": green_band,
+            "stc_color": stc_color,
+            "stc_trend": stc_trend,
         }
         if red_band and not green_band:
+            if stc_trend != "buy":
+                detail["reason"] = "1h Hull 为红色上升趋势，但 1h STC 不是上升色"
+                return None, detail
             return "buy", detail
         if green_band and not red_band:
+            if stc_trend != "sell":
+                detail["reason"] = "1h Hull 为绿色下降趋势，但 1h STC 不是下降色"
+                return None, detail
             return "sell", detail
         detail["reason"] = "红带/绿带状态为空或同时存在"
         return None, detail
+
+    @staticmethod
+    def _stc_trend_from_color(color: str) -> str | None:
+        if _is_green_color(color):
+            return "buy"
+        if _is_red_color(color):
+            return "sell"
+        return None
 
     def _side_from_marker_texts(self, marker_texts: list[str]) -> str | None:
         texts = set(marker_texts)

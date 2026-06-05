@@ -68,7 +68,7 @@ def evaluate_snapshot(
             range_ticks=args.range_ticks,
             brick_length=args.brick_length,
             data_length=args.length,
-            indicator_ids=["merged_dkx_hull_ut"],
+            indicator_ids=["merged_dkx_hull_ut", "stc"],
         )
     decision = engine.evaluate_snapshot(snapshot)
     return snapshot, decision
