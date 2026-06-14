@@ -3,14 +3,9 @@ __pycache__/
 *.pyc
 
 myvenv/
-data/
 logs/
+backtest_outputs/
 build/
 dist/
 release/
 *.egg-info/
-
-experiments/
-
-backtest/
-spqrc_outputs/

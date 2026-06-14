@@ -52,6 +52,8 @@ class LiveTradingConfig:
     entry_time_end: str = "24:00"
     htf_hull_filter_enabled: bool = True
     htf_hull_duration_seconds: int = 3600
+    local_position_enabled: bool = True
+    local_position_record_observation: bool = True
     size: str = ""
     leverage: str = ""
     signal_mode: str = "any"
@@ -100,6 +102,8 @@ class LiveTradingConfig:
             entry_time_end=os.getenv("LIVE_TRADING_ENTRY_TIME_END", "24:00").strip(),
             htf_hull_filter_enabled=_env_bool("LIVE_TRADING_HTF_HULL_FILTER_ENABLED", True),
             htf_hull_duration_seconds=_env_int("LIVE_TRADING_HTF_HULL_DURATION_SECONDS", 3600),
+            local_position_enabled=_env_bool("LIVE_TRADING_LOCAL_POSITION_ENABLED", True),
+            local_position_record_observation=_env_bool("LIVE_TRADING_LOCAL_POSITION_RECORD_OBSERVATION", True),
             size=os.getenv("LIVE_TRADING_ORDER_SIZE", "").strip(),
             leverage=os.getenv("LIVE_TRADING_LEVERAGE", "").strip(),
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
@@ -546,6 +550,23 @@ class LiveTradingEngine:
                 already_executed=True,
             )
             self._log_result(result)
+            return result
+        local_position = self._local_same_side_position(decision)
+        if local_position is not None:
+            result = TradeExecutionResult(
+                decision=decision,
+                dry_run=True,
+                enabled=self.config.enabled,
+                response={
+                    "sameSidePosition": True,
+                    "source": "local",
+                    "message": "本地仓位账本已有同方向仓位，跳过开仓。",
+                    "position": local_position,
+                },
+            )
+            self._record_execution(result)
+            self._log_result(result)
+            self._send_email(result)
             return result
         if self.config.log_only or self.config.dry_run or not self.config.enabled:
             same_side_position = self._same_side_position_if_available(decision)
@@ -1294,6 +1315,31 @@ class LiveTradingEngine:
             self.logger.warning("观察/邮件模式同向仓位检查失败，继续发送信号邮件: %s", exc)
             return None
 
+    def _local_same_side_position(self, decision: TradeDecision) -> dict[str, Any] | None:
+        if not self.config.local_position_enabled or decision.side not in {"buy", "sell"}:
+            return None
+        state = self._read_state()
+        positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
+        for position in reversed(positions):
+            if str(position.get("status") or "open").lower() != "open":
+                continue
+            if str(position.get("symbol") or "").upper() != decision.symbol.upper():
+                continue
+            if str(position.get("side") or "").lower() != decision.side:
+                continue
+            return {
+                "source": "local",
+                "symbol": position.get("symbol"),
+                "side": position.get("side"),
+                "holdSide": position.get("holdSide"),
+                "clientOid": position.get("clientOid"),
+                "bar_time": position.get("bar_time"),
+                "bar_time_label": position.get("bar_time_label"),
+                "created_at": position.get("created_at"),
+                "note": position.get("note"),
+            }
+        return None
+
     @staticmethod
     def _position_size(position: dict[str, Any]) -> float:
         for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
@@ -1636,6 +1682,7 @@ class LiveTradingEngine:
             self._add_tracked_entry_order(state, result)
             self._add_tracked_tpsl_orders(state, result)
             self._write_state(state)
+        self._record_local_position_if_needed(result)
 
     @staticmethod
     def _should_update_execution_state(result: TradeExecutionResult) -> bool:
@@ -1647,6 +1694,47 @@ class LiveTradingEngine:
             return False
         response = result.response if isinstance(result.response, dict) else {}
         return bool(response.get("order") or response.get("makerEntryPending") or response.get("tpslResponses"))
+
+    def _record_local_position_if_needed(self, result: TradeExecutionResult) -> None:
+        if not self.config.local_position_enabled:
+            return
+        decision = result.decision
+        if decision.action != "place_order" or decision.side not in {"buy", "sell"} or not decision.client_oid:
+            return
+        if result.error or result.already_executed:
+            return
+        response = result.response if isinstance(result.response, dict) else {}
+        if response.get("sameSidePosition") or response.get("entryTimeBlocked") or response.get("preflight"):
+            return
+        is_real_position = bool(response.get("order") or response.get("makerEntryPending") or response.get("tpslResponses"))
+        is_observation_position = bool(response.get("logOnly") or response.get("dryRun"))
+        if is_observation_position and not self.config.local_position_record_observation:
+            return
+        if not is_real_position and not is_observation_position:
+            return
+
+        state = self._read_state()
+        positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
+        existing = {str(item.get("clientOid") or "") for item in positions}
+        if decision.client_oid in existing:
+            return
+        source = "live" if is_real_position and not result.dry_run and result.enabled else ("log_only" if response.get("logOnly") else "dry_run")
+        positions.append(
+            {
+                "status": "open",
+                "source": source,
+                "symbol": decision.symbol,
+                "side": decision.side,
+                "holdSide": "long" if decision.side == "buy" else "short",
+                "clientOid": decision.client_oid,
+                "bar_time": decision.bar_time,
+                "bar_time_label": decision.bar_time_label,
+                "created_at": int(time.time() * 1000),
+                "note": "本地仓位账本记录；如已手动平仓，请手动在 state 文件中将 status 改为 closed。",
+            }
+        )
+        state["local_positions"] = positions[-500:]
+        self._write_state(state)
 
     def _add_tracked_entry_order(self, state: dict[str, Any], result: TradeExecutionResult) -> None:
         response = result.response or {}
