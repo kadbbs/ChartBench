@@ -126,14 +126,14 @@ def main() -> None:
         last_version: int | None = None
         last_evaluated_bar_time: int | None = None
         last_heartbeat_at = time.monotonic()
-        last_tpsl_check_at = 0.0
+        last_runtime_check_at = 0.0
 
         while not shutdown_requested:
             try:
                 now = time.monotonic()
-                if now - last_tpsl_check_at >= max(engine.config.tpsl_monitor_interval_seconds, 1.0):
-                    engine.check_tracked_tpsl_orders()
-                    last_tpsl_check_at = now
+                if now - last_runtime_check_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                    engine.check_runtime_state()
+                    last_runtime_check_at = now
                 snapshot, decision = evaluate_snapshot(service, engine, args)
                 stream_meta = snapshot.get("stream") or {}
                 last_version = int(stream_meta.get("version") or 0)
@@ -165,9 +165,9 @@ def main() -> None:
                 if args.heartbeat_seconds > 0 and now - last_heartbeat_at >= args.heartbeat_seconds:
                     print(json.dumps({"heartbeat": True, "version": last_version, "ts": int(time.time() * 1000)}, ensure_ascii=False))
                     last_heartbeat_at = now
-                if now - last_tpsl_check_at >= max(engine.config.tpsl_monitor_interval_seconds, 1.0):
-                    engine.check_tracked_tpsl_orders()
-                    last_tpsl_check_at = now
+                if now - last_runtime_check_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                    engine.check_runtime_state()
+                    last_runtime_check_at = now
     finally:
         service.stop()
 
