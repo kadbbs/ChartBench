@@ -51,6 +51,22 @@ TQ_DEFAULT_REFRESH_MS=200
 TQ_DEFAULT_BAR_MODE=time
 ```
 
+运行模式：
+
+```env
+# off=关闭信号执行和邮件
+# email=仅写观察日志/发邮件，不构造下单请求
+# dry_run=构造下单请求并发邮件，但不发送到 Bitget
+# live=真实下单
+LIVE_TRADING_MODE=email
+```
+
+推荐流程：
+
+1. `LIVE_TRADING_MODE=email`：先确认信号邮件是否符合预期。
+2. `LIVE_TRADING_MODE=dry_run`：检查构造出的 Bitget 下单请求。
+3. `LIVE_TRADING_MODE=live`：确认 API、数量和预检查通过后再真实下单。
+
 Bitget 私有接口配置：
 
 ```env
@@ -60,14 +76,17 @@ BITGET_API_PASSPHRASE=
 BITGET_DEFAULT_PRODUCT_TYPE=USDT-FUTURES
 ```
 
-真实下单必须同时满足：
+真实下单最小配置：
 
 ```env
-LIVE_TRADING_ENABLED=true
-LIVE_TRADING_DRY_RUN=false
-LIVE_TRADING_LOG_ONLY=false
+LIVE_TRADING_MODE=live
 LIVE_TRADING_ORDER_SIZE=0.001
 ```
+
+兼容旧配置：如果没有设置 `LIVE_TRADING_MODE`，程序仍会读取
+`LIVE_TRADING_ENABLED`、`LIVE_TRADING_DRY_RUN`、`LIVE_TRADING_LOG_ONLY`。
+旧配置下仍然需要 `LIVE_TRADING_ENABLED=true`、`LIVE_TRADING_DRY_RUN=false`、
+`LIVE_TRADING_LOG_ONLY=false` 才会真实下单。
 
 开仓订单类型：
 
@@ -104,9 +123,7 @@ LIVE_TRADING_TP2_R_MULTIPLE=1.5
 默认安全状态是不真实下单：
 
 ```env
-LIVE_TRADING_ENABLED=false
-LIVE_TRADING_DRY_RUN=true
-LIVE_TRADING_LOG_ONLY=true
+LIVE_TRADING_MODE=email
 ```
 
 邮件提醒：
@@ -150,16 +167,17 @@ LIVE_TRADING_EMAIL_TO=
 3. 真实交易模式会先用 Bitget 实际持仓同步本地 `local_positions`；同步成功后账号为准，本地多出的 open 仓位会标记为 closed，账号里存在但本地没有的仓位会写入本地。
 4. 查询本地仓位账本；已有同方向 open 仓位时，跳过开仓并发送“已有同向仓位”邮件。
 5. 观察/邮件模式也会尝试查询当前持仓；已有同方向仓位时，跳过开仓提醒并发送“已有同向仓位”邮件。
-6. `LIVE_TRADING_LOG_ONLY=true`：观察模式，只写订单日志和发邮件，不构造真实下单请求。
-7. `LIVE_TRADING_ORDER_SIZE` 为空：拒绝下单，并发送邮件。
-8. `LIVE_TRADING_DRY_RUN=true` 或 `LIVE_TRADING_ENABLED=false`：构造请求但不发送到 Bitget。
-9. 真实交易路径：执行 Bitget preflight，检查私有接口、合约、ticker、下单数量和精度。
-10. 查询当前持仓。
-11. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
-12. 已有反方向仓位：先调用 Bitget `close-positions` 平掉反向仓位，并确认反向仓位消失；如果仍存在，拒绝继续开仓。
-13. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
-14. 调用 Bitget `place-order` 下 `market` 市价开仓单，不再自动挂止盈止损。
-15. 常驻循环会继续同步账号持仓到本地账本。
+6. `LIVE_TRADING_MODE=off`：只写普通运行日志，不写订单记录、不发邮件、不记录虚拟仓位。
+7. `LIVE_TRADING_MODE=email`：只写订单观察日志和发邮件，不构造真实下单请求。
+8. `LIVE_TRADING_ORDER_SIZE` 为空：非 `email/off` 模式会拒绝下单，并发送邮件。
+9. `LIVE_TRADING_MODE=dry_run`：构造请求但不发送到 Bitget。
+10. `LIVE_TRADING_MODE=live`：执行 Bitget preflight，检查私有接口、合约、ticker、下单数量和精度。
+11. 查询当前持仓。
+12. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
+13. 已有反方向仓位：先调用 Bitget `close-positions` 平掉反向仓位，并确认反向仓位消失；如果仍存在，拒绝继续开仓。
+14. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
+15. 调用 Bitget `place-order` 下 `market` 市价开仓单，不再自动挂止盈止损。
+16. 常驻循环会继续同步账号持仓到本地账本。
 
 当前实盘只生成 taker 市价单，不再读取 maker/post_only 相关环境变量。
 
@@ -256,9 +274,9 @@ timestamp + method + request_path + body
 ## Review 重点
 
 - `.env` 不应提交真实 API Key、Secret、Passphrase。
-- 真实上线前应先跑 `LIVE_TRADING_LOG_ONLY=true` 观察信号和邮件。
-- 再跑 `LIVE_TRADING_LOG_ONLY=false`、`LIVE_TRADING_DRY_RUN=true` 检查订单请求。
-- 最后才打开 `LIVE_TRADING_ENABLED=true` 和 `LIVE_TRADING_DRY_RUN=false`。
+- 真实上线前应先跑 `LIVE_TRADING_MODE=email` 观察信号和邮件。
+- 再跑 `LIVE_TRADING_MODE=dry_run` 检查订单请求。
+- 最后才切到 `LIVE_TRADING_MODE=live`。
 - `LIVE_TRADING_ORDER_SIZE` 需要按 Bitget 合约规格确认最小下单量。
 - `LIVE_TRADING_PRICE_DECIMALS` 和 `LIVE_TRADING_SIZE_DECIMALS` 需要按合约规格确认。
 - 已有同方向仓位会跳过开仓；反向仓位会先平仓，确认反向仓位消失后才继续开仓。
@@ -276,13 +294,13 @@ timestamp + method + request_path + body
 观察模式跑一轮：
 
 ```bash
-LIVE_TRADING_LOG_ONLY=true ./myvenv/bin/python run_live_trading.py
+LIVE_TRADING_MODE=email ./myvenv/bin/python run_live_trading.py
 ```
 
 常驻观察：
 
 ```bash
-LIVE_TRADING_LOG_ONLY=true ./myvenv/bin/python run_live_trading.py --continuous
+LIVE_TRADING_MODE=email ./myvenv/bin/python run_live_trading.py --continuous
 ```
 
 实盘预检查：

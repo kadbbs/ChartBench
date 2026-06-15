@@ -70,9 +70,14 @@ TQ_DEFAULT_PORT=8050
 真实交易必须显式打开：
 
 ```env
-LIVE_TRADING_ENABLED=true
-LIVE_TRADING_DRY_RUN=false
-LIVE_TRADING_LOG_ONLY=false
+LIVE_TRADING_MODE=live
+LIVE_TRADING_ORDER_SIZE=0.001
+```
+
+仅邮件观察使用：
+
+```env
+LIVE_TRADING_MODE=email
 ```
 
 ## 回测

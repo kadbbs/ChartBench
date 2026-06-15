@@ -34,6 +34,7 @@ SIGNAL_TEXT_BY_SIDE = {
 
 @dataclass(slots=True)
 class LiveTradingConfig:
+    mode: str = "email"
     enabled: bool = False
     dry_run: bool = True
     log_only: bool = True
@@ -73,10 +74,22 @@ class LiveTradingConfig:
     @classmethod
     def from_env(cls, project_root: Path) -> "LiveTradingConfig":
         load_dotenv(project_root / ".env")
+        mode = _env_live_trading_mode()
+        if mode:
+            enabled, dry_run, log_only = _mode_flags(mode)
+        else:
+            enabled = _env_bool("LIVE_TRADING_ENABLED", False)
+            dry_run = _env_bool("LIVE_TRADING_DRY_RUN", True)
+            log_only = _env_bool("LIVE_TRADING_LOG_ONLY", True)
+            mode = _mode_from_flags(enabled=enabled, dry_run=dry_run, log_only=log_only)
+        email_enabled = _env_bool("LIVE_TRADING_EMAIL_ENABLED", True)
+        if mode == "off":
+            email_enabled = False
         return cls(
-            enabled=_env_bool("LIVE_TRADING_ENABLED", False),
-            dry_run=_env_bool("LIVE_TRADING_DRY_RUN", True),
-            log_only=_env_bool("LIVE_TRADING_LOG_ONLY", True),
+            mode=mode,
+            enabled=enabled,
+            dry_run=dry_run,
+            log_only=log_only,
             product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BITGET_DEFAULT_PRODUCT_TYPE", "USDT-FUTURES")).strip().upper(),
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
             margin_mode=os.getenv("LIVE_TRADING_MARGIN_MODE", "crossed").strip().lower(),
@@ -104,12 +117,21 @@ class LiveTradingConfig:
             price_decimals=_env_int("LIVE_TRADING_PRICE_DECIMALS", 2),
             size_decimals=_env_int("LIVE_TRADING_SIZE_DECIMALS", 6),
             position_sync_interval_seconds=_env_float("LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS", 30.0),
-            email_enabled=_env_bool("LIVE_TRADING_EMAIL_ENABLED", True),
+            email_enabled=email_enabled,
             email_to=os.getenv("LIVE_TRADING_EMAIL_TO", "").strip(),
             log_path=project_root / os.getenv("LIVE_TRADING_LOG_PATH", str(DEFAULT_LOG_PATH)).strip(),
             order_log_path=project_root / os.getenv("LIVE_TRADING_ORDER_LOG_PATH", str(DEFAULT_ORDER_LOG_PATH)).strip(),
             state_path=project_root / os.getenv("LIVE_TRADING_STATE_PATH", str(DEFAULT_STATE_PATH)).strip(),
         )
+
+    def status_label(self) -> str:
+        labels = {
+            "off": "关闭模式",
+            "email": "邮件观察模式",
+            "dry_run": "DRY-RUN",
+            "live": "真实交易",
+        }
+        return labels.get(self.mode, "观察模式" if self.log_only else ("DRY-RUN" if self.dry_run or not self.enabled else "真实交易"))
 
 
 @dataclass(slots=True)
@@ -268,12 +290,13 @@ class LiveTradingEngine:
         if not self.config.email_enabled or not self.config.email_to:
             return
         mode = "常驻实盘" if continuous else "单次实盘"
-        status = "观察模式" if self.config.log_only else ("DRY-RUN" if self.config.dry_run or not self.config.enabled else "真实交易")
+        status = self.config.status_label()
         subject = f"[TQ Live] {mode}已启动 {symbol.upper()} {duration_seconds}s {status}"
         html = (
             "<h3>TQ Live Trading Started</h3>"
             f"<p><b>Mode:</b> {mode}</p>"
             f"<p><b>Status:</b> {status}</p>"
+            f"<p><b>Trading Mode:</b> {self.config.mode}</p>"
             f"<p><b>Symbol:</b> {symbol.upper()}</p>"
             f"<p><b>Duration:</b> {duration_seconds}s</p>"
             f"<p><b>Enabled:</b> {self.config.enabled}</p>"
@@ -450,6 +473,15 @@ class LiveTradingEngine:
     def execute_decision(self, decision: TradeDecision) -> TradeExecutionResult:
         if decision.action != "place_order" or decision.side is None:
             result = TradeExecutionResult(decision=decision, dry_run=self.config.dry_run, enabled=self.config.enabled)
+            self._log_result(result)
+            return result
+        if self.config.mode == "off":
+            result = TradeExecutionResult(
+                decision=decision,
+                dry_run=True,
+                enabled=False,
+                response={"modeOff": True, "message": "LIVE_TRADING_MODE=off：跳过执行、订单日志和邮件。"},
+            )
             self._log_result(result)
             return result
         if self._already_executed(decision.client_oid or ""):
@@ -1366,6 +1398,52 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw == "":
         return default
     return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_live_trading_mode() -> str:
+    raw = os.getenv("LIVE_TRADING_MODE", "").strip().lower().replace("-", "_")
+    if not raw:
+        return ""
+    aliases = {
+        "none": "off",
+        "disabled": "off",
+        "disable": "off",
+        "observe": "email",
+        "observation": "email",
+        "mail": "email",
+        "email_only": "email",
+        "log": "email",
+        "log_only": "email",
+        "dryrun": "dry_run",
+        "paper": "dry_run",
+        "real": "live",
+        "trade": "live",
+        "trading": "live",
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {"off", "email", "dry_run", "live"}:
+        raise ValueError("LIVE_TRADING_MODE 只支持 off / email / dry_run / live")
+    return mode
+
+
+def _mode_flags(mode: str) -> tuple[bool, bool, bool]:
+    if mode == "live":
+        return True, False, False
+    if mode == "dry_run":
+        return False, True, False
+    if mode in {"email", "off"}:
+        return False, True, True
+    raise ValueError(f"未知 LIVE_TRADING_MODE: {mode}")
+
+
+def _mode_from_flags(*, enabled: bool, dry_run: bool, log_only: bool) -> str:
+    if enabled and not dry_run and not log_only:
+        return "live"
+    if log_only:
+        return "email"
+    if dry_run or not enabled:
+        return "dry_run"
+    return "email"
 
 
 def _env_int(name: str, default: int) -> int:
