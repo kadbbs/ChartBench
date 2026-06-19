@@ -40,8 +40,12 @@ class LiveTradingConfig:
     log_only: bool = True
     product_type: str = "USDT-FUTURES"
     margin_coin: str = "USDT"
-    margin_mode: str = "crossed"
+    margin_mode: str = "isolated"
     position_mode: str = "one_way_mode"
+    margin_amount: str = "5"
+    auto_transfer_enabled: bool = True
+    auto_transfer_multiplier: str = "1.1"
+    auto_transfer_buffer: str = "0"
     entry_time_filter_enabled: bool = False
     entry_time_start: str = "20:00"
     entry_time_end: str = "24:00"
@@ -52,7 +56,7 @@ class LiveTradingConfig:
     position_sync_enabled: bool = True
     position_sync_real_only: bool = True
     size: str = ""
-    leverage: str = ""
+    leverage: str = "10"
     signal_mode: str = "any"
     strategy: str = "stc_extreme_contrarian"
     use_closed_bar: bool = True
@@ -92,8 +96,12 @@ class LiveTradingConfig:
             log_only=log_only,
             product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BITGET_DEFAULT_PRODUCT_TYPE", "USDT-FUTURES")).strip().upper(),
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
-            margin_mode=os.getenv("LIVE_TRADING_MARGIN_MODE", "crossed").strip().lower(),
+            margin_mode="isolated",
             position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "one_way_mode").strip().lower(),
+            margin_amount=os.getenv("LIVE_TRADING_MARGIN_AMOUNT", "5").strip() or "5",
+            auto_transfer_enabled=_env_bool("LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT", True),
+            auto_transfer_multiplier=os.getenv("LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER", "1.1").strip() or "1.1",
+            auto_transfer_buffer=os.getenv("LIVE_TRADING_AUTO_TRANSFER_BUFFER", "0").strip() or "0",
             entry_time_filter_enabled=_env_bool("LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED", False),
             entry_time_start=os.getenv("LIVE_TRADING_ENTRY_TIME_START", "20:00").strip(),
             entry_time_end=os.getenv("LIVE_TRADING_ENTRY_TIME_END", "24:00").strip(),
@@ -104,7 +112,7 @@ class LiveTradingConfig:
             position_sync_enabled=_env_bool("LIVE_TRADING_POSITION_SYNC_ENABLED", True),
             position_sync_real_only=_env_bool("LIVE_TRADING_POSITION_SYNC_REAL_ONLY", True),
             size=os.getenv("LIVE_TRADING_ORDER_SIZE", "").strip(),
-            leverage=os.getenv("LIVE_TRADING_LEVERAGE", "").strip(),
+            leverage=os.getenv("LIVE_TRADING_LEVERAGE", "10").strip() or "10",
             signal_mode=os.getenv("LIVE_TRADING_SIGNAL_MODE", "any").strip().lower(),
             strategy=os.getenv("LIVE_TRADING_STRATEGY", "stc_extreme_contrarian").strip().lower(),
             use_closed_bar=_env_bool("LIVE_TRADING_USE_CLOSED_BAR", True),
@@ -189,6 +197,43 @@ class BitgetFuturesTradeClient:
             params={"productType": product_type, "marginCoin": margin_coin},
         )
 
+    def get_futures_accounts(self, *, product_type: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/api/v2/mix/account/accounts",
+            params={"productType": product_type},
+        )
+
+    def get_spot_assets(self, *, coin: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/api/v2/spot/account/assets",
+            params={"coin": coin.upper()},
+        )
+
+    def transfer_between_accounts(
+        self,
+        *,
+        from_type: str,
+        to_type: str,
+        amount: str,
+        coin: str,
+        client_oid: str | None = None,
+    ) -> dict[str, Any]:
+        body = {
+            "fromType": from_type,
+            "toType": to_type,
+            "amount": amount,
+            "coin": coin.upper(),
+        }
+        if client_oid:
+            body["clientOid"] = client_oid
+        return self._request(
+            "POST",
+            "/api/v2/spot/wallet/transfer",
+            body=body,
+        )
+
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v2/mix/order/place-order", body=payload)
 
@@ -242,6 +287,25 @@ class BitgetFuturesTradeClient:
         if hold_side:
             body["holdSide"] = hold_side
         return self._request("POST", "/api/v2/mix/account/set-leverage", body=body)
+
+    def set_margin_mode(
+        self,
+        *,
+        symbol: str,
+        product_type: str,
+        margin_coin: str,
+        margin_mode: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v2/mix/account/set-margin-mode",
+            body={
+                "symbol": symbol,
+                "productType": product_type,
+                "marginCoin": margin_coin,
+                "marginMode": margin_mode,
+            },
+        )
 
     def _request(
         self,
@@ -319,13 +383,17 @@ class LiveTradingEngine:
             checks.append({"name": name, "ok": ok, "detail": detail})
 
         try:
-            if not self.config.size:
-                add_check("order_size", False, "LIVE_TRADING_ORDER_SIZE 为空")
-                return PreflightResult(ok=False, checks=checks, error="LIVE_TRADING_ORDER_SIZE 为空")
-            size = _to_decimal(self.config.size)
-            add_check("order_size", size > 0, self.config.size)
-            if size <= 0:
-                return PreflightResult(ok=False, checks=checks, error="LIVE_TRADING_ORDER_SIZE 必须大于 0")
+            margin_amount = _to_decimal(self.config.margin_amount)
+            leverage = _to_decimal(self.config.leverage)
+            add_check("margin_mode", self.config.margin_mode == "isolated", self.config.margin_mode)
+            if self.config.margin_mode != "isolated":
+                return PreflightResult(ok=False, checks=checks, error="实盘只允许逐仓 isolated。")
+            add_check("margin_amount", margin_amount > 0, self.config.margin_amount)
+            if margin_amount <= 0:
+                return PreflightResult(ok=False, checks=checks, error="LIVE_TRADING_MARGIN_AMOUNT 必须大于 0")
+            add_check("leverage", leverage == Decimal("10"), self.config.leverage)
+            if leverage != Decimal("10"):
+                return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_LEVERAGE=10")
 
             client = BitgetFuturesTradeClient(self.project_root)
             add_check("api_credentials", True, "Bitget API 凭据已加载")
@@ -337,6 +405,21 @@ class LiveTradingEngine:
             mark_price = ticker.get("markPrice")
             last_price = ticker.get("lastPr")
             add_check("ticker", bool(mark_price or last_price), {"markPrice": mark_price, "lastPr": last_price})
+            entry_price = _ticker_price_for_entry_source(ticker, self.config.entry_price_source)
+            if entry_price <= 0:
+                return PreflightResult(ok=False, checks=checks, error="ticker 价格无效，无法计算 5U/10x 下单数量。")
+            size = self._order_size_from_margin(entry_price)
+            add_check(
+                "computed_order_size",
+                size > 0,
+                {
+                    "entry_price": _decimal_to_string(entry_price),
+                    "margin_amount": self.config.margin_amount,
+                    "leverage": self.config.leverage,
+                    "notional": _decimal_to_string(margin_amount * leverage),
+                    "size": _decimal_to_string(size),
+                },
+            )
 
             contracts = client.get_contracts(product_type=self.config.product_type)
             contract = next((item for item in contracts if str(item.get("symbol") or "").upper() == symbol.upper()), None)
@@ -348,6 +431,29 @@ class LiveTradingEngine:
             add_check("precision", precision_ok, precision_detail)
             if not precision_ok:
                 return PreflightResult(ok=False, checks=checks, error="价格或数量精度配置可能不符合合约规格")
+
+            futures_available = self._futures_available(client)
+            spot_available = self._spot_available(client)
+            required_available = self._required_futures_available()
+            shortfall = max(required_available - futures_available, Decimal("0"))
+            add_check(
+                "futures_available",
+                futures_available >= required_available or (self.config.auto_transfer_enabled and spot_available >= shortfall),
+                {
+                    "available": _decimal_to_string(futures_available),
+                    "required_margin": _decimal_to_string(margin_amount),
+                    "required_with_buffer": _decimal_to_string(required_available),
+                    "auto_transfer_multiplier": self.config.auto_transfer_multiplier,
+                    "auto_transfer_buffer": self.config.auto_transfer_buffer,
+                    "shortfall": _decimal_to_string(shortfall),
+                    "spot_available": _decimal_to_string(spot_available),
+                    "auto_transfer_from_spot": self.config.auto_transfer_enabled,
+                },
+            )
+            if futures_available < required_available and not self.config.auto_transfer_enabled:
+                return PreflightResult(ok=False, checks=checks, error="合约账户 USDT 不足目标预留保证金，且自动现货划转未启用。")
+            if shortfall > 0 and spot_available < shortfall:
+                return PreflightResult(ok=False, checks=checks, error="合约账户 USDT 不足，现货账户余额也不足以补足目标预留保证金。")
 
             return PreflightResult(ok=all(bool(item.get("ok")) for item in checks), checks=checks)
         except Exception as exc:
@@ -539,17 +645,6 @@ class LiveTradingEngine:
             self._log_result(result)
             self._send_email(result)
             return result
-        if not self.config.size:
-            result = TradeExecutionResult(
-                decision=decision,
-                dry_run=self.config.dry_run,
-                enabled=self.config.enabled,
-                error="缺少 LIVE_TRADING_ORDER_SIZE，拒绝下单。",
-            )
-            self._log_result(result)
-            self._send_email(result)
-            return result
-
         if self.config.dry_run or not self.config.enabled:
             try:
                 request = self._order_request(decision)
@@ -588,6 +683,9 @@ class LiveTradingEngine:
         request: dict[str, Any] | None = None
         order_response: dict[str, Any] | None = None
         reverse_close_response: dict[str, Any] | None = None
+        fund_response: dict[str, Any] | None = None
+        margin_mode_response: dict[str, Any] | None = None
+        leverage_response: dict[str, Any] | None = None
         entry_price: Decimal | None = None
         try:
             client = BitgetFuturesTradeClient(self.project_root)
@@ -630,15 +728,21 @@ class LiveTradingEngine:
             if reverse_position is not None:
                 reverse_close_response = self._close_opposite_position(client, decision, reverse_position)
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
-            if self.config.leverage:
-                client.set_leverage(
-                    symbol=decision.symbol,
-                    product_type=self.config.product_type,
-                    margin_coin=self.config.margin_coin,
-                    leverage=self.config.leverage,
-                )
-            request = self._order_request(decision)
             entry_price = self._entry_price(client, decision)
+            fund_response = self._ensure_futures_margin_available(client)
+            margin_mode_response = client.set_margin_mode(
+                symbol=decision.symbol,
+                product_type=self.config.product_type,
+                margin_coin=self.config.margin_coin,
+                margin_mode="isolated",
+            )
+            leverage_response = client.set_leverage(
+                symbol=decision.symbol,
+                product_type=self.config.product_type,
+                margin_coin=self.config.margin_coin,
+                leverage="10",
+            )
+            request = self._order_request(decision, entry_price=entry_price)
             order_response = client.place_order(request)
             result = TradeExecutionResult(
                 decision=decision,
@@ -649,6 +753,9 @@ class LiveTradingEngine:
                     "entryPrice": _decimal_to_string(entry_price),
                     "order": order_response,
                     "reverseClose": reverse_close_response,
+                    "funding": fund_response,
+                    "marginMode": margin_mode_response,
+                    "leverage": leverage_response,
                 },
             )
         except Exception as exc:
@@ -661,6 +768,9 @@ class LiveTradingEngine:
                     "entryPrice": _decimal_to_string(entry_price) if entry_price is not None else None,
                     "order": order_response,
                     "reverseClose": reverse_close_response,
+                    "funding": fund_response,
+                    "marginMode": margin_mode_response,
+                    "leverage": leverage_response,
                 },
                 error=str(exc),
             )
@@ -760,6 +870,112 @@ class LiveTradingEngine:
         if decision.bar_close is None:
             raise RuntimeError("缺少 bar_close，无法预估 dry-run 开仓价格。")
         return _to_decimal(decision.bar_close)
+
+    def _order_size_from_margin(self, entry_price: Decimal) -> Decimal:
+        margin_amount = _to_decimal(self.config.margin_amount)
+        leverage = _to_decimal(self.config.leverage)
+        if margin_amount <= 0:
+            raise RuntimeError("LIVE_TRADING_MARGIN_AMOUNT 必须大于 0。")
+        if leverage != Decimal("10"):
+            raise RuntimeError("当前实盘固定要求 LIVE_TRADING_LEVERAGE=10。")
+        if entry_price <= 0:
+            raise RuntimeError("开仓价格必须大于 0，无法计算下单数量。")
+        raw_size = margin_amount * leverage / entry_price
+        size = _quantize_decimal(raw_size, self.config.size_decimals)
+        if size <= 0:
+            raise RuntimeError(f"按 5U/10x 计算出的下单数量过小: raw={raw_size}")
+        return size
+
+    def _required_futures_available(self) -> Decimal:
+        margin_amount = _to_decimal(self.config.margin_amount)
+        multiplier = _to_decimal(self.config.auto_transfer_multiplier)
+        buffer_amount = _to_decimal(self.config.auto_transfer_buffer)
+        if multiplier < Decimal("1"):
+            raise RuntimeError("LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER 不能小于 1。")
+        return margin_amount * multiplier + max(buffer_amount, Decimal("0"))
+
+    def _futures_available(self, client: BitgetFuturesTradeClient) -> Decimal:
+        payload = client.get_futures_accounts(product_type=self.config.product_type)
+        accounts = payload.get("data") or []
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            margin_coin = str(account.get("marginCoin") or "").upper()
+            if margin_coin and margin_coin != self.config.margin_coin:
+                continue
+            for key in ("available", "isolatedMaxAvailable", "availableBalance", "fixedMaxAvailable", "crossedMaxAvailable"):
+                value = account.get(key)
+                if value not in (None, ""):
+                    return _to_decimal(value)
+        return Decimal("0")
+
+    def _spot_available(self, client: BitgetFuturesTradeClient) -> Decimal:
+        payload = client.get_spot_assets(coin=self.config.margin_coin)
+        assets = payload.get("data") or []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            coin = str(asset.get("coinName") or asset.get("coin") or "").upper()
+            if coin and coin != self.config.margin_coin:
+                continue
+            value = asset.get("available")
+            if value not in (None, ""):
+                return _to_decimal(value)
+        return Decimal("0")
+
+    def _ensure_futures_margin_available(self, client: BitgetFuturesTradeClient) -> dict[str, Any]:
+        margin_amount = _to_decimal(self.config.margin_amount)
+        required_available = self._required_futures_available()
+        futures_available = self._futures_available(client)
+        if futures_available >= required_available:
+            return {
+                "transferred": False,
+                "futures_available": _decimal_to_string(futures_available),
+                "required_margin": _decimal_to_string(margin_amount),
+                "required_with_buffer": _decimal_to_string(required_available),
+                "auto_transfer_multiplier": self.config.auto_transfer_multiplier,
+                "auto_transfer_buffer": self.config.auto_transfer_buffer,
+            }
+        if not self.config.auto_transfer_enabled:
+            raise RuntimeError("合约账户 USDT 不足目标预留保证金，且 LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT=false。")
+
+        transfer_amount = max(required_available - futures_available, Decimal("0"))
+        spot_available = self._spot_available(client)
+        if transfer_amount <= 0:
+            transfer_amount = margin_amount - futures_available
+        if spot_available < transfer_amount:
+            raise RuntimeError(
+                "合约账户 USDT 不足，且现货账户余额不足以自动划转："
+                f"need={_decimal_to_string(transfer_amount)} spot={_decimal_to_string(spot_available)}"
+            )
+        response = client.transfer_between_accounts(
+            from_type="spot",
+            to_type="usdt_futures",
+            amount=_decimal_to_string(transfer_amount),
+            coin=self.config.margin_coin,
+            client_oid=f"tq-transfer-{int(time.time() * 1000)}",
+        )
+        refreshed = self._futures_available(client)
+        if refreshed < required_available:
+            raise RuntimeError(
+                "现货划转后合约账户仍不足目标预留保证金："
+                f"available={_decimal_to_string(refreshed)} required={_decimal_to_string(required_available)}"
+            )
+        return {
+            "transferred": True,
+            "from": "spot",
+            "to": "usdt_futures",
+            "coin": self.config.margin_coin,
+            "amount": _decimal_to_string(transfer_amount),
+            "before_futures_available": _decimal_to_string(futures_available),
+            "after_futures_available": _decimal_to_string(refreshed),
+            "required_margin": _decimal_to_string(margin_amount),
+            "required_with_buffer": _decimal_to_string(required_available),
+            "auto_transfer_multiplier": self.config.auto_transfer_multiplier,
+            "auto_transfer_buffer": self.config.auto_transfer_buffer,
+            "spot_available_before": _decimal_to_string(spot_available),
+            "response": response,
+        }
 
     def _same_side_position(
         self,
@@ -1247,13 +1463,15 @@ class LiveTradingEngine:
             return None
         return "buy" if has_buy else "sell"
 
-    def _order_request(self, decision: TradeDecision) -> dict[str, Any]:
+    def _order_request(self, decision: TradeDecision, entry_price: Decimal | None = None) -> dict[str, Any]:
+        price = entry_price or self._dry_run_entry_price(decision)
+        size = self._order_size_from_margin(price)
         request = {
             "symbol": decision.symbol,
             "productType": self.config.product_type,
-            "marginMode": self.config.margin_mode,
+            "marginMode": "isolated",
             "marginCoin": self.config.margin_coin,
-            "size": self.config.size,
+            "size": _decimal_to_string(size),
             "side": decision.side,
             "orderType": "market",
             "clientOid": decision.client_oid,
@@ -1486,6 +1704,20 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ticker_price_for_entry_source(ticker: dict[str, Any], entry_price_source: str) -> Decimal:
+    field_by_source = {
+        "mark_price": "markPrice",
+        "market": "lastPr",
+        "last": "lastPr",
+        "index_price": "indexPrice",
+    }
+    field = field_by_source.get(entry_price_source, "markPrice")
+    raw_value = ticker.get(field)
+    if raw_value in (None, ""):
+        raw_value = ticker.get("markPrice") or ticker.get("lastPr")
+    return _to_decimal(raw_value)
 
 
 def _format_price(value: float | None) -> str:

@@ -1,0 +1,32 @@
+# =============================================================================
+# 5U / 10倍 / 逐仓 Dry-run 方案
+# -----------------------------------------------------------------------------
+# 用途：
+# - 按真实实盘规则构造 Bitget 下单请求。
+# - 不发送到 Bitget，不真实下单。
+# - 不自动从现货划转。
+#
+# 常用命令：
+# ./myvenv/bin/python run_live_trading.py --profile dry_run_5u --continuous
+#
+# 你应该先用这个确认：
+# - 方向是否正确。
+# - size 是否符合预期。
+# - marginMode 是否为 isolated。
+# - leverage 是否为 10。
+# =============================================================================
+
+# 运行模式：dry_run=构造请求但不发送到 Bitget。
+LIVE_TRADING_MODE: dry_run
+
+# 单笔保证金金额。真实下单数量 = 5U * 10倍 / 开仓价。
+LIVE_TRADING_MARGIN_AMOUNT: 5
+
+# 杠杆固定 10 倍。
+LIVE_TRADING_LEVERAGE: 10
+
+# 保证金模式固定逐仓。
+LIVE_TRADING_MARGIN_MODE: isolated
+
+# dry-run 不需要自动划转。
+LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: false

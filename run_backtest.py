@@ -6,17 +6,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
 from tq_app.backtesting.data import fetch_bitget_candles
+from tq_app.config_profiles import load_layered_env
 from tq_app.live_trading import LiveTradingConfig
 from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str, runtime_project_root
 
 
 def parse_args() -> argparse.Namespace:
     project_root = runtime_project_root()
-    load_dotenv(project_root / ".env")
+    load_layered_env(project_root)
     parser = argparse.ArgumentParser(description="Run K-line level backtest with pluggable strategies.")
     parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER])
     parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-time", default="", help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
     parser.add_argument("--initial-equity", type=float, default=10_000.0)
     parser.add_argument("--risk-per-trade", type=float, default=0.01)
+    parser.add_argument("--order-size", type=float, default=None, help="固定下单数量；默认读取 LIVE_TRADING_ORDER_SIZE，空则按权益比例兜底。")
     parser.add_argument("--fee-rate", type=float, default=0.0006)
     parser.add_argument("--slippage-rate", type=float, default=0.0)
     parser.add_argument("--warmup-bars", type=int, default=80)
@@ -71,6 +72,7 @@ def main() -> None:
         duration_seconds=args.duration,
         initial_equity=args.initial_equity,
         risk_per_trade=args.risk_per_trade,
+        order_size=_resolve_order_size(args.order_size, live_config),
         fee_rate=args.fee_rate,
         slippage_rate=args.slippage_rate,
         stop_atr_multiplier=float(live_config.stop_atr_multiplier),
@@ -96,6 +98,15 @@ def _parse_end_time_ms(raw: str) -> int | None:
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("Asia/Shanghai")
     return int(timestamp.tz_convert("UTC").timestamp() * 1000)
+
+
+def _resolve_order_size(arg_value: float | None, live_config: LiveTradingConfig) -> float:
+    if arg_value is not None:
+        return max(float(arg_value), 0.0)
+    try:
+        return max(float(live_config.size), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 if __name__ == "__main__":

@@ -40,7 +40,27 @@
 
 ## 配置
 
-默认运行参数：
+当前实盘入口支持分层配置，优先级如下：
+
+```text
+config/defaults.yaml < config/profiles/<profile>.yaml < .env < shell 环境变量 < 命令行参数
+```
+
+当命令行显式传入 `--profile` 时，profile 会覆盖 `.env` 中同名的非密钥运行配置，避免旧 `.env` 里的 `LIVE_TRADING_MODE=live` 让 `--profile email` 失效。`.env` 仍建议只放 API Key、邮件收件人等私密/本机配置。
+
+查看可用 profile：
+
+```bash
+./myvenv/bin/python run_live_trading.py --list-profiles
+```
+
+查看最终生效配置，敏感字段会脱敏：
+
+```bash
+./myvenv/bin/python run_live_trading.py --profile live_5u --show-config
+```
+
+默认运行参数可放在 `config/defaults.yaml`：
 
 ```env
 TQ_DEFAULT_PROVIDER=bitget
@@ -63,9 +83,19 @@ LIVE_TRADING_MODE=email
 
 推荐流程：
 
-1. `LIVE_TRADING_MODE=email`：先确认信号邮件是否符合预期。
-2. `LIVE_TRADING_MODE=dry_run`：检查构造出的 Bitget 下单请求。
-3. `LIVE_TRADING_MODE=live`：确认 API、数量和预检查通过后再真实下单。
+1. `--profile email`：先确认信号邮件是否符合预期。
+2. `--profile dry_run_5u`：检查构造出的 5U/10x/逐仓 Bitget 下单请求。
+3. `--profile live_5u --preflight`：确认 API、5U/10x/逐仓配置和预检查通过。
+4. `--profile live_5u --continuous`：真实常驻执行。
+
+常用命令：
+
+```bash
+./myvenv/bin/python run_live_trading.py --profile email --continuous
+./myvenv/bin/python run_live_trading.py --profile dry_run_5u --continuous
+./myvenv/bin/python run_live_trading.py --profile live_5u --preflight
+./myvenv/bin/python run_live_trading.py --profile live_5u --continuous
+```
 
 Bitget 私有接口配置：
 
@@ -76,12 +106,21 @@ BITGET_API_PASSPHRASE=
 BITGET_DEFAULT_PRODUCT_TYPE=USDT-FUTURES
 ```
 
-真实下单最小配置：
+API Key 需要至少开启 Trade 权限；如果要合约账户不足 5U 时自动从现货划转，还需要 Transfer 权限。
+
+真实下单固定配置位于 `config/profiles/live_5u.yaml`：
 
 ```env
 LIVE_TRADING_MODE=live
-LIVE_TRADING_ORDER_SIZE=0.001
+LIVE_TRADING_MARGIN_AMOUNT=5
+LIVE_TRADING_LEVERAGE=10
+LIVE_TRADING_MARGIN_MODE=isolated
+LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT=true
+LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER=1.1
+LIVE_TRADING_AUTO_TRANSFER_BUFFER=0
 ```
+
+当前实盘下单不再要求手工填写 `LIVE_TRADING_ORDER_SIZE`。程序会用 `保证金 5U * 10倍杠杆 / 开仓价格` 自动换算 Bitget 合约下单数量，例如 BTC 65000 时约为 `0.000769 BTC`。若合约最小下单量高于该数量，`--preflight` 会拦截。
 
 兼容旧配置：如果没有设置 `LIVE_TRADING_MODE`，程序仍会读取
 `LIVE_TRADING_ENABLED`、`LIVE_TRADING_DRY_RUN`、`LIVE_TRADING_LOG_ONLY`。
@@ -103,6 +142,10 @@ LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true
 ```
 
 - 实盘开仓固定使用 Bitget `place-order` 的 `market` 市价单，也就是 taker 路径。
+- 实盘保证金模式固定逐仓 `isolated`，程序会在真实开仓前调用 Bitget 设置逐仓；即使 `.env` 误填 `crossed`，运行时仍会强制使用逐仓。
+- 实盘杠杆固定 10 倍，程序会在真实开仓前再次设置 `leverage=10`。
+- 实盘单笔使用 5 USDT 保证金，按当前开仓价格自动换算下单数量。
+- 合约账户可用 USDT 不足目标预留保证金时，如果 `LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT=true`，程序会从现货账户划转到 U 本位合约账户；这要求 API Key 开启 Transfer 权限。目标预留保证金 = `LIVE_TRADING_MARGIN_AMOUNT * LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER + LIVE_TRADING_AUTO_TRANSFER_BUFFER`，默认就是 `5 * 1.1 + 0 = 5.5U`。
 - 当前实盘模块不再支持 maker/post_only 开仓，不再自动挂止盈止损。
 - `LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED=true` 时，只允许北京时间 `LIVE_TRADING_ENTRY_TIME_START <= 当前时间 < LIVE_TRADING_ENTRY_TIME_END` 之间新开仓。默认示例为 `20:00-24:00`；已有仓位和账号持仓同步不受这个限制。
 - `LIVE_TRADING_HTF_HULL_FILTER_ENABLED=true` 时，会额外读取 `LIVE_TRADING_HTF_HULL_DURATION_SECONDS=3600` 的 Hull 船体趋势和 STC 颜色。1h Hull 红色多趋势时禁止 5m 开空；1h Hull 绿色空趋势时禁止 5m 开多；如果 1h Hull 趋势和 1h STC 方向不一致，则不做任何动作。
@@ -110,7 +153,7 @@ LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true
 - `LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true` 时，只在真实交易模式校准，避免 only 邮件/观察模式里的本地虚拟仓位被空账号持仓覆盖。
 - `LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS=30` 控制常驻模式下账号持仓同步间隔。
 
-当前实盘模块不再自动挂止盈止损，也不会因为缺少 ATR 拒绝开仓。以下 R 倍数参数仅给回测模块复用：
+当前实盘模块不再自动挂止盈止损，也不会因为缺少 ATR 拒绝开仓。以下 R 倍数参数为历史回测参数保留，当前默认实盘式回测不再用它们自动止盈止损：
 
 ```env
 LIVE_TRADING_ATR_PERIOD=14
@@ -163,21 +206,21 @@ LIVE_TRADING_EMAIL_TO=
 `LiveTradingEngine.execute_decision()` 按顺序执行以下保护：
 
 1. 没有下单信号：跳过，只写普通日志。
-2. 同一个 `clientOid` 已执行过：跳过，防止同一根 K 线重复执行。
-3. 真实交易模式会先用 Bitget 实际持仓同步本地 `local_positions`；同步成功后账号为准，本地多出的 open 仓位会标记为 closed，账号里存在但本地没有的仓位会写入本地。
-4. 查询本地仓位账本；已有同方向 open 仓位时，跳过开仓并发送“已有同向仓位”邮件。
-5. 观察/邮件模式也会尝试查询当前持仓；已有同方向仓位时，跳过开仓提醒并发送“已有同向仓位”邮件。
-6. `LIVE_TRADING_MODE=off`：只写普通运行日志，不写订单记录、不发邮件、不记录虚拟仓位。
-7. `LIVE_TRADING_MODE=email`：只写订单观察日志和发邮件，不构造真实下单请求。
-8. `LIVE_TRADING_ORDER_SIZE` 为空：非 `email/off` 模式会拒绝下单，并发送邮件。
-9. `LIVE_TRADING_MODE=dry_run`：构造请求但不发送到 Bitget。
-10. `LIVE_TRADING_MODE=live`：执行 Bitget preflight，检查私有接口、合约、ticker、下单数量和精度。
-11. 查询当前持仓。
-12. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
-13. 已有反方向仓位：先调用 Bitget `close-positions` 平掉反向仓位，并确认反向仓位消失；如果仍存在，拒绝继续开仓。
-14. 如配置 `LIVE_TRADING_LEVERAGE`，先设置杠杆。
-15. 调用 Bitget `place-order` 下 `market` 市价开仓单，不再自动挂止盈止损。
-16. 常驻循环会继续同步账号持仓到本地账本。
+1. 同一个 `clientOid` 已执行过：跳过，防止同一根 K 线重复执行。
+1. 真实交易模式会先用 Bitget 实际持仓同步本地 `local_positions`；同步成功后账号为准，本地多出的 open 仓位会标记为 closed，账号里存在但本地没有的仓位会写入本地。
+1. 查询本地仓位账本；已有同方向 open 仓位时，跳过开仓并发送“已有同向仓位”邮件。
+1. 观察/邮件模式也会尝试查询当前持仓；已有同方向仓位时，跳过开仓提醒并发送“已有同向仓位”邮件。
+1. `LIVE_TRADING_MODE=off`：只写普通运行日志，不写订单记录、不发邮件、不记录虚拟仓位。
+1. `LIVE_TRADING_MODE=email`：只写订单观察日志和发邮件，不构造真实下单请求。
+1. `LIVE_TRADING_MODE=dry_run`：按 5U/10x 自动计算下单数量，构造请求但不发送到 Bitget。
+1. `LIVE_TRADING_MODE=live`：执行 Bitget preflight，检查私有接口、合约、ticker、5U/10x 数量、精度、合约账户余额和现货可划转余额。
+1. 查询当前持仓。
+1. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
+1. 已有反方向仓位：先调用 Bitget `close-positions` 平掉反向仓位，并确认反向仓位消失；如果仍存在，拒绝继续开仓。
+1. 合约账户不足目标预留保证金时，从现货账户划转到 U 本位合约账户。
+1. 设置逐仓 `isolated` 和 10 倍杠杆。
+1. 调用 Bitget `place-order` 下 `market` 市价开仓单，不再自动挂止盈止损。
+1. 常驻循环会继续同步账号持仓到本地账本。
 
 当前实盘只生成 taker 市价单，不再读取 maker/post_only 相关环境变量。
 
@@ -199,7 +242,8 @@ tq-live-{symbol}-{side}-{bar_time}
 
 - `live_decision`：复用当前实盘信号判断，包括 5m 策略、1h Hull 趋势过滤和本地 Hull 带位置过滤。
 - 回测按 K 线级别撮合：信号在目标 K 线收完后确认，下一根 K 线 open 开仓。
-- 风控沿用实盘参数：`2ATR=1R`，`1R` 平 50%，`1.5R` 平剩余仓位。
+- 回测退出方式与当前实盘执行保持一致：不自动模拟止盈止损，已有仓位会一直持有，直到出现反向实盘信号时在下一根 K 线 open 平仓，并按新方向重新开仓。
+- 回测下单数量优先读取 `LIVE_TRADING_ORDER_SIZE`，也可用 `--order-size` 覆盖；为空时按 `initial_equity * risk_per_trade / entry_price` 兜底模拟。
 - 回测模块支持多策略扩展：新增策略只需要实现 `KlineStrategy.evaluate(snapshot)` 并在 `tq_app/backtesting/strategies.py` 注册。
 
 默认输出目录：
@@ -211,6 +255,8 @@ backtest_outputs/latest/
 输出文件：
 
 - `report.json`：参数、收益、胜率、最大回撤、交易明细。
+- `report.md`：更适合人工阅读的专业摘要，包含收益、市场背景、交易质量、风险和假设。
+- `report_zh.md`：中文专业摘要，包含分组表现和关键交易说明。
 - `trades.csv`：开仓、平仓、分批止盈、R 倍数。
 - `candles.json`：K 线、成交量、开仓/平仓 markers，可供前端或脚本画图。
 
@@ -259,9 +305,23 @@ logs/live_trading_orders.jsonl
 私有接口封装在 `BitgetFuturesTradeClient`：
 
 - 查询持仓：`GET /api/v2/mix/position/all-position`
+- 查询合约账户：`GET /api/v2/mix/account/accounts`
+- 查询现货余额：`GET /api/v2/spot/account/assets`
+- 现货转合约：`POST /api/v2/spot/wallet/transfer`
+- 设置逐仓：`POST /api/v2/mix/account/set-margin-mode`
 - 设置杠杆：`POST /api/v2/mix/account/set-leverage`
 - 下单：`POST /api/v2/mix/order/place-order`
 - 反向仓位平仓：`POST /api/v2/mix/order/close-positions`
+
+官方文档参考：
+
+- 合约账户查询：https://www.bitget.com/api-doc/contract/account/Get-Account-List
+- 设置逐仓/全仓模式：https://www.bitget.com/api-doc/contract/account/Change-Margin-Mode
+- 设置杠杆：https://www.bitget.com/api-doc/contract/account/Change-Leverage
+- 合约下单：https://www.bitget.com/api-doc/contract/trade/Place-Order
+- 合约一键平仓：https://www.bitget.com/api-doc/contract/trade/Flash-Close-Position
+- 现货余额查询：https://www.bitget.com/api-doc/spot/account/Get-Account-Assets
+- 现货/合约账户划转：https://www.bitget.com/api-doc/spot/account/Wallet-Transfer
 
 签名方式是 Bitget v2 风格：
 
@@ -277,7 +337,9 @@ timestamp + method + request_path + body
 - 真实上线前应先跑 `LIVE_TRADING_MODE=email` 观察信号和邮件。
 - 再跑 `LIVE_TRADING_MODE=dry_run` 检查订单请求。
 - 最后才切到 `LIVE_TRADING_MODE=live`。
-- `LIVE_TRADING_ORDER_SIZE` 需要按 Bitget 合约规格确认最小下单量。
+- `LIVE_TRADING_MARGIN_AMOUNT=5`、`LIVE_TRADING_LEVERAGE=10` 和逐仓是当前实盘固定配置。
+- API Key 必须开启 Trade；若启用自动划转，还必须开启 Transfer。
+- `--preflight` 必须通过；尤其要确认 5U/10x 自动计算出的 size 不低于 Bitget 合约最小下单量。
 - `LIVE_TRADING_PRICE_DECIMALS` 和 `LIVE_TRADING_SIZE_DECIMALS` 需要按合约规格确认。
 - 已有同方向仓位会跳过开仓；反向仓位会先平仓，确认反向仓位消失后才继续开仓。
 - 当前实盘模块不再自动挂止盈止损，也没有最大仓位、最大日亏损控制。

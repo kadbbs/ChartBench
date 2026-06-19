@@ -1,0 +1,46 @@
+# =============================================================================
+# 5U / 10倍 / 逐仓真实实盘方案
+# -----------------------------------------------------------------------------
+# 用途：
+# - 真实调用 Bitget 下单接口。
+# - 单笔使用 5 USDT 保证金。
+# - 固定 10 倍杠杆。
+# - 永远使用逐仓 isolated。
+# - 合约账户 USDT 不足时，从现货账户自动划转。
+#
+# 常用命令：
+# 1. 先预检查，不下单：
+#    ./myvenv/bin/python run_live_trading.py --profile live_5u --preflight
+#
+# 2. 预检查通过后，再常驻真实执行：
+#    ./myvenv/bin/python run_live_trading.py --profile live_5u --continuous
+#
+# 真实启用前必须确认：
+# - .env 里 BITGET_API_KEY / SECRET / PASSPHRASE 正确。
+# - API Key 有 Trade 权限。
+# - 如果保留自动划转 true，API Key 还要有 Transfer 权限。
+# - --preflight 已通过。
+# =============================================================================
+
+# 运行模式：live=真实下单。
+LIVE_TRADING_MODE: live
+
+# 单笔保证金金额。真实下单数量 = 5U * 10倍 / 开仓价。
+LIVE_TRADING_MARGIN_AMOUNT: 5
+
+# 杠杆固定 10 倍。
+LIVE_TRADING_LEVERAGE: 10
+
+# 保证金模式固定逐仓。
+LIVE_TRADING_MARGIN_MODE: isolated
+
+# 合约账户 USDT 不足时，从现货账户自动划转到 U 本位合约账户。
+LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: true
+
+# 自动划转目标比例。
+# 1.1 表示：5U 保证金会要求合约账户至少有 5.5U。
+LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER: 1.1
+
+# 额外固定缓冲，单位 USDT。
+# 默认 0；如果你想在 5.5U 之外再多放 0.2U，可改成 0.2。
+LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0

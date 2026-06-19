@@ -1,0 +1,166 @@
+# =============================================================================
+# 全局默认配置
+# -----------------------------------------------------------------------------
+# 这里放“不含密钥”的项目默认值。
+#
+# 生效优先级：
+# config/defaults.yaml < config/profiles/*.yaml < .env < shell 环境变量 < 命令行参数
+#
+# 建议：
+# - 这里放大多数场景都一样的默认值。
+# - 每个运行方案的差异放到 config/profiles/*.yaml。
+# - API Key、Secret、Passphrase、邮箱收件人等私人信息继续放 .env。
+# =============================================================================
+
+
+# ===== 图表 / 行情默认参数 =====
+
+# 当前只支持 bitget。
+TQ_DEFAULT_PROVIDER: bitget
+
+# 默认交易合约。换币种可改成 ETHUSDT、SOLUSDT 等 Bitget U 本位合约代码。
+TQ_DEFAULT_SYMBOL: BTCUSDT
+
+# 默认 K 线周期，单位秒。常用：180=3m，300=5m，900=15m，3600=1h。
+TQ_DEFAULT_DURATION_SECONDS: 300
+
+# 默认拉取 K 线数量。越大启动越慢，但指标历史更充足。
+TQ_DEFAULT_DATA_LENGTH: 800
+
+# 后端刷新等待间隔，单位毫秒。
+TQ_DEFAULT_REFRESH_MS: 200
+
+# Web 服务监听地址和端口。
+TQ_DEFAULT_HOST: 0.0.0.0
+TQ_DEFAULT_PORT: 8050
+
+# 当前 Bitget 数据源只支持 time。
+TQ_DEFAULT_BAR_MODE: time
+
+# Range/Renko 预留参数；当前 time 模式不会用。
+TQ_DEFAULT_RANGE_TICKS: 10
+TQ_DEFAULT_BRICK_LENGTH: 10000
+
+
+# ===== Bitget 行情 / 产品参数 =====
+
+# 当前项目默认跑 USDT 本位合约。
+BITGET_DEFAULT_PRODUCT_TYPE: USDT-FUTURES
+BITGET_PRODUCT_TYPES: USDT-FUTURES
+
+# K 线口径：MARKET=成交价，MARK=标记价，INDEX=指数价。
+BITGET_KLINE_TYPE: MARKET
+
+
+# ===== 实盘账户 / 合约参数 =====
+
+# Bitget 产品类型，应与行情产品类型保持一致。
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
+
+# 保证金币种。
+LIVE_TRADING_MARGIN_COIN: USDT
+
+# 持仓模式：one_way_mode=单向持仓；hedge_mode=双向持仓。
+LIVE_TRADING_POSITION_MODE: one_way_mode
+
+# 保证金模式固定逐仓。当前实盘代码也会强制使用 isolated。
+LIVE_TRADING_MARGIN_MODE: isolated
+
+# 单笔使用多少 USDT 作为保证金。真实下单数量 = margin_amount * leverage / 开仓价。
+LIVE_TRADING_MARGIN_AMOUNT: 5
+
+# 杠杆倍数。当前实盘固定要求 10。
+LIVE_TRADING_LEVERAGE: 10
+
+# 合约账户 USDT 不足时，是否从现货账户自动划转。
+# 真实启用需要 Bitget API Key 开启 Transfer 权限。
+LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: true
+
+# 自动划转目标比例。1.1 表示合约账户至少保留 margin_amount * 1.1。
+# 例如 margin_amount=5 时，合约账户不足 5.5U 就从现货补到 5.5U。
+LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER: 1.1
+
+# 自动划转额外固定缓冲，单位 USDT。
+# 默认 0，通常只调 multiplier 就够了；若设为 0.2，则目标为 margin_amount*multiplier+0.2。
+LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0
+
+
+# ===== 开仓价格 / 精度 =====
+
+# 开仓记录价格来源：mark_price=标记价；bar_close=信号 K 线收盘价。
+LIVE_TRADING_ENTRY_PRICE_SOURCE: mark_price
+
+# 价格小数位和数量小数位，需要按 Bitget 合约规格确认。
+LIVE_TRADING_PRICE_DECIMALS: 1
+LIVE_TRADING_SIZE_DECIMALS: 4
+
+
+# ===== 开仓时间过滤 =====
+
+# false=不限制开仓时间；true=只允许在指定北京时间窗口内新开仓。
+LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED: false
+
+# 开仓时间窗口，仅在 LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED=true 时生效。
+LIVE_TRADING_ENTRY_TIME_START: 20:00
+LIVE_TRADING_ENTRY_TIME_END: 24:00
+
+
+# ===== 策略 / 信号过滤 =====
+
+# 高周期 Hull 趋势过滤。默认打开。
+LIVE_TRADING_HTF_HULL_FILTER_ENABLED: true
+
+# 高周期周期，单位秒。3600=1h。
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 3600
+
+# 信号来源模式：
+# any=Buy/买 或 Sell/卖 任一触发
+# ut=只看 UT Bot 的 Buy/Sell
+# dkx=只看 DKX 的 买/卖
+# confirmed=UT 与 DKX 同向同时出现
+LIVE_TRADING_SIGNAL_MODE: any
+
+# 当前默认策略：
+# 空单：Sell/卖 任一出现，且 STC > 75 并为红色
+# 多单：Buy/买 任一出现，且 STC < 25 并为绿色
+LIVE_TRADING_STRATEGY: stc_extreme_contrarian
+
+# true=使用上一根已收完 K 线，减少未收线重绘影响。
+LIVE_TRADING_USE_CLOSED_BAR: true
+
+
+# ===== 本地仓位账本 / 交易所同步 =====
+
+# 用本地 state 文件记录 open 仓位，避免同方向重复开仓。
+LIVE_TRADING_LOCAL_POSITION_ENABLED: true
+
+# 观察/邮件模式是否也记录虚拟 open 仓位。
+LIVE_TRADING_LOCAL_POSITION_RECORD_OBSERVATION: true
+
+# 真实模式下是否用 Bitget 实际持仓同步本地账本。
+LIVE_TRADING_POSITION_SYNC_ENABLED: true
+
+# 持仓同步间隔，单位秒。
+LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS: 30
+
+# true=只在真实交易模式同步，避免观察模式的虚拟仓位被空账号覆盖。
+LIVE_TRADING_POSITION_SYNC_REAL_ONLY: true
+
+
+# ===== 邮件通知 =====
+
+# 是否启用邮件通知。具体收件人放 .env 的 LIVE_TRADING_EMAIL_TO。
+LIVE_TRADING_EMAIL_ENABLED: true
+
+# 默认发件人。真实发信仍需要 .env 里的 RESEND_API_KEY。
+RESEND_FROM_EMAIL: onboarding@resend.dev
+
+
+# ===== 回测 R 倍数参数 =====
+
+# 当前实盘不自动挂止盈止损；这些参数主要给回测报告/兼容旧逻辑保留。
+LIVE_TRADING_ATR_PERIOD: 14
+LIVE_TRADING_STOP_ATR_MULTIPLIER: 2
+LIVE_TRADING_TP1_R_MULTIPLE: 1
+LIVE_TRADING_TP1_SIZE_RATIO: 0.5
+LIVE_TRADING_TP2_R_MULTIPLE: 1.5

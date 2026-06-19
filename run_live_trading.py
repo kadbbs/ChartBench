@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import time
 from dataclasses import asdict
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from tq_app.config_profiles import available_profiles, effective_config_snapshot, load_layered_env
 from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine
 from tq_app.service import MarketDataService
 from web_tq_chart import (
@@ -26,9 +26,47 @@ from web_tq_chart import (
 )
 
 
+CONFIG_SNAPSHOT_KEYS = [
+    "LIVE_TRADING_MODE",
+    "LIVE_TRADING_MARGIN_AMOUNT",
+    "LIVE_TRADING_LEVERAGE",
+    "LIVE_TRADING_MARGIN_MODE",
+    "LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT",
+    "LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER",
+    "LIVE_TRADING_AUTO_TRANSFER_BUFFER",
+    "LIVE_TRADING_STRATEGY",
+    "LIVE_TRADING_SIGNAL_MODE",
+    "LIVE_TRADING_USE_CLOSED_BAR",
+    "LIVE_TRADING_HTF_HULL_FILTER_ENABLED",
+    "LIVE_TRADING_HTF_HULL_DURATION_SECONDS",
+    "LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED",
+    "LIVE_TRADING_POSITION_SYNC_ENABLED",
+    "LIVE_TRADING_EMAIL_ENABLED",
+    "LIVE_TRADING_EMAIL_TO",
+    "TQ_DEFAULT_SYMBOL",
+    "TQ_DEFAULT_DURATION_SECONDS",
+    "TQ_DEFAULT_DATA_LENGTH",
+    "BITGET_API_KEY",
+    "BITGET_API_SECRET",
+    "BITGET_API_PASSPHRASE",
+]
+
+
 def parse_args() -> argparse.Namespace:
-    load_dotenv(runtime_project_root() / ".env")
+    project_root = runtime_project_root()
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--profile", default="")
+    bootstrap.add_argument("--mode", choices=["off", "email", "dry_run", "live"], default="")
+    early_args, _unknown = bootstrap.parse_known_args()
+    load_layered_env(project_root, early_args.profile, profile_overrides_env=bool(early_args.profile))
+    if early_args.mode:
+        os.environ["LIVE_TRADING_MODE"] = early_args.mode
+
     parser = argparse.ArgumentParser(description="Run one Bitget live-trading decision from computed chart signals.")
+    parser.add_argument("--profile", default=early_args.profile, help="运行配置档案名称，对应 config/profiles/<name>.yaml")
+    parser.add_argument("--list-profiles", action="store_true", help="列出可用配置档案后退出。")
+    parser.add_argument("--show-config", action="store_true", help="打印最终生效的非密钥配置后退出。")
+    parser.add_argument("--mode", choices=["off", "email", "dry_run", "live"], default=early_args.mode, help="临时覆盖 LIVE_TRADING_MODE。")
     parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER])
     parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
     parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS))
@@ -41,7 +79,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preflight", action="store_true", help="只执行 Bitget 实盘预检查，不进行信号评估或下单。")
     parser.add_argument("--poll-timeout", type=float, default=15.0, help="常驻模式等待行情更新的超时时间，单位秒。")
     parser.add_argument("--heartbeat-seconds", type=float, default=300.0, help="常驻模式心跳日志间隔，单位秒。")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.mode:
+        os.environ["LIVE_TRADING_MODE"] = args.mode
+    return args
 
 
 def evaluate_snapshot(
@@ -81,7 +122,27 @@ def print_execution(decision: object, result: object) -> None:
 def main() -> None:
     args = parse_args()
     project_root = runtime_project_root()
-    load_dotenv(project_root / ".env")
+    load_layered_env(project_root, args.profile, profile_overrides_env=bool(args.profile))
+    if args.mode:
+        os.environ["LIVE_TRADING_MODE"] = args.mode
+
+    if args.list_profiles:
+        print(json.dumps({"profiles": available_profiles(project_root)}, ensure_ascii=False, indent=2))
+        return
+
+    if args.show_config:
+        print(
+            json.dumps(
+                {
+                    "profile": args.profile,
+                    "available_profiles": available_profiles(project_root),
+                    "effective_config": effective_config_snapshot(CONFIG_SNAPSHOT_KEYS),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
 
     service = MarketDataService(
         provider=args.provider,

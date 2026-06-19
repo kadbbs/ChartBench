@@ -61,24 +61,27 @@ TQ_DEFAULT_PORT=8050
 
 详见：`tq_app/LIVE_TRADING_README.md`
 
-常驻观察或实盘入口：
+实盘入口支持分层配置：`config/defaults.yaml` 放项目默认值，`config/profiles/*.yaml` 放运行方案，`.env` 只建议放 API Key、邮件收件人等私密配置。
+
+查看可用方案和最终生效配置：
 
 ```bash
-./myvenv/bin/python run_live_trading.py --continuous
+./myvenv/bin/python run_live_trading.py --list-profiles
+./myvenv/bin/python run_live_trading.py --profile live_5u --show-config
 ```
 
-真实交易必须显式打开：
+常用入口：
 
-```env
-LIVE_TRADING_MODE=live
-LIVE_TRADING_ORDER_SIZE=0.001
+```bash
+./myvenv/bin/python run_live_trading.py --profile email --continuous
+./myvenv/bin/python run_live_trading.py --profile dry_run_5u --continuous
+./myvenv/bin/python run_live_trading.py --profile live_5u --preflight
+./myvenv/bin/python run_live_trading.py --profile live_5u --continuous
 ```
 
-仅邮件观察使用：
+真实交易方案 `live_5u` 固定使用 5 USDT 保证金、10 倍杠杆、逐仓，并在合约账户余额不足时从现货账户自动划转。
 
-```env
-LIVE_TRADING_MODE=email
-```
+详见：`tq_app/LIVE_TRADING_README.md`
 
 ## 回测
 
@@ -86,10 +89,14 @@ LIVE_TRADING_MODE=email
 ./myvenv/bin/python run_backtest.py --symbol BTCUSDT --duration 300 --length 1000 --strategy live_decision
 ```
 
+默认回测会复用当前实盘信号策略和高周期过滤，并按实盘方式撮合：信号 K 线收完后，下一根 K 线开盘开仓；不自动模拟止盈止损，持仓直到出现反向实盘信号时平仓并反向开仓。
+
 默认输出：
 
 ```text
 backtest_outputs/latest/report.json
+backtest_outputs/latest/report.md
+backtest_outputs/latest/report_zh.md
 backtest_outputs/latest/trades.csv
 backtest_outputs/latest/candles.json
 ```

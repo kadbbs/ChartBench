@@ -35,7 +35,8 @@ Run a backtest:
 Run live trading or observation mode:
 
 ```bash
-./myvenv/bin/python run_live_trading.py --continuous
+./myvenv/bin/python run_live_trading.py --profile email --continuous
+./myvenv/bin/python run_live_trading.py --profile live_5u --preflight
 ```
 
 ## Coding Style & Naming Conventions
@@ -52,4 +53,4 @@ Recent commits use short imperative summaries, sometimes in Chinese, for example
 
 ## Security & Configuration Tips
 
-Copy `.env.example` to `.env` for local settings. Never commit `.env`, API keys, email tokens, or generated logs. Real trading must remain explicit: review `LIVE_TRADING_ENABLED`, `LIVE_TRADING_DRY_RUN`, and `LIVE_TRADING_LOG_ONLY` before running live mode.
+Copy `.env.example` to `.env` for private credentials only. Runtime defaults live in `config/defaults.yaml`, and mode-specific choices live in `config/profiles/*.yaml`. Never commit `.env`, API keys, email tokens, or generated logs. Real trading must remain explicit: review `config/profiles/live_5u.yaml`, run `./myvenv/bin/python run_live_trading.py --profile live_5u --show-config`, and pass `--preflight` before `--continuous`.

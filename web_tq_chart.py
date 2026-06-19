@@ -9,9 +9,9 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from dotenv import load_dotenv
 from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
 
+from tq_app.config_profiles import load_layered_env
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
 
@@ -141,7 +141,7 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    load_dotenv(runtime_project_root() / ".env")
+    load_layered_env(runtime_project_root())
     parser = argparse.ArgumentParser(description="Bitget 行情浏览器图表工作台")
     parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 bitget")
     parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL), help="合约代码，例如 BTCUSDT")
@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     project_root = runtime_project_root()
-    load_dotenv(project_root / ".env")
+    load_layered_env(project_root)
     service = MarketDataService(
         provider=args.provider,
         symbol=args.symbol,
