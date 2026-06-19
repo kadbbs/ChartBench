@@ -5,6 +5,7 @@ __pycache__/
 myvenv/
 logs/
 backtest_outputs/
+data_cache/
 build/
 dist/
 release/

@@ -93,16 +93,18 @@ TQ_DEFAULT_PORT: 8050
 ./myvenv/bin/python run_backtest.py --list-profiles
 ```
 
-当前内置两个配置：
+当前内置配置：
 
 - `latest_month`：按最近 N 根 5m K 线回测，适合快速确认功能。
 - `btc_5m_range`：按指定开始/结束时间回测，适合复盘某段行情。
+- `btc_5m_range_cached`：和 `btc_5m_range` 类似，但启用本地 K 线缓存。
 
 配置文件在 `config/backtests/`：
 
 ```text
 config/backtests/latest_month.yaml
 config/backtests/btc_5m_range.yaml
+config/backtests/btc_5m_range_cached.yaml
 ```
 
 ### 2. 跑一次默认回测
@@ -135,7 +137,27 @@ output_dir: backtest_outputs/btc_5m_range
 
 未带时区的时间会按北京时间解析。5m 长区间会使用 Bitget 历史 K 线接口，第一次拉一年数据会比较慢。
 
-### 4. 临时覆盖配置
+### 4. 使用本地 K 线缓存
+
+普通回测默认还是在线拉取，不会读取本地缓存。需要缓存时有两种方式：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range --cache
+```
+
+或者直接使用缓存专用配置：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached
+```
+
+缓存文件默认写入 `data_cache/backtest_klines/`，按 `合约类型 + 交易对 + 周期 + K线类型` 分文件保存。第一次运行会在线拉取并写入缓存；后续请求的时间区间如果已经被缓存完整覆盖，就直接读本地。需要强制在线重新拉取时：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached --no-cache
+```
+
+### 5. 临时覆盖配置
 
 不想改 YAML 时，可以直接在命令行覆盖某一项：
 
@@ -143,7 +165,7 @@ output_dir: backtest_outputs/btc_5m_range
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range --end-time "2026-06-10 00:00:00" --output-dir backtest_outputs/test_run
 ```
 
-### 5. 查看报告
+### 6. 查看报告
 
 每次回测会生成：
 
@@ -163,7 +185,7 @@ candles.json     # K 线和开平仓标记，供图表或脚本使用
 
 - 如果回测区间很长但很快结束，并且报告起点不是你填的起点，说明数据没有覆盖到请求区间；当前代码会主动报错避免这种静默截断。
 - 如果遇到 SSL EOF 或网络中断，公共行情请求会自动重试；连续失败时重新运行即可。
-- `backtest_outputs/` 是本地输出目录，不应提交。
+- `backtest_outputs/` 和 `data_cache/` 都是本地目录，不应提交。
 
 ## 环境变量
 

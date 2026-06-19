@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         except (TypeError, ValueError):
             return default
 
+    def profile_bool(key: str, default: bool) -> bool:
+        raw = profile_values.get(key)
+        if raw is None:
+            return default
+        return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
     parser = argparse.ArgumentParser(description="Run K-line level backtest with pluggable strategies.")
     parser.add_argument("--profile", default=early_args.profile, help="回测配置档案名称，对应 config/backtests/<name>.yaml")
     parser.add_argument("--list-profiles", action="store_true", help="列出可用回测配置档案后退出。")
@@ -55,6 +61,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
     parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
     parser.add_argument("--output-dir", default=profile_str("output_dir", "backtest_outputs/latest"))
+    parser.add_argument("--cache", action="store_true", default=profile_bool("cache_enabled", False), help="启用回测 K 线本地缓存；默认关闭，不影响在线回测。")
+    parser.add_argument("--no-cache", action="store_true", help="即使配置文件开启缓存，也强制使用在线 K 线。")
+    parser.add_argument("--cache-dir", default=profile_str("cache_dir", "data_cache/backtest_klines"), help="回测 K 线缓存目录。")
     return parser.parse_args()
 
 
@@ -64,6 +73,8 @@ def main() -> None:
     if args.list_profiles:
         print(json.dumps({"profiles": available_backtest_profiles(project_root)}, ensure_ascii=False, indent=2))
         return
+    if args.no_cache:
+        args.cache = False
     live_config = LiveTradingConfig.from_env(project_root)
     strategy = build_strategy(args.strategy, project_root, live_config)
     start_time_ms = _parse_time_ms(args.start_time)
@@ -88,6 +99,8 @@ def main() -> None:
         start_time_ms=start_time_ms,
         end_time_ms=end_time_ms,
         kline_type=args.kline_type,
+        cache_enabled=args.cache,
+        cache_dir=Path(args.cache_dir),
     )
 
     htf_bars = None
@@ -105,6 +118,8 @@ def main() -> None:
             start_time_ms=htf_start_time_ms,
             end_time_ms=end_time_ms,
             kline_type=args.kline_type,
+            cache_enabled=args.cache,
+            cache_dir=Path(args.cache_dir),
         )
 
     config = BacktestConfig(
