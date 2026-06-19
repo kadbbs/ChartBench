@@ -44,18 +44,18 @@ pip install -r requirements.txt
 ./myvenv/bin/python web_tq_chart.py
 ```
 
-常用默认参数可放到 `.env`：
+图表默认参数已经放在 `config/defaults.yaml`，例如：
 
-```env
-TQ_DEFAULT_PROVIDER=bitget
-TQ_DEFAULT_SYMBOL=BTCUSDT
-TQ_DEFAULT_DURATION_SECONDS=300
-TQ_DEFAULT_DATA_LENGTH=800
-TQ_DEFAULT_REFRESH_MS=200
-TQ_DEFAULT_BAR_MODE=time
-TQ_DEFAULT_HOST=0.0.0.0
-TQ_DEFAULT_PORT=8050
+```yaml
+TQ_DEFAULT_SYMBOL: BTCUSDT
+TQ_DEFAULT_DURATION_SECONDS: 300
+TQ_DEFAULT_DATA_LENGTH: 800
+TQ_DEFAULT_REFRESH_MS: 200
+TQ_DEFAULT_HOST: 0.0.0.0
+TQ_DEFAULT_PORT: 8050
 ```
+
+`.env` 只建议放 API Key、邮件收件人等本机私密配置。
 
 ## 实盘/观察模式
 
@@ -167,4 +167,12 @@ candles.json     # K 线和开平仓标记，供图表或脚本使用
 
 ## 环境变量
 
-`.env.example` 保留了图表、Bitget、邮件、实盘、回测相关默认配置。`.env` 可保存本地密钥和运行参数，避免提交。
+`.env.example` 是本机私密配置示例。复制为 `.env` 后只建议填写 Bitget API Key、Resend Key、邮件收件人等敏感信息。
+
+图表、实盘、回测的非密钥运行参数放在：
+
+```text
+config/defaults.yaml
+config/profiles/*.yaml
+config/backtests/*.yaml
+```

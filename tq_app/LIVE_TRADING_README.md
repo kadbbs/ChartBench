@@ -24,7 +24,7 @@
 
 常驻进程启动后会发送一封启动邮件，标题包含合约、周期和当前运行状态。
 
-脚本会从 `.env` 读取默认合约、周期、K 线数量等配置。命令行参数优先级更高，例如：
+脚本会从 `config/defaults.yaml` 读取默认合约、周期、K 线数量等配置，`.env` 只建议保留 API Key、邮件收件人等本机私密信息。命令行参数优先级更高，例如：
 
 ```bash
 ./myvenv/bin/python run_live_trading.py --symbol BTCUSDT --duration 300 --continuous
@@ -60,15 +60,15 @@ config/defaults.yaml < config/profiles/<profile>.yaml < .env < shell 环境变�
 ./myvenv/bin/python run_live_trading.py --profile live_5u --show-config
 ```
 
-默认运行参数可放在 `config/defaults.yaml`：
+默认运行参数放在 `config/defaults.yaml`：
 
-```env
-TQ_DEFAULT_PROVIDER=bitget
-TQ_DEFAULT_SYMBOL=BTCUSDT
-TQ_DEFAULT_DURATION_SECONDS=180
-TQ_DEFAULT_DATA_LENGTH=800
-TQ_DEFAULT_REFRESH_MS=200
-TQ_DEFAULT_BAR_MODE=time
+```yaml
+TQ_DEFAULT_PROVIDER: bitget
+TQ_DEFAULT_SYMBOL: BTCUSDT
+TQ_DEFAULT_DURATION_SECONDS: 300
+TQ_DEFAULT_DATA_LENGTH: 800
+TQ_DEFAULT_REFRESH_MS: 200
+TQ_DEFAULT_BAR_MODE: time
 ```
 
 运行模式：
