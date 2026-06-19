@@ -15,6 +15,7 @@ from tq_app.data_sources.bitget import (
 
 
 HISTORY_CANDLE_LIMIT = 200
+MIN_VALID_CANDLE_TIME_MS = 946_684_800_000
 
 
 def fetch_bitget_candles(
@@ -179,6 +180,11 @@ def _read_cache_frame(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path)
     if frame.empty or "timestamp" not in frame.columns:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+    frame["timestamp"] = pd.to_numeric(frame["timestamp"], errors="coerce")
+    frame = frame.dropna(subset=["timestamp"])
+    frame = frame[frame["timestamp"] >= MIN_VALID_CANDLE_TIME_MS]
+    if frame.empty:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
     frame["datetime"] = pd.to_datetime(frame["timestamp"].astype("int64"), unit="ms", utc=True)
     for column in ["open", "high", "low", "close", "volume"]:
         if column not in frame.columns:
@@ -194,7 +200,7 @@ def _write_cache_frame(path: Path, frame: pd.DataFrame) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     output = frame.copy()
-    output["timestamp"] = pd.to_datetime(output["datetime"], utc=True).astype("int64") // 1_000_000
+    output["timestamp"] = _datetime_ms(output["datetime"])
     output = output.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last")
     temp_path = path.with_suffix(path.suffix + ".tmp")
     output[["timestamp", "open", "high", "low", "close", "volume"]].to_csv(temp_path, index=False)
@@ -247,7 +253,7 @@ def _cache_covers(
 
 
 def _datetime_ms(values: pd.Series) -> pd.Series:
-    return pd.to_datetime(values, utc=True).astype("int64") // 1_000_000
+    return pd.to_datetime(values, utc=True).map(lambda value: int(value.timestamp() * 1000))
 
 
 def _has_regular_spacing(timestamps: pd.Series, duration_ms: int) -> bool:
