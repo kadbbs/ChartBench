@@ -10,6 +10,7 @@ from dotenv import dotenv_values
 CONFIG_DIR = "config"
 DEFAULTS_FILE = "defaults.yaml"
 PROFILES_DIR = "profiles"
+BACKTESTS_DIR = "backtests"
 SENSITIVE_KEY_PARTS = ("API_KEY", "API_SECRET", "PASSPHRASE", "TOKEN", "PASSWORD")
 
 
@@ -70,6 +71,23 @@ def available_profiles(project_root: Path) -> list[str]:
     return sorted(path.stem for path in profiles_root.glob("*.yaml") if path.is_file())
 
 
+def available_backtest_profiles(project_root: Path) -> list[str]:
+    profiles_root = project_root / CONFIG_DIR / BACKTESTS_DIR
+    if not profiles_root.exists():
+        return []
+    return sorted(path.stem for path in profiles_root.glob("*.yaml") if path.is_file())
+
+
+def load_backtest_profile(project_root: Path, profile: str | None) -> dict[str, str]:
+    profile_name = (profile or "").strip()
+    if not profile_name:
+        return {}
+    profile_path = _named_config_path(project_root, BACKTESTS_DIR, profile_name)
+    if not profile_path.exists():
+        raise FileNotFoundError(f"回测 profile 不存在: {profile_path}")
+    return _read_flat_yaml(profile_path)
+
+
 def effective_config_snapshot(keys: list[str] | None = None) -> dict[str, Any]:
     selected_keys = keys or sorted(key for key in os.environ if key.startswith(("LIVE_TRADING_", "TQ_DEFAULT_", "BITGET_")))
     snapshot: dict[str, Any] = {}
@@ -82,10 +100,14 @@ def effective_config_snapshot(keys: list[str] | None = None) -> dict[str, Any]:
 
 
 def _profile_path(project_root: Path, profile_name: str) -> Path:
+    return _named_config_path(project_root, PROFILES_DIR, profile_name)
+
+
+def _named_config_path(project_root: Path, folder_name: str, profile_name: str) -> Path:
     safe_name = profile_name.strip()
     if not safe_name or "/" in safe_name or "\\" in safe_name or safe_name in {".", ".."}:
         raise ValueError(f"无效 profile 名称: {profile_name!r}")
-    return project_root / CONFIG_DIR / PROFILES_DIR / f"{safe_name}.yaml"
+    return project_root / CONFIG_DIR / folder_name / f"{safe_name}.yaml"
 
 
 def _read_flat_yaml(path: Path) -> dict[str, str]:

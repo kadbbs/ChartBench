@@ -1,0 +1,26 @@
+# =============================================================================
+# 回测配置：最近一段数据
+# -----------------------------------------------------------------------------
+# 用途：
+# - 少写命令行参数。
+# - 默认按 BTCUSDT、5m、live_decision 策略回测。
+# - 不写 start_time/end_time 时，会按 length 向前取最近 N 根 K 线。
+#
+# 常用命令：
+# ./myvenv/bin/python run_backtest.py --profile latest_month
+#
+# 回测仓位固定在代码中：1000U 保证金、10倍杠杆。
+# =============================================================================
+
+symbol: BTCUSDT
+duration: 300
+length: 8657
+strategy: live_decision
+product_type: USDT-FUTURES
+kline_type: MARKET
+initial_equity: 1000
+fee_rate: 0.0006
+slippage_rate: 0
+warmup_bars: 80
+output_dir: backtest_outputs/latest
+

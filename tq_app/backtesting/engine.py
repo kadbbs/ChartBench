@@ -21,9 +21,10 @@ class BacktestConfig:
     symbol: str
     provider: str = "bitget"
     duration_seconds: int = 300
-    initial_equity: float = 10_000.0
+    initial_equity: float = 1_000.0
     risk_per_trade: float = 0.01
-    order_size: float = 0.0
+    margin_amount: float = 1_000.0
+    leverage: float = 10.0
     fee_rate: float = 0.0006
     slippage_rate: float = 0.0
     stop_atr_multiplier: float = 2.0
@@ -55,6 +56,9 @@ class BacktestTrade:
     pnl: float = 0.0
     fees: float = 0.0
     net_pnl: float = 0.0
+    points: float = 0.0
+    fee_points: float = 0.0
+    net_points: float = 0.0
     r_multiple: float = 0.0
     signal_reason: str = ""
     partial_exits: list[dict[str, Any]] = field(default_factory=list)
@@ -233,11 +237,9 @@ class BacktestEngine:
         return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount)
 
     def _order_qty(self, entry_price: float, equity: float) -> float:
-        if self.config.order_size > 0:
-            return self.config.order_size
-        notional = max(equity * self.config.risk_per_trade, 0.0)
+        notional = max(self.config.margin_amount * self.config.leverage, 0.0)
         if entry_price <= 0 or notional <= 0:
-            raise RuntimeError("回测下单数量无效：请设置 LIVE_TRADING_ORDER_SIZE 或 --order-size。")
+            raise RuntimeError("回测下单数量无效：请检查 margin_amount / leverage。")
         return notional / entry_price
 
     def _exit_price(self, candle: dict[str, Any], side: str, close_at_close: bool = False) -> float:
@@ -255,9 +257,11 @@ class BacktestEngine:
         time_labels: dict[str, str],
     ) -> float:
         pnl = _pnl(position.trade.side, position.trade.entry_price, price, qty)
+        points = _points(position.trade.side, position.trade.entry_price, price)
         fee = abs(qty * price) * self.config.fee_rate
         position.remaining_qty -= qty
         position.trade.pnl += pnl
+        position.trade.points += points
         position.trade.fees += fee
         position.trade.partial_exits.append(
             {
@@ -266,11 +270,14 @@ class BacktestEngine:
                 "price": price,
                 "qty": qty,
                 "reason": reason,
+                "points": points,
                 "pnl": pnl,
                 "fee": fee,
             }
         )
         position.trade.net_pnl = position.trade.pnl - position.trade.fees
+        position.trade.fee_points = position.trade.fees / position.trade.qty if position.trade.qty else 0.0
+        position.trade.net_points = position.trade.net_pnl / position.trade.qty if position.trade.qty else 0.0
         return pnl - fee
 
     def _close_remaining(
@@ -290,6 +297,8 @@ class BacktestEngine:
         trade.exit_price = exit_price
         trade.exit_reason = reason
         trade.net_pnl = trade.pnl - trade.fees
+        trade.fee_points = trade.fees / trade.qty if trade.qty else 0.0
+        trade.net_points = trade.net_pnl / trade.qty if trade.qty else 0.0
         trade.r_multiple = trade.net_pnl / position.risk_amount if position.risk_amount else 0.0
         position.remaining_qty = 0.0
         return realized
@@ -331,6 +340,11 @@ def _pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
     return (exit_price - entry) * direction * qty
 
 
+def _points(side: str, entry: float, exit_price: float) -> float:
+    direction = 1.0 if side == "buy" else -1.0
+    return (exit_price - entry) * direction
+
+
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return price * (1.0 + direction * max(slippage_rate, 0.0))
@@ -351,6 +365,10 @@ def _metrics(trades: list[BacktestTrade], equity_curve: list[float], initial_equ
     total_fees = sum(item.fees for item in closed)
     pnl_values = [item.net_pnl for item in closed]
     r_values = [item.r_multiple for item in closed]
+    point_values = [item.points for item in closed]
+    net_point_values = [item.net_points for item in closed]
+    point_wins = [item.points for item in closed if item.points > 0]
+    point_losses = [item.points for item in closed if item.points < 0]
     return {
         "initial_equity": initial_equity,
         "final_equity": final_equity,
@@ -372,6 +390,14 @@ def _metrics(trades: list[BacktestTrade], equity_curve: list[float], initial_equ
         "median_r": median(r_values) if r_values else 0.0,
         "best_trade": max(pnl_values) if pnl_values else 0.0,
         "worst_trade": min(pnl_values) if pnl_values else 0.0,
+        "total_points": sum(point_values),
+        "total_net_points": sum(net_point_values),
+        "average_points": sum(point_values) / len(point_values) if point_values else 0.0,
+        "median_points": median(point_values) if point_values else 0.0,
+        "best_points": max(point_values) if point_values else 0.0,
+        "worst_points": min(point_values) if point_values else 0.0,
+        "gross_profit_points": sum(point_wins),
+        "gross_loss_points": abs(sum(point_losses)),
     }
 
 
@@ -406,8 +432,10 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
             "trade_count": metrics.get("trade_count", 0),
             "win_rate_pct": (metrics.get("win_rate") or 0.0) * 100,
             "profit_factor": metrics.get("profit_factor"),
+            "total_points": metrics.get("total_points", 0.0),
+            "total_net_points": metrics.get("total_net_points", 0.0),
         },
-        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；未包含资金费率、盘口冲击和真实成交滑点。",
+        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
     }
 
 
@@ -417,6 +445,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "market": _market_summary(snapshot),
         "risk": _risk_summary(result),
         "trade_quality": _trade_quality_summary(closed),
+        "points": _points_summary(closed),
         "holding_time": _holding_time_summary(closed),
         "breakdowns": {
             "by_side": _group_trade_summary(closed, "side"),
@@ -428,8 +457,9 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "assumptions": [
             "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
             "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
+            "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
             "手续费按成交名义价值双边计入；slippage_rate 按开平仓方向调整价格。",
-            "未模拟资金费率、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
+            "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
         ],
     }
 
@@ -497,6 +527,26 @@ def _trade_quality_summary(trades: list[BacktestTrade]) -> dict[str, Any]:
     }
 
 
+def _points_summary(trades: list[BacktestTrade]) -> dict[str, Any]:
+    point_values = [item.points for item in trades]
+    net_point_values = [item.net_points for item in trades]
+    fee_point_values = [item.fee_points for item in trades]
+    wins = [item for item in trades if item.points > 0]
+    losses = [item for item in trades if item.points < 0]
+    return {
+        "total_points": sum(point_values),
+        "total_net_points": sum(net_point_values),
+        "average_points": sum(point_values) / len(point_values) if point_values else 0.0,
+        "median_points": median(point_values) if point_values else 0.0,
+        "best_points": max(point_values) if point_values else 0.0,
+        "worst_points": min(point_values) if point_values else 0.0,
+        "gross_profit_points": sum(item.points for item in wins),
+        "gross_loss_points": abs(sum(item.points for item in losses)),
+        "average_fee_points": sum(fee_point_values) / len(fee_point_values) if fee_point_values else 0.0,
+        "point_win_rate": len(wins) / len(trades) if trades else 0.0,
+    }
+
+
 def _holding_time_summary(trades: list[BacktestTrade]) -> dict[str, Any]:
     durations = [_duration_seconds(item) for item in trades if item.exit_time is not None]
     if not durations:
@@ -532,10 +582,15 @@ def _trade_group_stats(trades: list[BacktestTrade]) -> dict[str, Any]:
     return {
         "trade_count": len(trades),
         "net_pnl": sum(pnl_values),
+        "points": sum(item.points for item in trades),
+        "net_points": sum(item.net_points for item in trades),
         "average_pnl": sum(pnl_values) / len(pnl_values) if pnl_values else 0.0,
+        "average_points": sum(item.points for item in trades) / len(trades) if trades else 0.0,
         "win_rate": len(wins) / len(trades) if trades else 0.0,
         "best_trade": max(pnl_values) if pnl_values else 0.0,
         "worst_trade": min(pnl_values) if pnl_values else 0.0,
+        "best_points": max((item.points for item in trades), default=0.0),
+        "worst_points": min((item.points for item in trades), default=0.0),
         "fees": sum(item.fees for item in trades),
     }
 
@@ -561,6 +616,8 @@ def _compact_trade(trade: BacktestTrade) -> dict[str, Any]:
         "exit_time": trade.exit_time_label,
         "entry_price": trade.entry_price,
         "exit_price": trade.exit_price,
+        "points": trade.points,
+        "net_points": trade.net_points,
         "net_pnl": trade.net_pnl,
         "r_multiple": trade.r_multiple,
         "exit_reason": trade.exit_reason,
@@ -575,6 +632,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
     market = analysis.get("market") or {}
     risk = analysis.get("risk") or {}
     quality = analysis.get("trade_quality") or {}
+    points = analysis.get("points") or {}
     lines = [
         f"# {summary.get('title', 'Backtest Report')}",
         "",
@@ -583,6 +641,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
         f"- Execution model: `{summary.get('execution_model')}`",
         f"- Period: {summary.get('period', {}).get('start', '')} -> {summary.get('period', {}).get('end', '')}",
         f"- Net profit: {_fmt(headline.get('net_profit'))} ({_fmt(headline.get('return_pct'))}%)",
+        f"- Total points: {_fmt(headline.get('total_points'))} | Net points after fees: {_fmt(headline.get('total_net_points'))}",
         f"- Max drawdown: {_fmt(headline.get('max_drawdown_pct'))}%",
         f"- Trades: {headline.get('trade_count', 0)} | Win rate: {_fmt(headline.get('win_rate_pct'))}% | Profit factor: {_fmt(headline.get('profit_factor'))}",
         "",
@@ -595,6 +654,12 @@ def _markdown_report(report: dict[str, Any]) -> str:
         f"- Average win / loss: {_fmt(quality.get('average_win'))} / {_fmt(quality.get('average_loss'))}",
         f"- Payoff ratio: {_fmt(quality.get('payoff_ratio'))}",
         f"- Max consecutive wins / losses: {quality.get('consecutive_wins', 0)} / {quality.get('consecutive_losses', 0)}",
+        "",
+        "## Points",
+        f"- Gross points: {_fmt(points.get('total_points'))}",
+        f"- Net points after fees: {_fmt(points.get('total_net_points'))}",
+        f"- Best / worst points: {_fmt(points.get('best_points'))} / {_fmt(points.get('worst_points'))}",
+        f"- Average fee points: {_fmt(points.get('average_fee_points'))}",
         "",
         "## Risk",
         f"- Return to drawdown: {_fmt(risk.get('return_to_drawdown'))}",
@@ -615,6 +680,7 @@ def _markdown_report_zh(report: dict[str, Any]) -> str:
     market = analysis.get("market") or {}
     risk = analysis.get("risk") or {}
     quality = analysis.get("trade_quality") or {}
+    points = analysis.get("points") or {}
     holding = analysis.get("holding_time") or {}
     breakdowns = analysis.get("breakdowns") or {}
     lines = [
@@ -623,9 +689,11 @@ def _markdown_report_zh(report: dict[str, Any]) -> str:
         "## 核心结论",
         f"- 策略：`{summary.get('strategy')}`",
         f"- 撮合模型：`{summary.get('execution_model')}`",
+        "- 仓位：1000U 保证金，10倍杠杆",
         f"- 回测区间：{summary.get('period', {}).get('start', '')} 至 {summary.get('period', {}).get('end', '')}",
         f"- K 线数量：{summary.get('period', {}).get('bars', 0)}",
         f"- 净收益：{_fmt(headline.get('net_profit'))}，收益率：{_fmt(headline.get('return_pct'))}%",
+        f"- 总点数：{_fmt(headline.get('total_points'))}，扣费后等效点数：{_fmt(headline.get('total_net_points'))}",
         f"- 最大回撤：{_fmt(headline.get('max_drawdown_pct'))}%",
         f"- 交易次数：{headline.get('trade_count', 0)}，胜率：{_fmt(headline.get('win_rate_pct'))}%，盈利因子：{_fmt(headline.get('profit_factor'))}",
         f"- 说明：{summary.get('professional_note', '')}",
@@ -644,6 +712,14 @@ def _markdown_report_zh(report: dict[str, Any]) -> str:
         f"- 最大单笔盈利/亏损：{_fmt(quality.get('largest_win'))} / {_fmt(quality.get('largest_loss'))}",
         f"- 最大连续盈利/亏损：{quality.get('consecutive_wins', 0)} / {quality.get('consecutive_losses', 0)}",
         f"- 平均持仓分钟数：{_fmt(quality.get('average_minutes_per_trade'))}",
+        "",
+        "## 点数表现",
+        f"- 毛点数合计：{_fmt(points.get('total_points'))}",
+        f"- 扣费后等效点数合计：{_fmt(points.get('total_net_points'))}",
+        f"- 平均/中位点数：{_fmt(points.get('average_points'))} / {_fmt(points.get('median_points'))}",
+        f"- 最佳/最差单笔点数：{_fmt(points.get('best_points'))} / {_fmt(points.get('worst_points'))}",
+        f"- 盈利点数/亏损点数：{_fmt(points.get('gross_profit_points'))} / {_fmt(points.get('gross_loss_points'))}",
+        f"- 平均手续费折算点数：{_fmt(points.get('average_fee_points'))}",
         "",
         "## 风险表现",
         f"- 收益回撤比：{_fmt(risk.get('return_to_drawdown'))}",
@@ -680,8 +756,8 @@ def _markdown_group_table_zh(groups: dict[str, Any]) -> str:
     if not groups:
         return "暂无数据"
     lines = [
-        "| 分组 | 交易数 | 净收益 | 平均收益 | 胜率 | 最佳 | 最差 | 手续费 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| 分组 | 交易数 | 净收益 | 点数 | 平均点数 | 胜率 | 最佳点数 | 最差点数 | 手续费 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for name, stats in groups.items():
         lines.append(
@@ -689,10 +765,11 @@ def _markdown_group_table_zh(groups: dict[str, Any]) -> str:
             f"{name} | "
             f"{stats.get('trade_count', 0)} | "
             f"{_fmt(stats.get('net_pnl'))} | "
-            f"{_fmt(stats.get('average_pnl'))} | "
+            f"{_fmt(stats.get('points'))} | "
+            f"{_fmt(stats.get('average_points'))} | "
             f"{_fmt((stats.get('win_rate') or 0.0) * 100)}% | "
-            f"{_fmt(stats.get('best_trade'))} | "
-            f"{_fmt(stats.get('worst_trade'))} | "
+            f"{_fmt(stats.get('best_points'))} | "
+            f"{_fmt(stats.get('worst_points'))} | "
             f"{_fmt(stats.get('fees'))} |"
         )
     return "\n".join(lines)
@@ -713,6 +790,8 @@ def _markdown_key_trades_zh(key_trades: dict[str, Any]) -> str:
             f"{label_map.get(key, key)}：#{trade.get('id')} "
             f"{trade.get('side')}，"
             f"{trade.get('entry_time')} -> {trade.get('exit_time')}，"
+            f"点数 {_fmt(trade.get('points'))}，"
+            f"扣费后点数 {_fmt(trade.get('net_points'))}，"
             f"净收益 {_fmt(trade.get('net_pnl'))}，"
             f"R={_fmt(trade.get('r_multiple'))}，"
             f"退出原因 {trade.get('exit_reason')}"

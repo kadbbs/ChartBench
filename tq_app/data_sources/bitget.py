@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -43,6 +44,9 @@ WS_RECV_TIMEOUT_SECONDS = 25
 WS_RECONNECT_MIN_DELAY_SECONDS = 1
 WS_RECONNECT_MAX_DELAY_SECONDS = 30
 HISTORY_RETRY_MAX_DELAY_SECONDS = 60
+PUBLIC_HTTP_RETRY_ATTEMPTS = 5
+PUBLIC_HTTP_RETRY_BASE_DELAY_SECONDS = 0.8
+PUBLIC_HTTP_RETRY_MAX_DELAY_SECONDS = 8.0
 
 
 def _ws_channel_for_duration(duration_seconds: int) -> str | None:
@@ -58,8 +62,25 @@ def _bitget_get_json(path: str, params: dict[str, Any] | None = None, project_ro
     base = os.getenv("BITGET_API_BASE", "").strip().rstrip("/") or BITGET_API_BASE
     query = urlencode({key: value for key, value in (params or {}).items() if value is not None})
     url = f"{base}{path}?{query}" if query else f"{base}{path}"
-    with urlopen(url, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(1, PUBLIC_HTTP_RETRY_ATTEMPTS + 1):
+        try:
+            with urlopen(url, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"Bitget API {path} HTTP {exc.code}: {body or exc.reason}")
+            if exc.code not in {429, 500, 502, 503, 504} or attempt >= PUBLIC_HTTP_RETRY_ATTEMPTS:
+                raise last_error from exc
+        except (TimeoutError, URLError, OSError) as exc:
+            last_error = exc
+            if attempt >= PUBLIC_HTTP_RETRY_ATTEMPTS:
+                raise RuntimeError(f"Bitget API {path} 请求失败，已重试 {PUBLIC_HTTP_RETRY_ATTEMPTS} 次: {exc}") from exc
+        delay = min(PUBLIC_HTTP_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), PUBLIC_HTTP_RETRY_MAX_DELAY_SECONDS)
+        time.sleep(delay)
+    else:
+        raise RuntimeError(f"Bitget API {path} 请求失败: {last_error}")
     code = str(payload.get("code", "00000"))
     if code != "00000":
         message = payload.get("msg") or payload.get("message") or "Bitget API 请求失败"

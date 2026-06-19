@@ -9,7 +9,7 @@ import pandas as pd
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
 from tq_app.backtesting.data import fetch_bitget_candles
-from tq_app.config_profiles import load_layered_env
+from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
 from tq_app.live_trading import LiveTradingConfig
 from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str, runtime_project_root
 
@@ -17,51 +17,92 @@ from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_
 def parse_args() -> argparse.Namespace:
     project_root = runtime_project_root()
     load_layered_env(project_root)
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--profile", default="")
+    early_args, _unknown = bootstrap.parse_known_args()
+    profile_values = load_backtest_profile(project_root, early_args.profile)
+
+    def profile_str(key: str, default: str) -> str:
+        return str(profile_values.get(key, default))
+
+    def profile_int(key: str, default: int) -> int:
+        try:
+            return int(profile_values.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def profile_float(key: str, default: float) -> float:
+        try:
+            return float(profile_values.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     parser = argparse.ArgumentParser(description="Run K-line level backtest with pluggable strategies.")
-    parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER])
-    parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
-    parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS))
-    parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH))
-    parser.add_argument("--strategy", default="live_decision", help="回测策略名。默认复用当前实盘策略。")
-    parser.add_argument("--product-type", default=env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES"))
-    parser.add_argument("--kline-type", default=env_default_str("BITGET_KLINE_TYPE", "MARKET"))
-    parser.add_argument("--end-time", default="", help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
-    parser.add_argument("--initial-equity", type=float, default=10_000.0)
-    parser.add_argument("--risk-per-trade", type=float, default=0.01)
-    parser.add_argument("--order-size", type=float, default=None, help="固定下单数量；默认读取 LIVE_TRADING_ORDER_SIZE，空则按权益比例兜底。")
-    parser.add_argument("--fee-rate", type=float, default=0.0006)
-    parser.add_argument("--slippage-rate", type=float, default=0.0)
-    parser.add_argument("--warmup-bars", type=int, default=80)
-    parser.add_argument("--output-dir", default="backtest_outputs/latest")
+    parser.add_argument("--profile", default=early_args.profile, help="回测配置档案名称，对应 config/backtests/<name>.yaml")
+    parser.add_argument("--list-profiles", action="store_true", help="列出可用回测配置档案后退出。")
+    parser.add_argument("--provider", default=profile_str("provider", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)), choices=[DEFAULT_PROVIDER])
+    parser.add_argument("--symbol", default=profile_str("symbol", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL)))
+    parser.add_argument("--duration", type=int, default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)))
+    parser.add_argument("--length", type=int, default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)))
+    parser.add_argument("--strategy", default=profile_str("strategy", "live_decision"), help="回测策略名。默认复用当前实盘策略。")
+    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES")))
+    parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BITGET_KLINE_TYPE", "MARKET")))
+    parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
+    parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
+    parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 1_000.0), help="回测初始权益，默认 1000U。")
+    parser.add_argument("--risk-per-trade", type=float, default=profile_float("risk_per_trade", 0.01))
+    parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", 0.0006))
+    parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
+    parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
+    parser.add_argument("--output-dir", default=profile_str("output_dir", "backtest_outputs/latest"))
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     project_root = runtime_project_root()
+    if args.list_profiles:
+        print(json.dumps({"profiles": available_backtest_profiles(project_root)}, ensure_ascii=False, indent=2))
+        return
     live_config = LiveTradingConfig.from_env(project_root)
     strategy = build_strategy(args.strategy, project_root, live_config)
-    end_time_ms = _parse_end_time_ms(args.end_time)
+    start_time_ms = _parse_time_ms(args.start_time)
+    end_time_ms = _parse_time_ms(args.end_time)
+    if start_time_ms is not None and end_time_ms is None:
+        raise SystemExit("--start-time 需要同时指定 --end-time。")
+    if start_time_ms is not None and end_time_ms is not None and start_time_ms >= end_time_ms:
+        raise SystemExit("--start-time 必须早于 --end-time。")
+    data_length = _resolve_data_length(
+        requested_length=args.length,
+        duration_seconds=args.duration,
+        start_time_ms=start_time_ms,
+        end_time_ms=end_time_ms,
+    )
 
     bars = fetch_bitget_candles(
         project_root=project_root,
         symbol=args.symbol,
         product_type=args.product_type,
         duration_seconds=args.duration,
-        data_length=args.length,
+        data_length=data_length,
+        start_time_ms=start_time_ms,
         end_time_ms=end_time_ms,
         kline_type=args.kline_type,
     )
 
     htf_bars = None
     if live_config.htf_hull_filter_enabled:
-        htf_length = max(int(args.length * args.duration / live_config.htf_hull_duration_seconds) + 120, 200)
+        htf_length = max(int(data_length * args.duration / live_config.htf_hull_duration_seconds) + 120, 200)
+        htf_start_time_ms = None
+        if start_time_ms is not None:
+            htf_start_time_ms = max(start_time_ms - 120 * live_config.htf_hull_duration_seconds * 1000, 0)
         htf_bars = fetch_bitget_candles(
             project_root=project_root,
             symbol=args.symbol,
             product_type=args.product_type,
             duration_seconds=live_config.htf_hull_duration_seconds,
             data_length=htf_length,
+            start_time_ms=htf_start_time_ms,
             end_time_ms=end_time_ms,
             kline_type=args.kline_type,
         )
@@ -72,7 +113,8 @@ def main() -> None:
         duration_seconds=args.duration,
         initial_equity=args.initial_equity,
         risk_per_trade=args.risk_per_trade,
-        order_size=_resolve_order_size(args.order_size, live_config),
+        margin_amount=1_000.0,
+        leverage=10.0,
         fee_rate=args.fee_rate,
         slippage_rate=args.slippage_rate,
         stop_atr_multiplier=float(live_config.stop_atr_multiplier),
@@ -88,6 +130,10 @@ def main() -> None:
 
 
 def _parse_end_time_ms(raw: str) -> int | None:
+    return _parse_time_ms(raw)
+
+
+def _parse_time_ms(raw: str) -> int | None:
     text = raw.strip()
     if not text:
         return None
@@ -100,13 +146,18 @@ def _parse_end_time_ms(raw: str) -> int | None:
     return int(timestamp.tz_convert("UTC").timestamp() * 1000)
 
 
-def _resolve_order_size(arg_value: float | None, live_config: LiveTradingConfig) -> float:
-    if arg_value is not None:
-        return max(float(arg_value), 0.0)
-    try:
-        return max(float(live_config.size), 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+def _resolve_data_length(
+    *,
+    requested_length: int,
+    duration_seconds: int,
+    start_time_ms: int | None,
+    end_time_ms: int | None,
+) -> int:
+    if start_time_ms is None or end_time_ms is None:
+        return requested_length
+    duration_ms = max(int(duration_seconds), 1) * 1000
+    bars = int((end_time_ms - start_time_ms) // duration_ms) + 1
+    return max(bars, 1)
 
 
 if __name__ == "__main__":

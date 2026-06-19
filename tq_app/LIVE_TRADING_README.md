@@ -237,13 +237,21 @@ tq-live-{symbol}-{side}-{bar_time}
 当前分支提供独立回测入口：
 
 ```bash
-./myvenv/bin/python run_backtest.py --symbol BTCUSDT --duration 300 --length 1000 --strategy live_decision
+./myvenv/bin/python run_backtest.py --profile latest_month
+```
+
+指定时间区间：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range
 ```
 
 - `live_decision`：复用当前实盘信号判断，包括 5m 策略、1h Hull 趋势过滤和本地 Hull 带位置过滤。
+- 回测配置文件位于 `config/backtests/*.yaml`；命令行参数仍可临时覆盖配置文件。
 - 回测按 K 线级别撮合：信号在目标 K 线收完后确认，下一根 K 线 open 开仓。
+- `--start-time` / `--end-time` 支持秒/毫秒时间戳或 ISO 时间；未带时区时按北京时间解析。只指定 `--end-time` 时仍沿用 `--length` 向前取 N 根 K 线。
 - 回测退出方式与当前实盘执行保持一致：不自动模拟止盈止损，已有仓位会一直持有，直到出现反向实盘信号时在下一根 K 线 open 平仓，并按新方向重新开仓。
-- 回测下单数量优先读取 `LIVE_TRADING_ORDER_SIZE`，也可用 `--order-size` 覆盖；为空时按 `initial_equity * risk_per_trade / entry_price` 兜底模拟。
+- 回测仓位固定为每笔 1000U 保证金、10 倍杠杆，即 10000U 名义价值；默认初始权益也是 1000U。
 - 回测模块支持多策略扩展：新增策略只需要实现 `KlineStrategy.evaluate(snapshot)` 并在 `tq_app/backtesting/strategies.py` 注册。
 
 默认输出目录：
