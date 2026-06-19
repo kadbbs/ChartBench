@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -335,8 +336,12 @@ class BitgetFuturesTradeClient:
             headers=headers,
             method=method,
         )
-        with urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Bitget API {path} HTTP {exc.code}: {body or exc.reason}") from exc
         code = str(payload.get("code", ""))
         if code and code != "00000":
             raise RuntimeError(f"Bitget API {path} 返回错误 {code}: {payload.get('msg') or payload}")
@@ -433,7 +438,9 @@ class LiveTradingEngine:
                 return PreflightResult(ok=False, checks=checks, error="价格或数量精度配置可能不符合合约规格")
 
             futures_available = self._futures_available(client)
+            add_check("futures_balance_query", True, {"available": _decimal_to_string(futures_available)})
             spot_available = self._spot_available(client)
+            add_check("spot_balance_query", True, {"available": _decimal_to_string(spot_available)})
             required_available = self._required_futures_available()
             shortfall = max(required_available - futures_available, Decimal("0"))
             add_check(
