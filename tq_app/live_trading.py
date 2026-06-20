@@ -1513,8 +1513,6 @@ class LiveTradingEngine:
         }
         if self.config.position_mode == "hedge_mode":
             request["tradeSide"] = "open"
-        else:
-            request["reduceOnly"] = "NO"
         return request
 
     def _client_oid(self, symbol: str, side: str, bar_time: int | None) -> str:
