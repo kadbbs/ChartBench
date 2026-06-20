@@ -178,16 +178,10 @@ class BacktestEngine:
                     )
 
         if position is not None:
-            last_candle = candles[-1]
-            equity += self._close_remaining(
-                position,
-                last_candle,
-                "end_of_data",
-                time_labels,
-                price=self._exit_price(last_candle, position.trade.side, close_at_close=True),
-            )
-            equity_curve.append(equity)
-            markers.append(_marker(last_candle["time"], "aboveBar" if position.trade.side == "buy" else "belowBar", "#ff9800", "CLOSE END"))
+            open_trade = position.trade
+            trades = [trade for trade in trades if trade is not open_trade]
+            markers = _drop_open_marker(markers, open_trade)
+            position = None
 
         metrics = _metrics(trades, equity_curve, self.config.initial_equity)
         result = BacktestResult(
@@ -354,6 +348,16 @@ def _marker(time_value: int, position: str, color: str, text: str) -> dict[str, 
     return {"time": int(time_value), "position": position, "color": color, "shape": "arrowUp" if position == "belowBar" else "arrowDown", "text": text}
 
 
+def _drop_open_marker(markers: list[dict[str, Any]], trade: BacktestTrade) -> list[dict[str, Any]]:
+    expected_text = f"OPEN {trade.side.upper()}"
+    expected_time = int(trade.entry_time)
+    for index in range(len(markers) - 1, -1, -1):
+        marker = markers[index]
+        if int(marker.get("time") or 0) == expected_time and marker.get("text") == expected_text:
+            return markers[:index] + markers[index + 1 :]
+    return markers
+
+
 def _metrics(trades: list[BacktestTrade], equity_curve: list[float], initial_equity: float) -> dict[str, Any]:
     closed = [item for item in trades if item.exit_time is not None]
     wins = [item for item in closed if item.net_pnl > 0]
@@ -435,7 +439,7 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
             "total_points": metrics.get("total_points", 0.0),
             "total_net_points": metrics.get("total_net_points", 0.0),
         },
-        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
+        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；回测结束时仍未平仓的最后一笔交易会被丢弃；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
     }
 
 
@@ -457,6 +461,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "assumptions": [
             "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
             "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
+            "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
             "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
             "手续费按成交名义价值双边计入；slippage_rate 按开平仓方向调整价格。",
             "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
