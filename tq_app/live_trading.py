@@ -42,7 +42,7 @@ class LiveTradingConfig:
     product_type: str = "USDT-FUTURES"
     margin_coin: str = "USDT"
     margin_mode: str = "isolated"
-    position_mode: str = "one_way_mode"
+    position_mode: str = "hedge_mode"
     margin_amount: str = "5"
     auto_transfer_enabled: bool = True
     auto_transfer_multiplier: str = "1.1"
@@ -98,7 +98,7 @@ class LiveTradingConfig:
             product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BITGET_DEFAULT_PRODUCT_TYPE", "USDT-FUTURES")).strip().upper(),
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
             margin_mode="isolated",
-            position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "one_way_mode").strip().lower(),
+            position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "hedge_mode").strip().lower(),
             margin_amount=os.getenv("LIVE_TRADING_MARGIN_AMOUNT", "5").strip() or "5",
             auto_transfer_enabled=_env_bool("LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT", True),
             auto_transfer_multiplier=os.getenv("LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER", "1.1").strip() or "1.1",
@@ -401,15 +401,15 @@ class LiveTradingEngine:
                 return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_LEVERAGE=10")
             add_check(
                 "position_mode",
-                self.config.position_mode == "one_way_mode",
+                self.config.position_mode == "hedge_mode",
                 {
                     "configured": self.config.position_mode,
-                    "required": "one_way_mode",
-                    "note": "实盘下单前请在 Bitget 后台确认 USDT-FUTURES 已是单向持仓；程序不会在信号触发时临时切换持仓模式。",
+                    "required": "hedge_mode",
+                    "note": "实盘下单前请在 Bitget 后台确认 USDT-FUTURES 已是双向持仓；程序不会在信号触发时临时切换持仓模式。",
                 },
             )
-            if self.config.position_mode != "one_way_mode":
-                return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_POSITION_MODE=one_way_mode")
+            if self.config.position_mode != "hedge_mode":
+                return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_POSITION_MODE=hedge_mode")
 
             client = BitgetFuturesTradeClient(self.project_root)
             add_check("api_credentials", True, "Bitget API 凭据已加载")
@@ -433,13 +433,22 @@ class LiveTradingEngine:
                     margin_mode="isolated",
                 )
                 add_check("set_margin_mode", True, margin_mode_response)
-                leverage_response = client.set_leverage(
+                long_leverage_response = client.set_leverage(
                     symbol=symbol,
                     product_type=self.config.product_type,
                     margin_coin=self.config.margin_coin,
                     leverage="10",
+                    hold_side="long",
                 )
-                add_check("set_leverage", True, leverage_response)
+                add_check("set_long_leverage", True, long_leverage_response)
+                short_leverage_response = client.set_leverage(
+                    symbol=symbol,
+                    product_type=self.config.product_type,
+                    margin_coin=self.config.margin_coin,
+                    leverage="10",
+                    hold_side="short",
+                )
+                add_check("set_short_leverage", True, short_leverage_response)
             else:
                 add_check(
                     "account_setup",

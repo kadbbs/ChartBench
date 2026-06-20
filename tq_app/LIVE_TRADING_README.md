@@ -142,8 +142,9 @@ LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true
 ```
 
 - 实盘开仓固定使用 Bitget `place-order` 的 `market` 市价单，也就是 taker 路径。
+- 实盘持仓模式固定双向持仓 `hedge_mode`：开多使用 `side=buy, tradeSide=open`，开空使用 `side=sell, tradeSide=open`。请先在 Bitget App / Web 后台把 `USDT-FUTURES` 切到双向持仓，程序不会在信号触发时临时切换持仓模式。
 - 实盘保证金模式固定逐仓 `isolated`，`--preflight` 会在无持仓时尝试设置逐仓；真实信号触发时不再临时切换逐仓/全仓，避免 Bitget 因已有持仓或委托拒绝接口。
-- 实盘杠杆固定 10 倍，`--preflight` 会设置 `leverage=10`；真实信号触发时不再临时设置杠杆，只发送开仓单。
+- 实盘杠杆固定 10 倍，`--preflight` 会分别设置 long/short 的 `leverage=10`；真实信号触发时不再临时设置杠杆，只发送开仓单。
 - 实盘单笔使用 5 USDT 保证金，按当前开仓价格自动换算下单数量。
 - 合约账户可用 USDT 不足目标预留保证金时，如果 `LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT=true`，程序会从现货账户划转到 U 本位合约账户；这要求 API Key 开启 Transfer 权限。目标预留保证金 = `LIVE_TRADING_MARGIN_AMOUNT * LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER + LIVE_TRADING_AUTO_TRANSFER_BUFFER`，默认就是 `5 * 1.1 + 0 = 5.5U`。
 - 当前实盘模块不再支持 maker/post_only 开仓，不再自动挂止盈止损。
@@ -344,7 +345,7 @@ timestamp + method + request_path + body
 - 真实上线前应先跑 `LIVE_TRADING_MODE=email` 观察信号和邮件。
 - 再跑 `LIVE_TRADING_MODE=dry_run` 检查订单请求。
 - 最后才切到 `LIVE_TRADING_MODE=live`。
-- `LIVE_TRADING_MARGIN_AMOUNT=5`、`LIVE_TRADING_LEVERAGE=10` 和逐仓是当前实盘固定配置。
+- `LIVE_TRADING_MARGIN_AMOUNT=5`、`LIVE_TRADING_LEVERAGE=10`、双向持仓和逐仓是当前实盘固定配置。
 - API Key 必须开启 Trade；若启用自动划转，还必须开启 Transfer。
 - `--preflight` 必须通过；尤其要确认 5U/10x 自动计算出的 size 不低于 Bitget 合约最小下单量。
 - `LIVE_TRADING_PRICE_DECIMALS` 和 `LIVE_TRADING_SIZE_DECIMALS` 需要按合约规格确认。

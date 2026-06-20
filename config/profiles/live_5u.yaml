@@ -31,6 +31,9 @@ LIVE_TRADING_MARGIN_AMOUNT: 5
 # 杠杆固定 10 倍。
 LIVE_TRADING_LEVERAGE: 10
 
+# 持仓模式固定双向持仓。请在 Bitget App / Web 后台提前切到双向持仓。
+LIVE_TRADING_POSITION_MODE: hedge_mode
+
 # 保证金模式固定逐仓。
 LIVE_TRADING_MARGIN_MODE: isolated
 
