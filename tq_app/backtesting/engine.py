@@ -69,6 +69,17 @@ class Position:
     trade: BacktestTrade
     remaining_qty: float
     risk_amount: float
+    entry_index: int
+    max_favorable_points: float = 0.0
+    max_adverse_points: float = 0.0
+    protected_stop_points: float | None = None
+
+
+@dataclass(slots=True)
+class RiskExit:
+    reason: str
+    price: float
+    marker_text: str
 
 
 @dataclass(slots=True)
@@ -131,6 +142,25 @@ class BacktestEngine:
             entry_candle = candles[entry_index]
             signal_index = entry_index - 1
             signal_candle = candles[signal_index]
+            risk_closed = False
+
+            if position is not None:
+                risk_exit = self._risk_exit(position, entry_candle, entry_index)
+                if risk_exit is not None:
+                    realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
+                    equity += realized
+                    equity_curve.append(equity)
+                    markers.append(
+                        _marker(
+                            entry_candle["time"],
+                            "aboveBar" if position.trade.side == "buy" else "belowBar",
+                            "#ff9800",
+                            risk_exit.marker_text,
+                        )
+                    )
+                    position = None
+                    risk_closed = True
+
             snapshot = slice_snapshot(full_snapshot, entry_index + 1)
             snapshot = attach_higher_timeframe(snapshot, htf_snapshot, int(entry_candle["time"]))
             signal = self.strategy.evaluate(snapshot)
@@ -156,12 +186,13 @@ class BacktestEngine:
                 position = None
 
             if position is None:
-                if signal.side in {"buy", "sell"}:
+                if not risk_closed and signal.side in {"buy", "sell"}:
                     trade, position = self._open_position(
                         trade_id=next_trade_id,
                         side=signal.side,
                         signal_candle=signal_candle,
                         entry_candle=entry_candle,
+                        entry_index=entry_index,
                         equity=equity,
                         reason=signal.reason,
                         time_labels=time_labels,
@@ -176,6 +207,20 @@ class BacktestEngine:
                             f"OPEN {signal.side.upper()}",
                         )
                     )
+                    risk_exit = self._risk_exit(position, entry_candle, entry_index)
+                    if risk_exit is not None:
+                        realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
+                        equity += realized
+                        equity_curve.append(equity)
+                        markers.append(
+                            _marker(
+                                entry_candle["time"],
+                                "aboveBar" if position.trade.side == "buy" else "belowBar",
+                                "#ff9800",
+                                risk_exit.marker_text,
+                            )
+                        )
+                        position = None
 
         if position is not None:
             open_trade = position.trade
@@ -206,6 +251,7 @@ class BacktestEngine:
         side: str,
         signal_candle: dict[str, Any],
         entry_candle: dict[str, Any],
+        entry_index: int,
         equity: float,
         reason: str,
         time_labels: dict[str, str],
@@ -228,7 +274,7 @@ class BacktestEngine:
             signal_reason=reason,
         )
         trade.fees += abs(qty * entry_price) * self.config.fee_rate
-        return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount)
+        return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount, entry_index=entry_index)
 
     def _order_qty(self, entry_price: float, equity: float) -> float:
         notional = max(self.config.margin_amount * self.config.leverage, 0.0)
@@ -240,6 +286,42 @@ class BacktestEngine:
         base_price = float(candle["close"] if close_at_close else candle["open"])
         exit_side = "sell" if side == "buy" else "buy"
         return _apply_slippage(base_price, exit_side, self.config.slippage_rate)
+
+    def _risk_exit(self, position: Position, candle: dict[str, Any], candle_index: int) -> RiskExit | None:
+        trade = position.trade
+        entry_price = trade.entry_price
+        side = trade.side
+        position.max_favorable_points = max(position.max_favorable_points, _candle_favorable_points(side, entry_price, candle))
+        position.max_adverse_points = min(position.max_adverse_points, _candle_adverse_points(side, entry_price, candle))
+
+        if position.max_adverse_points <= -1800.0:
+            return RiskExit(
+                reason="disaster_hard_stop",
+                price=_price_for_points(side, entry_price, -1800.0),
+                marker_text="CLOSE DISASTER",
+            )
+
+        protection_points = _protection_points(position.max_favorable_points)
+        if protection_points is not None:
+            position.protected_stop_points = max(position.protected_stop_points or protection_points, protection_points)
+            if _candle_touches_points(candle, side, entry_price, position.protected_stop_points):
+                reason = "breakeven_protection" if position.protected_stop_points <= 100.0 else "trailing_protection"
+                return RiskExit(
+                    reason=reason,
+                    price=_price_for_points(side, entry_price, position.protected_stop_points),
+                    marker_text="CLOSE PROTECT",
+                )
+
+        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds):
+            close_points = _points(side, entry_price, float(candle["close"]))
+            if position.max_favorable_points < 300.0 and close_points < -150.0:
+                return RiskExit(
+                    reason="startup_failure_stop",
+                    price=float(candle["close"]),
+                    marker_text="CLOSE STARTUP",
+                )
+
+        return None
 
     def _close_partial(
         self,
@@ -337,6 +419,47 @@ def _pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
 def _points(side: str, entry: float, exit_price: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return (exit_price - entry) * direction
+
+
+def _price_for_points(side: str, entry: float, points: float) -> float:
+    direction = 1.0 if side == "buy" else -1.0
+    return entry + points * direction
+
+
+def _candle_favorable_points(side: str, entry: float, candle: dict[str, Any]) -> float:
+    if side == "buy":
+        return float(candle["high"]) - entry
+    return entry - float(candle["low"])
+
+
+def _candle_adverse_points(side: str, entry: float, candle: dict[str, Any]) -> float:
+    if side == "buy":
+        return float(candle["low"]) - entry
+    return entry - float(candle["high"])
+
+
+def _candle_touches_points(candle: dict[str, Any], side: str, entry: float, points: float) -> bool:
+    if side == "buy":
+        return float(candle["low"]) <= _price_for_points(side, entry, points)
+    return float(candle["high"]) >= _price_for_points(side, entry, points)
+
+
+def _protection_points(max_favorable_points: float) -> float | None:
+    if max_favorable_points >= 8000.0:
+        return max_favorable_points * 0.60
+    if max_favorable_points >= 4000.0:
+        return max_favorable_points * 0.50
+    if max_favorable_points >= 2000.0:
+        return max_favorable_points * 0.40
+    if max_favorable_points >= 800.0:
+        return 100.0
+    return None
+
+
+def _startup_check_bars(duration_seconds: int) -> int:
+    if duration_seconds <= 0:
+        return 24
+    return max(1, round((24 * 300) / duration_seconds))
 
 
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:
@@ -439,7 +562,7 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
             "total_points": metrics.get("total_points", 0.0),
             "total_net_points": metrics.get("total_net_points", 0.0),
         },
-        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；回测结束时仍未平仓的最后一笔交易会被丢弃；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
+        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，并包含启动失败止损、灾难硬止损、保本保护和分段移动保护；回测结束时仍未平仓的最后一笔交易会被丢弃；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
     }
 
 
@@ -461,6 +584,12 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "assumptions": [
             "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
             "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
+            "持仓期间先检查风控出场；若本根 K 线被风控平仓，本根不再重新开仓。",
+            "启动失败止损：开仓后第 24 根 5 分钟 K 线检查，若最大浮盈小于 300 点且当前点数小于 -150 点，则按当根 close 平仓。",
+            "灾难硬止损：任何 K 线内最大浮亏达到 -1800 点，则按 -1800 点价格平仓。",
+            "保本保护：开仓后最大浮盈达到 800 点，保护线抬到 +100 点。",
+            "移动保护：最大浮盈达到 2000/4000/8000 点后，分别保护最大浮盈的 40%/50%/60%。",
+            "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
             "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
             "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
             "手续费按成交名义价值双边计入；slippage_rate 按开平仓方向调整价格。",
