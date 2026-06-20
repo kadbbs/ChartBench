@@ -1614,13 +1614,15 @@ class LiveTradingEngine:
         decision = result.decision
         response = result.response or {}
         status = "失败" if result.error else ("已持仓跳过" if response.get("sameSidePosition") else ("DRY-RUN" if result.dry_run else "已下单"))
-        side_label = {"buy": "多单观察", "sell": "空单观察"}.get(decision.side or "", decision.side or "-")
+        action_label = self._email_action_label(result)
+        side_label = {"buy": "多单", "sell": "空单"}.get(decision.side or "", decision.side or "-")
         price_label = f"{decision.bar_close:.2f}" if decision.bar_close is not None else "-"
-        subject = f"[TQ Live] {status} {side_label} {decision.symbol} {price_label} {decision.bar_time_label or decision.bar_time}"
+        subject = f"[TQ Live] {status} {action_label} {decision.symbol} {price_label} {decision.bar_time_label or decision.bar_time}"
         html = (
             "<h3>TQ Live Trading</h3>"
             f"<p><b>Status:</b> {status}</p>"
             f"<p><b>Symbol:</b> {decision.symbol}</p>"
+            f"<p><b>Action:</b> {action_label}</p>"
             f"<p><b>Side:</b> {side_label}</p>"
             f"<p><b>Time:</b> {decision.bar_time_label or decision.bar_time}</p>"
             f"<p><b>Close:</b> {price_label}</p>"
@@ -1636,6 +1638,17 @@ class LiveTradingEngine:
             send_resend_email(to=self.config.email_to, subject=subject, html=html, project_root=self.project_root)
         except Exception as exc:
             self.logger.warning("邮件发送失败: %s", exc)
+
+    def _email_action_label(self, result: TradeExecutionResult) -> str:
+        side_label = {"buy": "开多", "sell": "开空"}.get(result.decision.side or "", result.decision.side or "-")
+        response = result.response or {}
+        if response.get("sameSidePosition"):
+            return {"buy": "已有多单，跳过", "sell": "已有空单，跳过"}.get(result.decision.side or "", "已有仓位，跳过")
+        if self.config.log_only or response.get("logOnly"):
+            return {"buy": "观察多单", "sell": "观察空单"}.get(result.decision.side or "", f"观察 {side_label}")
+        if result.dry_run or response.get("dryRun"):
+            return f"模拟{side_label}"
+        return f"真实{side_label}"
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name, "").strip()
