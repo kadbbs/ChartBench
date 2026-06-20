@@ -308,16 +308,6 @@ class BitgetFuturesTradeClient:
             },
         )
 
-    def set_position_mode(self, *, product_type: str, position_mode: str) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/api/v2/mix/account/set-position-mode",
-            body={
-                "productType": product_type,
-                "posMode": position_mode,
-            },
-        )
-
     def _request(
         self,
         method: str,
@@ -409,6 +399,17 @@ class LiveTradingEngine:
             add_check("leverage", leverage == Decimal("10"), self.config.leverage)
             if leverage != Decimal("10"):
                 return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_LEVERAGE=10")
+            add_check(
+                "position_mode",
+                self.config.position_mode == "one_way_mode",
+                {
+                    "configured": self.config.position_mode,
+                    "required": "one_way_mode",
+                    "note": "实盘下单前请在 Bitget 后台确认 USDT-FUTURES 已是单向持仓；程序不会在信号触发时临时切换持仓模式。",
+                },
+            )
+            if self.config.position_mode != "one_way_mode":
+                return PreflightResult(ok=False, checks=checks, error="当前实盘固定要求 LIVE_TRADING_POSITION_MODE=one_way_mode")
 
             client = BitgetFuturesTradeClient(self.project_root)
             add_check("api_credentials", True, "Bitget API 凭据已加载")
@@ -701,7 +702,6 @@ class LiveTradingEngine:
         order_response: dict[str, Any] | None = None
         reverse_close_response: dict[str, Any] | None = None
         fund_response: dict[str, Any] | None = None
-        position_mode_response: dict[str, Any] | None = None
         margin_mode_response: dict[str, Any] | None = None
         leverage_response: dict[str, Any] | None = None
         entry_price: Decimal | None = None
@@ -748,10 +748,6 @@ class LiveTradingEngine:
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
             entry_price = self._entry_price(client, decision)
             fund_response = self._ensure_futures_margin_available(client)
-            position_mode_response = client.set_position_mode(
-                product_type=self.config.product_type,
-                position_mode=self.config.position_mode,
-            )
             margin_mode_response = client.set_margin_mode(
                 symbol=decision.symbol,
                 product_type=self.config.product_type,
@@ -776,7 +772,6 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
-                    "positionMode": position_mode_response,
                     "marginMode": margin_mode_response,
                     "leverage": leverage_response,
                 },
@@ -792,7 +787,6 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
-                    "positionMode": position_mode_response,
                     "marginMode": margin_mode_response,
                     "leverage": leverage_response,
                 },
