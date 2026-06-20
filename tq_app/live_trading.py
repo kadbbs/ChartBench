@@ -784,7 +784,10 @@ class LiveTradingEngine:
                 self._log_result(result)
                 self._send_email(result)
                 return result
-            self._assert_no_opposite_position(client, decision)
+            late_reverse_close_response = self._close_opposite_position_if_needed(client, decision)
+            if late_reverse_close_response is not None:
+                reverse_close_response = _append_reverse_close_response(reverse_close_response, late_reverse_close_response)
+                self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
             entry_price = self._entry_price(client, decision)
             fund_response = self._ensure_futures_margin_available(client)
             request = self._order_request(decision, entry_price=entry_price)
@@ -860,6 +863,16 @@ class LiveTradingEngine:
         self._wait_until_opposite_position_closed(client, decision)
         return result
 
+    def _close_opposite_position_if_needed(
+        self,
+        client: BitgetFuturesTradeClient,
+        decision: TradeDecision,
+    ) -> dict[str, Any] | None:
+        reverse_position = self._opposite_side_position(client, decision)
+        if reverse_position is None:
+            return None
+        return self._close_opposite_position(client, decision, reverse_position)
+
     def _wait_until_opposite_position_closed(
         self,
         client: BitgetFuturesTradeClient,
@@ -872,15 +885,6 @@ class LiveTradingEngine:
             if attempt < 3:
                 time.sleep(1)
         raise RuntimeError(f"反向仓位平仓后仍检测到持仓，拒绝继续开仓: {remaining}")
-
-    def _assert_no_opposite_position(
-        self,
-        client: BitgetFuturesTradeClient,
-        decision: TradeDecision,
-    ) -> None:
-        remaining = self._opposite_side_position(client, decision)
-        if remaining is not None:
-            raise RuntimeError(f"检测到反向仓位仍存在，拒绝开新仓以避免真实双向持仓: {remaining}")
 
     def _entry_price(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> Decimal:
         if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
@@ -1794,6 +1798,17 @@ def _format_price(value: float | None) -> str:
 
 def _format_float_list(values: list[float]) -> str:
     return "[" + ", ".join(_format_price(value) for value in values) + "]"
+
+
+def _append_reverse_close_response(existing: dict[str, Any] | None, new_response: dict[str, Any]) -> dict[str, Any]:
+    if existing is None:
+        return new_response
+    if "steps" in existing:
+        steps = list(existing.get("steps") or [])
+    else:
+        steps = [existing]
+    steps.append(new_response)
+    return {"steps": steps}
 
 
 def _to_decimal(value: Any) -> Decimal:

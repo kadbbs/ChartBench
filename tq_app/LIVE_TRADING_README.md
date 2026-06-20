@@ -143,7 +143,7 @@ LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true
 
 - 实盘开仓固定使用 Bitget `place-order` 的 `market` 市价单，也就是 taker 路径。
 - 实盘持仓模式固定双向持仓 `hedge_mode`：开多使用 `side=buy, tradeSide=open`，开空使用 `side=sell, tradeSide=open`。请先在 Bitget App / Web 后台把 `USDT-FUTURES` 切到双向持仓，程序不会在信号触发时临时切换持仓模式。
-- 双向持仓只用于匹配 Bitget 下单参数；策略层面仍然禁止真实多空同时持有。出现反向信号时，程序会先平掉反向仓位并确认反向仓位消失，再决定是否开新仓；如果同方向已经有仓位，则跳过开仓。
+- 双向持仓只用于匹配 Bitget 下单参数；策略层面仍然禁止真实多空同时持有。出现反向信号时，程序会先平掉反向仓位并确认反向仓位消失；下单前如果再次发现当前开仓方向的反向仓位，会再次先平仓再继续；如果同方向已经有仓位，则跳过开仓。
 - 实盘保证金模式固定逐仓 `isolated`，`--preflight` 会在无持仓时尝试设置逐仓；真实信号触发时不再临时切换逐仓/全仓，避免 Bitget 因已有持仓或委托拒绝接口。
 - 实盘杠杆固定 10 倍，`--preflight` 会分别设置 long/short 的 `leverage=10`；真实信号触发时不再临时设置杠杆，只发送开仓单。
 - 实盘单笔使用 5 USDT 保证金，按当前开仓价格自动换算下单数量。
