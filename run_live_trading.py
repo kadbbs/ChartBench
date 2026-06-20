@@ -159,7 +159,7 @@ def main() -> None:
         service.start()
         engine = LiveTradingEngine(project_root, LiveTradingConfig.from_env(project_root))
         if args.preflight:
-            preflight = engine.run_preflight(symbol=args.symbol)
+            preflight = engine.run_preflight(symbol=args.symbol, configure_account=True)
             print(json.dumps(asdict(preflight), ensure_ascii=False, default=str, indent=2))
             if not preflight.ok:
                 raise SystemExit(1)

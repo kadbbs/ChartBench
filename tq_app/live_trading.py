@@ -381,7 +381,7 @@ class LiveTradingEngine:
         except Exception as exc:
             self.logger.warning("启动邮件发送失败: %s", exc)
 
-    def run_preflight(self, *, symbol: str) -> PreflightResult:
+    def run_preflight(self, *, symbol: str, configure_account: bool = False) -> PreflightResult:
         checks: list[dict[str, Any]] = []
 
         def add_check(name: str, ok: bool, detail: Any = None) -> None:
@@ -416,6 +416,36 @@ class LiveTradingEngine:
 
             positions_payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
             add_check("private_positions", True, {"code": positions_payload.get("code"), "items": len(positions_payload.get("data") or [])})
+
+            if configure_account:
+                open_positions = self._exchange_open_positions(client)
+                add_check("open_positions_before_account_setup", not open_positions, {"open_count": len(open_positions), "positions": open_positions})
+                if open_positions:
+                    return PreflightResult(
+                        ok=False,
+                        checks=checks,
+                        error="当前产品线仍有持仓，Bitget 不允许切换逐仓/全仓；请先处理持仓后再运行 --preflight。",
+                    )
+                margin_mode_response = client.set_margin_mode(
+                    symbol=symbol,
+                    product_type=self.config.product_type,
+                    margin_coin=self.config.margin_coin,
+                    margin_mode="isolated",
+                )
+                add_check("set_margin_mode", True, margin_mode_response)
+                leverage_response = client.set_leverage(
+                    symbol=symbol,
+                    product_type=self.config.product_type,
+                    margin_coin=self.config.margin_coin,
+                    leverage="10",
+                )
+                add_check("set_leverage", True, leverage_response)
+            else:
+                add_check(
+                    "account_setup",
+                    True,
+                    "运行前请用 --preflight 完成逐仓和 10 倍杠杆设置；真实信号触发时不会临时切换账户/合约设置。",
+                )
 
             ticker = client.get_ticker(symbol=symbol, product_type=self.config.product_type)
             mark_price = ticker.get("markPrice")
@@ -702,8 +732,6 @@ class LiveTradingEngine:
         order_response: dict[str, Any] | None = None
         reverse_close_response: dict[str, Any] | None = None
         fund_response: dict[str, Any] | None = None
-        margin_mode_response: dict[str, Any] | None = None
-        leverage_response: dict[str, Any] | None = None
         entry_price: Decimal | None = None
         try:
             client = BitgetFuturesTradeClient(self.project_root)
@@ -748,18 +776,6 @@ class LiveTradingEngine:
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
             entry_price = self._entry_price(client, decision)
             fund_response = self._ensure_futures_margin_available(client)
-            margin_mode_response = client.set_margin_mode(
-                symbol=decision.symbol,
-                product_type=self.config.product_type,
-                margin_coin=self.config.margin_coin,
-                margin_mode="isolated",
-            )
-            leverage_response = client.set_leverage(
-                symbol=decision.symbol,
-                product_type=self.config.product_type,
-                margin_coin=self.config.margin_coin,
-                leverage="10",
-            )
             request = self._order_request(decision, entry_price=entry_price)
             order_response = client.place_order(request)
             result = TradeExecutionResult(
@@ -772,8 +788,7 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
-                    "marginMode": margin_mode_response,
-                    "leverage": leverage_response,
+                    "accountSetup": "skipped_at_signal_time",
                 },
             )
         except Exception as exc:
@@ -787,8 +802,7 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
-                    "marginMode": margin_mode_response,
-                    "leverage": leverage_response,
+                    "accountSetup": "skipped_at_signal_time",
                 },
                 error=str(exc),
             )
@@ -827,6 +841,9 @@ class LiveTradingEngine:
         if self.config.position_mode == "hedge_mode":
             payload["holdSide"] = str(position.get("holdSide") or ("short" if decision.side == "buy" else "long"))
         response = client.close_position_order(payload)
+        failures = ((response.get("data") or {}).get("failureList") or []) if isinstance(response, dict) else []
+        if failures:
+            raise RuntimeError(f"反向仓位平仓失败: {json.dumps(failures, ensure_ascii=False)}")
         result = {"request": payload, "response": response, "position": position}
         self.logger.info("开仓前已提交反向仓位平仓: %s", json.dumps(result, ensure_ascii=False))
         self._wait_until_opposite_position_closed(client, decision)
@@ -921,7 +938,7 @@ class LiveTradingEngine:
             margin_coin = str(account.get("marginCoin") or "").upper()
             if margin_coin and margin_coin != self.config.margin_coin:
                 continue
-            for key in ("available", "isolatedMaxAvailable", "availableBalance", "fixedMaxAvailable", "crossedMaxAvailable"):
+            for key in ("isolatedMaxAvailable", "available", "availableBalance", "fixedMaxAvailable", "crossedMaxAvailable"):
                 value = account.get(key)
                 if value not in (None, ""):
                     return _to_decimal(value)

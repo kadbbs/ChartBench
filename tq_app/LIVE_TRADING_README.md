@@ -142,8 +142,8 @@ LIVE_TRADING_POSITION_SYNC_REAL_ONLY=true
 ```
 
 - 实盘开仓固定使用 Bitget `place-order` 的 `market` 市价单，也就是 taker 路径。
-- 实盘保证金模式固定逐仓 `isolated`，程序会在真实开仓前调用 Bitget 设置逐仓；即使 `.env` 误填 `crossed`，运行时仍会强制使用逐仓。
-- 实盘杠杆固定 10 倍，程序会在真实开仓前再次设置 `leverage=10`。
+- 实盘保证金模式固定逐仓 `isolated`，`--preflight` 会在无持仓时尝试设置逐仓；真实信号触发时不再临时切换逐仓/全仓，避免 Bitget 因已有持仓或委托拒绝接口。
+- 实盘杠杆固定 10 倍，`--preflight` 会设置 `leverage=10`；真实信号触发时不再临时设置杠杆，只发送开仓单。
 - 实盘单笔使用 5 USDT 保证金，按当前开仓价格自动换算下单数量。
 - 合约账户可用 USDT 不足目标预留保证金时，如果 `LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT=true`，程序会从现货账户划转到 U 本位合约账户；这要求 API Key 开启 Transfer 权限。目标预留保证金 = `LIVE_TRADING_MARGIN_AMOUNT * LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER + LIVE_TRADING_AUTO_TRANSFER_BUFFER`，默认就是 `5 * 1.1 + 0 = 5.5U`。
 - 当前实盘模块不再支持 maker/post_only 开仓，不再自动挂止盈止损。
@@ -213,12 +213,11 @@ LIVE_TRADING_EMAIL_TO=
 1. `LIVE_TRADING_MODE=off`：只写普通运行日志，不写订单记录、不发邮件、不记录虚拟仓位。
 1. `LIVE_TRADING_MODE=email`：只写订单观察日志和发邮件，不构造真实下单请求。
 1. `LIVE_TRADING_MODE=dry_run`：按 5U/10x 自动计算下单数量，构造请求但不发送到 Bitget。
-1. `LIVE_TRADING_MODE=live`：执行 Bitget preflight，检查私有接口、合约、ticker、5U/10x 数量、精度、合约账户余额和现货可划转余额。
+1. `LIVE_TRADING_MODE=live`：执行运行时 preflight，检查私有接口、合约、ticker、5U/10x 数量、精度、合约账户余额和现货可划转余额；不会在信号触发时临时切换逐仓/全仓或杠杆。
 1. 查询当前持仓。
 1. 已有同方向仓位：跳过开仓，写订单日志并发送邮件。
 1. 已有反方向仓位：先调用 Bitget `close-positions` 平掉反向仓位，并确认反向仓位消失；如果仍存在，拒绝继续开仓。
 1. 合约账户不足目标预留保证金时，从现货账户划转到 U 本位合约账户。
-1. 设置逐仓 `isolated` 和 10 倍杠杆。
 1. 调用 Bitget `place-order` 下 `market` 市价开仓单，不再自动挂止盈止损。
 1. 常驻循环会继续同步账号持仓到本地账本。
 
@@ -316,8 +315,8 @@ logs/live_trading_orders.jsonl
 - 查询合约账户：`GET /api/v2/mix/account/accounts`
 - 查询现货余额：`GET /api/v2/spot/account/assets`
 - 现货转合约：`POST /api/v2/spot/wallet/transfer`
-- 设置逐仓：`POST /api/v2/mix/account/set-margin-mode`
-- 设置杠杆：`POST /api/v2/mix/account/set-leverage`
+- 预检查设置逐仓：`POST /api/v2/mix/account/set-margin-mode`
+- 预检查设置杠杆：`POST /api/v2/mix/account/set-leverage`
 - 下单：`POST /api/v2/mix/order/place-order`
 - 反向仓位平仓：`POST /api/v2/mix/order/close-positions`
 
