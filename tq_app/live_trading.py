@@ -658,7 +658,7 @@ class LiveTradingEngine:
             return result
         self.sync_local_positions_with_exchange(symbol=decision.symbol)
         local_position = self._local_same_side_position(decision)
-        if local_position is not None:
+        if local_position is not None and not self._is_real_trading_mode():
             result = TradeExecutionResult(
                 decision=decision,
                 dry_run=True,
@@ -744,23 +744,6 @@ class LiveTradingEngine:
         entry_price: Decimal | None = None
         try:
             client = BitgetFuturesTradeClient(self.project_root)
-            same_side_position = self._same_side_position(client, decision)
-            if same_side_position is not None:
-                result = TradeExecutionResult(
-                    decision=decision,
-                    dry_run=True,
-                    enabled=self.config.enabled,
-                    request=request,
-                    response={
-                        "sameSidePosition": True,
-                        "message": "已存在同方向仓位，跳过开仓。",
-                        "position": same_side_position,
-                    },
-                )
-                self._record_execution(result)
-                self._log_result(result)
-                self._send_email(result)
-                return result
             time_allowed, time_reason = self._entry_time_allowed()
             if not time_allowed:
                 result = TradeExecutionResult(
@@ -783,6 +766,25 @@ class LiveTradingEngine:
             if reverse_position is not None:
                 reverse_close_response = self._close_opposite_position(client, decision, reverse_position)
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
+            same_side_position = self._same_side_position(client, decision)
+            if same_side_position is not None:
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=True,
+                    enabled=self.config.enabled,
+                    request=request,
+                    response={
+                        "sameSidePosition": True,
+                        "message": "已存在同方向仓位，跳过开仓；如刚平掉反向仓位，本次只完成平仓不反手。",
+                        "position": same_side_position,
+                        "reverseClose": reverse_close_response,
+                    },
+                )
+                self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
+            self._assert_no_opposite_position(client, decision)
             entry_price = self._entry_price(client, decision)
             fund_response = self._ensure_futures_margin_available(client)
             request = self._order_request(decision, entry_price=entry_price)
@@ -870,6 +872,15 @@ class LiveTradingEngine:
             if attempt < 3:
                 time.sleep(1)
         raise RuntimeError(f"反向仓位平仓后仍检测到持仓，拒绝继续开仓: {remaining}")
+
+    def _assert_no_opposite_position(
+        self,
+        client: BitgetFuturesTradeClient,
+        decision: TradeDecision,
+    ) -> None:
+        remaining = self._opposite_side_position(client, decision)
+        if remaining is not None:
+            raise RuntimeError(f"检测到反向仓位仍存在，拒绝开新仓以避免真实双向持仓: {remaining}")
 
     def _entry_price(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> Decimal:
         if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
