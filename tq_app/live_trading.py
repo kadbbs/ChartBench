@@ -308,6 +308,16 @@ class BitgetFuturesTradeClient:
             },
         )
 
+    def set_position_mode(self, *, product_type: str, position_mode: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v2/mix/account/set-position-mode",
+            body={
+                "productType": product_type,
+                "posMode": position_mode,
+            },
+        )
+
     def _request(
         self,
         method: str,
@@ -691,6 +701,7 @@ class LiveTradingEngine:
         order_response: dict[str, Any] | None = None
         reverse_close_response: dict[str, Any] | None = None
         fund_response: dict[str, Any] | None = None
+        position_mode_response: dict[str, Any] | None = None
         margin_mode_response: dict[str, Any] | None = None
         leverage_response: dict[str, Any] | None = None
         entry_price: Decimal | None = None
@@ -737,6 +748,10 @@ class LiveTradingEngine:
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
             entry_price = self._entry_price(client, decision)
             fund_response = self._ensure_futures_margin_available(client)
+            position_mode_response = client.set_position_mode(
+                product_type=self.config.product_type,
+                position_mode=self.config.position_mode,
+            )
             margin_mode_response = client.set_margin_mode(
                 symbol=decision.symbol,
                 product_type=self.config.product_type,
@@ -761,6 +776,7 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
+                    "positionMode": position_mode_response,
                     "marginMode": margin_mode_response,
                     "leverage": leverage_response,
                 },
@@ -776,6 +792,7 @@ class LiveTradingEngine:
                     "order": order_response,
                     "reverseClose": reverse_close_response,
                     "funding": fund_response,
+                    "positionMode": position_mode_response,
                     "marginMode": margin_mode_response,
                     "leverage": leverage_response,
                 },
@@ -1485,6 +1502,8 @@ class LiveTradingEngine:
         }
         if self.config.position_mode == "hedge_mode":
             request["tradeSide"] = "open"
+        else:
+            request["reduceOnly"] = "NO"
         return request
 
     def _client_oid(self, symbol: str, side: str, bar_time: int | None) -> str:
