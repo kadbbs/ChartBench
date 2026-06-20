@@ -253,7 +253,6 @@ class StcIndicator(Indicator):
         stc_values: list[float] = []
 
         previous_first = 0.0
-        previous_second = 0.0
         for index, macd_value in enumerate(macd_source.tolist()):
             range_value = float(macd_range.iloc[index])
             if range_value > 0:
@@ -269,9 +268,14 @@ class StcIndicator(Indicator):
                 smoothed_value = smoothed_first[-1] + factor * (first_value - smoothed_first[-1])
             smoothed_first.append(smoothed_value)
 
-            smoothed_series = pd.Series(smoothed_first)
-            smooth_low = float(smoothed_series.rolling(length, min_periods=1).min().iloc[-1])
-            smooth_range = float(smoothed_series.rolling(length, min_periods=1).max().iloc[-1] - smooth_low)
+        smoothed_series = pd.Series(smoothed_first)
+        smooth_low_series = smoothed_series.rolling(length, min_periods=1).min()
+        smooth_range_series = smoothed_series.rolling(length, min_periods=1).max() - smooth_low_series
+
+        previous_second = 0.0
+        for index, smoothed_value in enumerate(smoothed_first):
+            smooth_low = float(smooth_low_series.iloc[index])
+            smooth_range = float(smooth_range_series.iloc[index])
             if smooth_range > 0:
                 second_value = (smoothed_value - smooth_low) / smooth_range * 100
             else:

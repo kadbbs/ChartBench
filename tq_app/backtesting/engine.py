@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from tq_app.backtesting.snapshot import SnapshotBuilder, attach_higher_timeframe, slice_snapshot
+from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
 from tq_app.backtesting.strategies import KlineStrategy
 from tq_app.live_trading import LiveTradingConfig
 from tq_app.service import DISPLAY_TIMEZONE
@@ -131,6 +131,9 @@ class BacktestEngine:
 
         candles = full_snapshot["candles"]
         time_labels = full_snapshot.get("time_labels") or {}
+        snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
+        snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
+        htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
         equity = float(self.config.initial_equity)
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
@@ -161,8 +164,9 @@ class BacktestEngine:
                     position = None
                     risk_closed = True
 
-            snapshot = slice_snapshot(full_snapshot, entry_index + 1)
-            snapshot = attach_higher_timeframe(snapshot, htf_snapshot, int(entry_candle["time"]))
+            snapshot = snapshot_slicer.slice(entry_index + 1)
+            if htf_slicer is not None:
+                snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
             signal = self.strategy.evaluate(snapshot)
 
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
