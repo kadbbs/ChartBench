@@ -151,7 +151,7 @@ output_dir: backtest_outputs/btc_5m_range
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached
 ```
 
-缓存文件默认写入 `data_cache/backtest_klines/`，按 `合约类型 + 交易对 + 周期 + K线类型` 分文件保存。第一次运行会在线拉取并写入缓存；后续请求的时间区间如果已经被缓存完整覆盖，就直接读本地。需要强制在线重新拉取时：
+缓存文件默认写入 `data_cache/backtest_klines/`，按 `合约类型 + 交易对 + 周期 + K线类型` 分文件保存。第一次运行会在线拉取并写入缓存；后续请求的时间区间如果已经被缓存完整覆盖，就直接读本地；如果只缺左侧、右侧或中间某一段，会只在线补齐缺口并合并回本地缓存。需要强制在线重新拉取时：
 
 ```bash
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached --no-cache

@@ -57,19 +57,31 @@ def fetch_bitget_candles(
         if _cache_covers(cached_slice, start_time, end_time, duration_ms, requested_count, start_time_ms):
             return cached_slice
 
-        frame = _fetch_bitget_candles_online(
-            project_root=project_root,
-            symbol=symbol,
-            product_type=product_type,
-            duration_seconds=duration_seconds,
-            requested_count=requested_count,
-            start_time=start_time,
-            end_time=end_time,
-            start_time_ms=start_time_ms,
-            kline_type=kline_type,
-        )
-        _write_cache_frame(cache_path, _merge_frames(cached_frame, frame))
-        return frame
+        fetched_frames = [
+            _fetch_bitget_candles_online(
+                project_root=project_root,
+                symbol=symbol,
+                product_type=product_type,
+                duration_seconds=duration_seconds,
+                requested_count=_range_count(missing_start, missing_end, duration_ms),
+                start_time=missing_start,
+                end_time=missing_end,
+                start_time_ms=missing_start,
+                kline_type=kline_type,
+            )
+            for missing_start, missing_end in _missing_ranges(
+                cached_frame,
+                start_time,
+                end_time,
+                duration_ms,
+            )
+        ]
+        frame = _merge_frames(cached_frame, *fetched_frames)
+        _write_cache_frame(cache_path, frame)
+        final_slice = _slice_frame(frame, start_time, end_time, requested_count, start_time_ms)
+        if not _cache_covers(final_slice, start_time, end_time, duration_ms, requested_count, start_time_ms):
+            _assert_time_range_covered(final_slice, start_time, end_time, duration_ms, symbol)
+        return final_slice
 
     return _fetch_bitget_candles_online(
         project_root=project_root,
@@ -207,8 +219,8 @@ def _write_cache_frame(path: Path, frame: pd.DataFrame) -> None:
     temp_path.replace(path)
 
 
-def _merge_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
-    frames = [frame for frame in [left, right] if not frame.empty]
+def _merge_frames(*frames_to_merge: pd.DataFrame) -> pd.DataFrame:
+    frames = [frame for frame in frames_to_merge if not frame.empty]
     if not frames:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
     frame = pd.concat(frames, ignore_index=True)
@@ -250,6 +262,37 @@ def _cache_covers(
     if start_time_ms is None:
         return len(frame) >= requested_count and first_ms <= start_time + duration_ms and last_ms >= end_time - duration_ms
     return first_ms <= start_time + duration_ms and last_ms >= end_time - duration_ms
+
+
+def _missing_ranges(
+    frame: pd.DataFrame,
+    start_time: int,
+    end_time: int,
+    duration_ms: int,
+) -> list[tuple[int, int]]:
+    sliced = _slice_frame(frame, start_time, end_time, requested_count=10**12, start_time_ms=start_time)
+    if sliced.empty:
+        return [(start_time, end_time)]
+    timestamps = _datetime_ms(sliced["datetime"]).sort_values().reset_index(drop=True)
+    ranges: list[tuple[int, int]] = []
+    first_ms = int(timestamps.iloc[0])
+    if first_ms > start_time + duration_ms:
+        ranges.append((start_time, first_ms))
+
+    for index in range(1, len(timestamps)):
+        previous_ms = int(timestamps.iloc[index - 1])
+        current_ms = int(timestamps.iloc[index])
+        if current_ms - previous_ms > duration_ms:
+            ranges.append((previous_ms + duration_ms, current_ms))
+
+    last_ms = int(timestamps.iloc[-1])
+    if last_ms < end_time - duration_ms:
+        ranges.append((last_ms + duration_ms, end_time))
+    return [(left, right) for left, right in ranges if left < right]
+
+
+def _range_count(start_time: int, end_time: int, duration_ms: int) -> int:
+    return max(int((end_time - start_time) // duration_ms) + 1, 1)
 
 
 def _datetime_ms(values: pd.Series) -> pd.Series:
