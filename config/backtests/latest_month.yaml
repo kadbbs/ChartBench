@@ -19,8 +19,8 @@ strategy: live_decision
 product_type: USDT-FUTURES
 kline_type: MARKET
 initial_equity: 1000
-fee_rate: 0.0006
+# 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
+fee_rate: 0.00023
 slippage_rate: 0
 warmup_bars: 80
 output_dir: backtest_outputs/latest
-

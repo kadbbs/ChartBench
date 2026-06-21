@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
 from tq_app.backtesting.data import fetch_bitget_candles
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
 from tq_app.live_trading import LiveTradingConfig
@@ -57,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
     parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 1_000.0), help="回测初始权益，默认 1000U。")
     parser.add_argument("--risk-per-trade", type=float, default=profile_float("risk_per_trade", 0.01))
-    parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", 0.0006))
+    parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", DEFAULT_BACKTEST_FEE_RATE))
     parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
     parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
     parser.add_argument("--output-dir", default=profile_str("output_dir", "backtest_outputs/latest"))

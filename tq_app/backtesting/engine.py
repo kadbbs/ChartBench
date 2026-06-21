@@ -16,6 +16,9 @@ from tq_app.live_trading import LiveTradingConfig
 from tq_app.service import DISPLAY_TIMEZONE
 
 
+DEFAULT_BACKTEST_FEE_RATE = 0.00023
+
+
 @dataclass(slots=True)
 class BacktestConfig:
     symbol: str
@@ -25,7 +28,7 @@ class BacktestConfig:
     risk_per_trade: float = 0.01
     margin_amount: float = 1_000.0
     leverage: float = 10.0
-    fee_rate: float = 0.0006
+    fee_rate: float = DEFAULT_BACKTEST_FEE_RATE
     slippage_rate: float = 0.0
     stop_atr_multiplier: float = 2.0
     tp1_r_multiple: float = 1.0
@@ -596,7 +599,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
             "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
             "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
             "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
-            "手续费按成交名义价值双边计入；slippage_rate 按开平仓方向调整价格。",
+            "手续费按成交名义价值双边计入；默认 fee_rate=0.00023，在 10 倍杠杆下一次开平仓合计约为保证金的 0.46%；slippage_rate 按开平仓方向调整价格。",
             "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
         ],
     }
