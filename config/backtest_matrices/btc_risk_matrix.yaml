@@ -1,0 +1,30 @@
+# =============================================================================
+# 参数矩阵：BTCUSDT 5m 风控参数扫描
+# -----------------------------------------------------------------------------
+# 常用命令：
+# ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix
+#
+# 写法说明：
+# - base_profile 指向 config/backtests/<name>.yaml。
+# - 每个参数用逗号分隔多个候选值。
+# - 总组合数等于所有候选值数量相乘；不要一次放太多，先小范围粗扫。
+# =============================================================================
+
+base_profile: btc_5m_range_cached
+output_dir: backtest_outputs/matrix/btc_risk_matrix
+
+# 启动失败止损：第 N 根 5m K 检查。
+startup_check_bars_5m: 18,24
+startup_max_favorable_points: 300
+startup_current_points: -120,-150
+
+# 灾难硬止损。
+disaster_stop_points: -1400,-1800
+
+# 保本保护。
+breakeven_trigger_points: 600,800
+breakeven_stop_points: 100
+
+# 第一档移动保护。第二、三档先沿用默认值，避免组合数过大。
+trailing_trigger_1_points: 1600,2000
+trailing_protect_1_ratio: 0.40

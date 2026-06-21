@@ -36,6 +36,18 @@ class BacktestConfig:
     tp2_r_multiple: float = 1.5
     atr_period: int = 14
     warmup_bars: int = 80
+    startup_check_bars_5m: int = 24
+    startup_max_favorable_points: float = 300.0
+    startup_current_points: float = -150.0
+    disaster_stop_points: float = -1800.0
+    breakeven_trigger_points: float = 800.0
+    breakeven_stop_points: float = 100.0
+    trailing_trigger_1_points: float = 2000.0
+    trailing_protect_1_ratio: float = 0.40
+    trailing_trigger_2_points: float = 4000.0
+    trailing_protect_2_ratio: float = 0.50
+    trailing_trigger_3_points: float = 8000.0
+    trailing_protect_3_ratio: float = 0.60
     output_dir: Path = Path("backtest_outputs/latest")
 
 
@@ -301,27 +313,27 @@ class BacktestEngine:
         position.max_favorable_points = max(position.max_favorable_points, _candle_favorable_points(side, entry_price, candle))
         position.max_adverse_points = min(position.max_adverse_points, _candle_adverse_points(side, entry_price, candle))
 
-        if position.max_adverse_points <= -1800.0:
+        if position.max_adverse_points <= self.config.disaster_stop_points:
             return RiskExit(
                 reason="disaster_hard_stop",
-                price=_price_for_points(side, entry_price, -1800.0),
+                price=_price_for_points(side, entry_price, self.config.disaster_stop_points),
                 marker_text="CLOSE DISASTER",
             )
 
-        protection_points = _protection_points(position.max_favorable_points)
+        protection_points = _protection_points(position.max_favorable_points, self.config)
         if protection_points is not None:
             position.protected_stop_points = max(position.protected_stop_points or protection_points, protection_points)
             if _candle_touches_points(candle, side, entry_price, position.protected_stop_points):
-                reason = "breakeven_protection" if position.protected_stop_points <= 100.0 else "trailing_protection"
+                reason = "breakeven_protection" if position.protected_stop_points <= self.config.breakeven_stop_points else "trailing_protection"
                 return RiskExit(
                     reason=reason,
                     price=_price_for_points(side, entry_price, position.protected_stop_points),
                     marker_text="CLOSE PROTECT",
                 )
 
-        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds):
+        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds, self.config.startup_check_bars_5m):
             close_points = _points(side, entry_price, float(candle["close"]))
-            if position.max_favorable_points < 300.0 and close_points < -150.0:
+            if position.max_favorable_points < self.config.startup_max_favorable_points and close_points < self.config.startup_current_points:
                 return RiskExit(
                     reason="startup_failure_stop",
                     price=float(candle["close"]),
@@ -451,22 +463,22 @@ def _candle_touches_points(candle: dict[str, Any], side: str, entry: float, poin
     return float(candle["high"]) >= _price_for_points(side, entry, points)
 
 
-def _protection_points(max_favorable_points: float) -> float | None:
-    if max_favorable_points >= 8000.0:
-        return max_favorable_points * 0.60
-    if max_favorable_points >= 4000.0:
-        return max_favorable_points * 0.50
-    if max_favorable_points >= 2000.0:
-        return max_favorable_points * 0.40
-    if max_favorable_points >= 800.0:
-        return 100.0
+def _protection_points(max_favorable_points: float, config: BacktestConfig) -> float | None:
+    if max_favorable_points >= config.trailing_trigger_3_points:
+        return max_favorable_points * config.trailing_protect_3_ratio
+    if max_favorable_points >= config.trailing_trigger_2_points:
+        return max_favorable_points * config.trailing_protect_2_ratio
+    if max_favorable_points >= config.trailing_trigger_1_points:
+        return max_favorable_points * config.trailing_protect_1_ratio
+    if max_favorable_points >= config.breakeven_trigger_points:
+        return config.breakeven_stop_points
     return None
 
 
-def _startup_check_bars(duration_seconds: int) -> int:
+def _startup_check_bars(duration_seconds: int, check_bars_5m: int) -> int:
     if duration_seconds <= 0:
-        return 24
-    return max(1, round((24 * 300) / duration_seconds))
+        return max(int(check_bars_5m), 1)
+    return max(1, round((max(int(check_bars_5m), 1) * 300) / duration_seconds))
 
 
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:

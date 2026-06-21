@@ -98,6 +98,7 @@ TQ_DEFAULT_PORT: 8050
 - `latest_month`：按最近 N 根 5m K 线回测，适合快速确认功能。
 - `btc_5m_range`：按指定开始/结束时间回测，适合复盘某段行情。
 - `btc_5m_range_cached`：和 `btc_5m_range` 类似，但启用本地 K 线缓存。
+- `sol_5m_range_cached`：SOLUSDT 5m 长区间缓存回测。
 
 配置文件在 `config/backtests/`：
 
@@ -105,6 +106,7 @@ TQ_DEFAULT_PORT: 8050
 config/backtests/latest_month.yaml
 config/backtests/btc_5m_range.yaml
 config/backtests/btc_5m_range_cached.yaml
+config/backtests/sol_5m_range_cached.yaml
 ```
 
 ### 2. 跑一次默认回测
@@ -165,7 +167,26 @@ output_dir: backtest_outputs/btc_5m_range
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range --end-time "2026-06-10 00:00:00" --output-dir backtest_outputs/test_run
 ```
 
-### 6. 查看报告
+### 6. 参数矩阵回测
+
+参数矩阵用于批量扫描风控参数，配置文件在 `config/backtest_matrices/`。例如 SOL 风控矩阵：
+
+```bash
+./myvenv/bin/python run_backtest_matrix.py --matrix sol_risk_matrix
+```
+
+矩阵结果默认写入：
+
+```text
+backtest_outputs/matrix/sol_risk_matrix/
+summary.csv      # 所有组合排序汇总
+summary.json     # 结构化汇总
+runs/            # 每组参数的完整回测报告
+```
+
+矩阵配置使用逗号分隔候选值。总组合数等于所有候选值数量相乘，建议先粗扫 20-100 组，再围绕较好的组合做小范围细扫。
+
+### 7. 查看报告
 
 每次回测会生成：
 
@@ -177,9 +198,9 @@ trades.csv       # 逐笔交易明细，包含点数、手续费、净收益
 candles.json     # K 线和开平仓标记，供图表或脚本使用
 ```
 
-回测会复用当前实盘信号策略和高周期过滤，并按实盘方式撮合：信号 K 线收完后，下一根 K 线开盘开仓；不自动模拟止盈止损，持仓直到出现反向实盘信号时平仓并反向开仓。
+回测会复用当前实盘信号策略和高周期过滤，并按实盘方式撮合：信号 K 线收完后，下一根 K 线开盘开仓；持仓期间会先检查回测风控出场，包括启动失败止损、灾难硬止损、保本保护和分段移动保护；未触发风控时，持仓直到出现反向实盘信号时平仓并反向开仓。
 
-当前回测仓位固定为每笔 `1000U` 保证金、`10` 倍杠杆，即 `10000U` 名义价值；默认初始权益也是 `1000U`。报告里会同时展示 USDT 收益和价格点数。
+当前回测仓位固定为每笔 `1000U` 保证金、`10` 倍杠杆，即 `10000U` 名义价值；默认初始权益也是 `1000U`。默认手续费按 10x 下一次开平仓合计约保证金 `0.46%` 估算。报告里会同时展示 USDT 收益和价格点数。
 
 ### 常见问题
 
