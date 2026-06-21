@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", DEFAULT_BACKTEST_FEE_RATE))
     parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
     parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
+    parser.add_argument("--risk-exits", action=argparse.BooleanOptionalAction, default=profile_bool("risk_exits_enabled", True), help="是否启用回测持仓风控出场；用 --no-risk-exits 可回到只按反向信号换仓的老撮合模型。")
     parser.add_argument("--startup-check-bars-5m", type=int, default=profile_int("startup_check_bars_5m", 24))
     parser.add_argument("--startup-max-favorable-points", type=float, default=profile_float("startup_max_favorable_points", 300.0))
     parser.add_argument("--startup-current-points", type=float, default=profile_float("startup_current_points", -150.0))
@@ -151,6 +152,7 @@ def main() -> None:
         tp2_r_multiple=float(live_config.tp2_r_multiple),
         atr_period=live_config.atr_period,
         warmup_bars=args.warmup_bars,
+        risk_exits_enabled=args.risk_exits,
         startup_check_bars_5m=args.startup_check_bars_5m,
         startup_max_favorable_points=args.startup_max_favorable_points,
         startup_current_points=args.startup_current_points,

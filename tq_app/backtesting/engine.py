@@ -36,6 +36,7 @@ class BacktestConfig:
     tp2_r_multiple: float = 1.5
     atr_period: int = 14
     warmup_bars: int = 80
+    risk_exits_enabled: bool = True
     startup_check_bars_5m: int = 24
     startup_max_favorable_points: float = 300.0
     startup_current_points: float = -150.0
@@ -162,7 +163,7 @@ class BacktestEngine:
             signal_candle = candles[signal_index]
             risk_closed = False
 
-            if position is not None:
+            if position is not None and self.config.risk_exits_enabled:
                 risk_exit = self._risk_exit(position, entry_candle, entry_index)
                 if risk_exit is not None:
                     realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
@@ -226,7 +227,7 @@ class BacktestEngine:
                             f"OPEN {signal.side.upper()}",
                         )
                     )
-                    risk_exit = self._risk_exit(position, entry_candle, entry_index)
+                    risk_exit = self._risk_exit(position, entry_candle, entry_index) if self.config.risk_exits_enabled else None
                     if risk_exit is not None:
                         realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
                         equity += realized
@@ -587,6 +588,32 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
 
 def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[str, Any]:
     closed = [item for item in result.trades if item.exit_time is not None]
+    risk_exits_enabled = bool(result.config.get("risk_exits_enabled", True))
+    assumptions = [
+        "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
+        "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
+    ]
+    if risk_exits_enabled:
+        assumptions.extend(
+            [
+                "持仓期间先检查风控出场；若本根 K 线被风控平仓，本根不再重新开仓。",
+                "启动失败止损：开仓后第 24 根 5 分钟 K 线检查，若最大浮盈小于 300 点且当前点数小于 -150 点，则按当根 close 平仓。",
+                "灾难硬止损：任何 K 线内最大浮亏达到 -1800 点，则按 -1800 点价格平仓。",
+                "保本保护：开仓后最大浮盈达到 800 点，保护线抬到 +100 点。",
+                "移动保护：最大浮盈达到 2000/4000/8000 点后，分别保护最大浮盈的 40%/50%/60%。",
+                "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
+            ]
+        )
+    else:
+        assumptions.append("未启用回测持仓风控出场；持仓只会因反向实盘信号平仓/反手。")
+    assumptions.extend(
+        [
+            "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
+            "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
+            "手续费按成交名义价值双边计入；默认 fee_rate=0.00023，在 10 倍杠杆下一次开平仓合计约为保证金的 0.46%；slippage_rate 按开平仓方向调整价格。",
+            "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
+        ]
+    )
     return {
         "market": _market_summary(snapshot),
         "risk": _risk_summary(result),
@@ -600,20 +627,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
             "by_entry_month": _period_trade_summary(closed, "%Y-%m"),
         },
         "key_trades": _key_trades(closed),
-        "assumptions": [
-            "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
-            "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
-            "持仓期间先检查风控出场；若本根 K 线被风控平仓，本根不再重新开仓。",
-            "启动失败止损：开仓后第 24 根 5 分钟 K 线检查，若最大浮盈小于 300 点且当前点数小于 -150 点，则按当根 close 平仓。",
-            "灾难硬止损：任何 K 线内最大浮亏达到 -1800 点，则按 -1800 点价格平仓。",
-            "保本保护：开仓后最大浮盈达到 800 点，保护线抬到 +100 点。",
-            "移动保护：最大浮盈达到 2000/4000/8000 点后，分别保护最大浮盈的 40%/50%/60%。",
-            "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
-            "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
-            "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
-            "手续费按成交名义价值双边计入；默认 fee_rate=0.00023，在 10 倍杠杆下一次开平仓合计约为保证金的 0.46%；slippage_rate 按开平仓方向调整价格。",
-            "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
-        ],
+        "assumptions": assumptions,
     }
 
 

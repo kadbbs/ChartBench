@@ -1,0 +1,34 @@
+# =============================================================================
+# 回测配置：BTCUSDT 5m 缓存回测，旧撮合模型
+# -----------------------------------------------------------------------------
+# 用途：
+# - 复现早期“只按反向信号平仓/反手”的回测模型。
+# - 不启用启动失败止损、灾难硬止损、保本保护和移动保护。
+#
+# 常用命令：
+# ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached_legacy
+#
+# 注意：
+# - 回测结束时仍未平仓的最后一笔交易仍会被丢弃。
+# - 回测仓位固定在代码中：1000U 保证金、10倍杠杆。
+# - 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
+# =============================================================================
+
+symbol: BTCUSDT
+duration: 300
+start_time: "2023-03-31 00:00:00"
+end_time: "2026-06-20 00:00:00"
+strategy: live_decision
+product_type: USDT-FUTURES
+kline_type: MARKET
+initial_equity: 1000
+fee_rate: 0.00023
+slippage_rate: 0
+warmup_bars: 80
+output_dir: backtest_outputs/btc_5m_range_cached_legacy
+
+# 关闭回测持仓风控出场，只保留反向信号换仓。
+risk_exits_enabled: false
+
+cache_enabled: true
+cache_dir: data_cache/backtest_klines

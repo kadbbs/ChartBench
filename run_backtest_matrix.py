@@ -20,6 +20,7 @@ from tq_app.live_trading import LiveTradingConfig
 
 MATRIX_DIR = "config/backtest_matrices"
 MATRIX_KEYS = (
+    "risk_exits_enabled",
     "startup_check_bars_5m",
     "startup_max_favorable_points",
     "startup_current_points",
@@ -124,6 +125,7 @@ def main() -> None:
         tp2_r_multiple=float(live_config.tp2_r_multiple),
         atr_period=live_config.atr_period,
         warmup_bars=_int(profile, "warmup_bars", 80),
+        risk_exits_enabled=_bool(profile, "risk_exits_enabled", True),
         output_dir=output_dir / "runs",
     )
 
@@ -235,7 +237,9 @@ def _split_list(value: str) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-def _coerce_matrix_value(key: str, value: str) -> int | float:
+def _coerce_matrix_value(key: str, value: str) -> bool | int | float:
+    if key == "risk_exits_enabled":
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
     if key.endswith("_bars_5m"):
         return int(value)
     return float(value)
