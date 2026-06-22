@@ -90,6 +90,7 @@ LIVE_TRADING_POSITION_MODE: hedge_mode
 LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: true
 LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER: 1.1
 LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0
+LIVE_TRADING_RISK_EXITS_ENABLED: true
 ```
 
 含义：
@@ -101,6 +102,7 @@ LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0
 - 策略层面禁止真实多空同时持有。
 - 合约账户不足目标预留保证金时，从现货账户自动划转。
 - 默认目标预留保证金是 `5 * 1.1 + 0 = 5.5U`。
+- 真实持仓后启用 BTC run_0024 风控出场参数。
 
 ## Bitget 持仓模式
 
@@ -171,6 +173,60 @@ LIVE_TRADING_MARGIN_AMOUNT * LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER + LIVE_TRADIN
 
 API Key 需要 Transfer 权限。
 
+## 持仓风控出场
+
+`live_5u` 当前启用持仓后的实盘风控：
+
+```yaml
+LIVE_TRADING_RISK_EXITS_ENABLED: true
+LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
+LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
+LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED: true
+LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY: true
+LIVE_TRADING_RISK_PRICE_SOURCE: mark_price
+LIVE_TRADING_RISK_STARTUP_CHECK_BARS_5M: 24
+LIVE_TRADING_RISK_STARTUP_MAX_FAVORABLE_POINTS: 300
+LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -120
+LIVE_TRADING_RISK_DISASTER_STOP_POINTS: -1800
+LIVE_TRADING_RISK_BREAKEVEN_TRIGGER_POINTS: 800
+LIVE_TRADING_RISK_BREAKEVEN_STOP_POINTS: 100
+LIVE_TRADING_RISK_TRAILING_TRIGGER_1_POINTS: 2000
+LIVE_TRADING_RISK_TRAILING_PROTECT_1_RATIO: 0.4
+LIVE_TRADING_RISK_TRAILING_TRIGGER_2_POINTS: 4000
+LIVE_TRADING_RISK_TRAILING_PROTECT_2_RATIO: 0.5
+LIVE_TRADING_RISK_TRAILING_TRIGGER_3_POINTS: 8000
+LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
+```
+
+含义：
+
+- 点数按开仓价到当前标记价计算；多单是 `当前价 - 开仓价`，空单是 `开仓价 - 当前价`。
+- 启动失败止损：开仓后第 `24` 根 5m K 线检查一次，如果最大浮盈 `< 300` 点且当前点数 `< -120` 点，市价平仓。
+- 灾难硬止损：任何时候最大浮亏或当前浮亏达到 `-1800` 点，市价平仓。
+- 保本保护：最大浮盈达到 `800` 点后，保护线抬到 `+100` 点。
+- 移动保护：最大浮盈达到 `2000 / 4000 / 8000` 点后，分别保护最大浮盈的 `40% / 50% / 60%`。
+
+实现方式：
+
+- 开仓成功后会先确认 Bitget 已能查到同向持仓，再设置交易所服务器端灾难止损。
+- 交易所端灾难止损使用 Bitget `POST /api/v2/mix/order/place-pos-tpsl`，只覆盖本策略计算出的 `stopLossSize`。
+- 当保本/移动保护线抬高时，会通过 Bitget `POST /api/v2/mix/order/modify-tpsl-order` 尝试同步上移交易所端 stop loss。
+- 本地常驻进程会按 `LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS` 检查真实持仓风控，当前 `live_5u` 为 `5` 秒。
+- 本地触发风控时优先只平本策略记录的 `managed_size`；如果交易所仓位大小一致，才使用 Bitget `close-positions` 快速平仓。
+- 如果只平了 `managed_size` 后交易所仍有同方向剩余仓位，剩余仓位会被视为手动/外部仓位，自动排除风控直到该方向仓位清空。
+- 平仓提交后会再次查询 Bitget 持仓，确认该方向仓位已关闭或已减少到目标 size，否则不把本地仓位标记为 closed。
+- 本地确认仓位关闭时，会尝试通过 Bitget `POST /api/v2/mix/order/cancel-plan-order` 清理已知止损计划单。
+- 风控异常邮件有 `LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS` 冷却，当前同一仓位同类异常 `300` 秒最多发一次。
+- 风控状态写入 `logs/live_trading_state.json`，包括入场价、当前点数、最大浮盈、最大浮亏、保护线和启动检查状态。
+- 未知来源的交易所仓位默认不自动接管风控，避免把手动仓位误当成本策略仓位平掉。
+- 该逻辑只在 `LIVE_TRADING_MODE=live` 下真实平仓；`email` / `dry_run` 不会调用平仓接口。
+
+重要限制：
+
+- 服务器端只挂灾难止损；启动失败、保本和移动保护仍依赖本地常驻进程。
+- 服务器端止损会尽量随保护线上移，但修改失败时仍会触发本地异常邮件；是否已真正生效以 Bitget 返回为准。
+- 最大浮盈/浮亏按每次风控检查时的 ticker 更新，不是交易所逐 tick 回放。
+
 ## 策略决策
 
 实盘复用图表 snapshot，默认策略是：
@@ -214,13 +270,14 @@ confirmed  # UT 和 DKX 同向同时出现
 真实模式一次信号的关键顺序：
 
 1. 同一 `clientOid` 去重。
-2. 同步 Bitget 实际持仓到本地账本。
+2. 同步 Bitget 实际持仓到本地账本，并在常驻进程里检查持仓风控。
 3. 检查本地/交易所同向仓位，有同向则跳过。
 4. 检查反向仓位，有反向则先平仓并确认消失。
 5. 检查合约账户余额，不足则按配置从现货划转。
 6. 构造市价开仓单。
 7. 调用 Bitget `place-order`。
-8. 写订单日志、状态文件和邮件。
+8. 确认同向持仓已出现，并设置交易所端灾难止损。
+9. 写订单日志、状态文件和邮件。
 
 当前真实开仓固定是 taker 市价单，不再支持 maker/post_only。
 
@@ -270,7 +327,10 @@ API Key 至少需要：
 - 预检查设置逐仓：`POST /api/v2/mix/account/set-margin-mode`
 - 预检查设置杠杆：`POST /api/v2/mix/account/set-leverage`
 - 下单：`POST /api/v2/mix/order/place-order`
-- 反向仓位平仓：`POST /api/v2/mix/order/close-positions`
+- 反向仓位/风控快速平仓：`POST /api/v2/mix/order/close-positions`
+- 交易所端仓位止损：`POST /api/v2/mix/order/place-pos-tpsl`
+- 修改交易所端止损：`POST /api/v2/mix/order/modify-tpsl-order`
+- 取消交易所端止损：`POST /api/v2/mix/order/cancel-plan-order`
 
 官方文档：
 
@@ -279,6 +339,9 @@ API Key 至少需要：
 - https://www.bitget.com/api-doc/contract/account/Change-Leverage
 - https://www.bitget.com/api-doc/contract/trade/Place-Order
 - https://www.bitget.com/api-doc/contract/trade/Flash-Close-Position
+- https://www.bitget.com/api-doc/contract/plan/Place-Pos-Tpsl-Order
+- https://www.bitget.com/api-doc/contract/plan/Modify-Tpsl-Order
+- https://www.bitget.com/api-doc/contract/plan/Cancel-Plan-Order
 - https://www.bitget.com/api-doc/spot/account/Get-Account-Assets
 - https://www.bitget.com/api-doc/spot/account/Wallet-Transfer
 

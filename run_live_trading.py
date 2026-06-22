@@ -42,6 +42,24 @@ CONFIG_SNAPSHOT_KEYS = [
     "LIVE_TRADING_HTF_HULL_DURATION_SECONDS",
     "LIVE_TRADING_ENTRY_TIME_FILTER_ENABLED",
     "LIVE_TRADING_POSITION_SYNC_ENABLED",
+    "LIVE_TRADING_RISK_EXITS_ENABLED",
+    "LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS",
+    "LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS",
+    "LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED",
+    "LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY",
+    "LIVE_TRADING_RISK_PRICE_SOURCE",
+    "LIVE_TRADING_RISK_STARTUP_CHECK_BARS_5M",
+    "LIVE_TRADING_RISK_STARTUP_MAX_FAVORABLE_POINTS",
+    "LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS",
+    "LIVE_TRADING_RISK_DISASTER_STOP_POINTS",
+    "LIVE_TRADING_RISK_BREAKEVEN_TRIGGER_POINTS",
+    "LIVE_TRADING_RISK_BREAKEVEN_STOP_POINTS",
+    "LIVE_TRADING_RISK_TRAILING_TRIGGER_1_POINTS",
+    "LIVE_TRADING_RISK_TRAILING_PROTECT_1_RATIO",
+    "LIVE_TRADING_RISK_TRAILING_TRIGGER_2_POINTS",
+    "LIVE_TRADING_RISK_TRAILING_PROTECT_2_RATIO",
+    "LIVE_TRADING_RISK_TRAILING_TRIGGER_3_POINTS",
+    "LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO",
     "LIVE_TRADING_EMAIL_ENABLED",
     "LIVE_TRADING_EMAIL_TO",
     "TQ_DEFAULT_SYMBOL",
@@ -193,7 +211,7 @@ def main() -> None:
         while not shutdown_requested:
             try:
                 now = time.monotonic()
-                if now - last_runtime_check_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                if now - last_runtime_check_at >= engine.config.runtime_check_interval_seconds():
                     engine.check_runtime_state()
                     last_runtime_check_at = now
                 snapshot, decision = evaluate_snapshot(service, engine, args)
@@ -210,6 +228,7 @@ def main() -> None:
                 continue
 
             while not shutdown_requested:
+                runtime_check_interval = engine.config.runtime_check_interval_seconds()
                 next_version = service.wait_for_update(
                     symbol=args.symbol,
                     provider=args.provider,
@@ -219,7 +238,7 @@ def main() -> None:
                     brick_length=args.brick_length,
                     data_length=args.length,
                     last_version=last_version,
-                    timeout=max(args.poll_timeout, 1.0),
+                    timeout=max(min(args.poll_timeout, runtime_check_interval), 1.0),
                 )
                 if next_version != last_version:
                     break
@@ -227,7 +246,7 @@ def main() -> None:
                 if args.heartbeat_seconds > 0 and now - last_heartbeat_at >= args.heartbeat_seconds:
                     print(json.dumps({"heartbeat": True, "version": last_version, "ts": int(time.time() * 1000)}, ensure_ascii=False))
                     last_heartbeat_at = now
-                if now - last_runtime_check_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                if now - last_runtime_check_at >= engine.config.runtime_check_interval_seconds():
                     engine.check_runtime_state()
                     last_runtime_check_at = now
     finally:
