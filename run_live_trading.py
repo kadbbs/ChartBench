@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from tq_app.config_profiles import available_profiles, effective_config_snapshot, load_layered_env
-from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine
+from tq_app.live_trading import BitgetTickerWebSocket, LiveTradingConfig, LiveTradingEngine
 from tq_app.service import MarketDataService
 from web_tq_chart import (
     DEFAULT_BAR_MODE,
@@ -44,6 +44,8 @@ CONFIG_SNAPSHOT_KEYS = [
     "LIVE_TRADING_POSITION_SYNC_ENABLED",
     "LIVE_TRADING_RISK_EXITS_ENABLED",
     "LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS",
+    "LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED",
+    "LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS",
     "LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS",
     "LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED",
     "LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY",
@@ -191,6 +193,7 @@ def main() -> None:
             return
 
         shutdown_requested = False
+        ticker_stream: BitgetTickerWebSocket | None = None
 
         def request_shutdown(signum=None, frame=None) -> None:
             nonlocal shutdown_requested
@@ -203,17 +206,32 @@ def main() -> None:
 
         print(f"常驻实盘执行已启动: provider={args.provider} symbol={args.symbol} duration={args.duration}s")
         engine.send_startup_email(symbol=args.symbol, duration_seconds=args.duration, continuous=True)
+        if engine.config.risk_exits_enabled and engine.config.risk_websocket_ticker_enabled and engine.config.mode == "live":
+            ticker_stream = BitgetTickerWebSocket(
+                symbol=args.symbol,
+                product_type=engine.config.product_type,
+                logger=engine.logger,
+            )
+            ticker_stream.start()
+            print(json.dumps({"ticker_websocket": "started", "symbol": args.symbol.upper(), "ts": int(time.time() * 1000)}, ensure_ascii=False))
         last_version: int | None = None
+        last_ticker_version: int | None = None
         last_evaluated_bar_time: int | None = None
         last_heartbeat_at = time.monotonic()
-        last_runtime_check_at = 0.0
+        last_position_sync_at = 0.0
+        last_rest_risk_check_at = 0.0
 
         while not shutdown_requested:
             try:
                 now = time.monotonic()
-                if now - last_runtime_check_at >= engine.config.runtime_check_interval_seconds():
-                    engine.check_runtime_state()
-                    last_runtime_check_at = now
+                latest_ticker = ticker_stream.latest() if ticker_stream else None
+                ticker_map = {args.symbol.upper(): latest_ticker} if latest_ticker else None
+                if now - last_position_sync_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                    engine.check_runtime_state(tickers=ticker_map, sync_positions=True)
+                    last_position_sync_at = now
+                elif now - last_rest_risk_check_at >= engine.config.runtime_check_interval_seconds():
+                    engine.check_runtime_state(tickers=ticker_map, sync_positions=False)
+                    last_rest_risk_check_at = now
                 snapshot, decision = evaluate_snapshot(service, engine, args)
                 stream_meta = snapshot.get("stream") or {}
                 last_version = int(stream_meta.get("version") or 0)
@@ -229,6 +247,21 @@ def main() -> None:
 
             while not shutdown_requested:
                 runtime_check_interval = engine.config.runtime_check_interval_seconds()
+                ticker_updated = False
+                if ticker_stream is not None:
+                    next_ticker_version = ticker_stream.wait_for_update(
+                        last_ticker_version,
+                        timeout=min(runtime_check_interval, 1.0),
+                    )
+                    if next_ticker_version != last_ticker_version:
+                        last_ticker_version = next_ticker_version
+                        ticker_updated = True
+                        latest_ticker = ticker_stream.latest()
+                        if latest_ticker:
+                            engine.check_runtime_state(
+                                tickers={args.symbol.upper(): latest_ticker},
+                                sync_positions=False,
+                            )
                 next_version = service.wait_for_update(
                     symbol=args.symbol,
                     provider=args.provider,
@@ -238,7 +271,7 @@ def main() -> None:
                     brick_length=args.brick_length,
                     data_length=args.length,
                     last_version=last_version,
-                    timeout=max(min(args.poll_timeout, runtime_check_interval), 1.0),
+                    timeout=0.0 if ticker_updated else max(min(args.poll_timeout, runtime_check_interval), 1.0),
                 )
                 if next_version != last_version:
                     break
@@ -246,10 +279,17 @@ def main() -> None:
                 if args.heartbeat_seconds > 0 and now - last_heartbeat_at >= args.heartbeat_seconds:
                     print(json.dumps({"heartbeat": True, "version": last_version, "ts": int(time.time() * 1000)}, ensure_ascii=False))
                     last_heartbeat_at = now
-                if now - last_runtime_check_at >= engine.config.runtime_check_interval_seconds():
-                    engine.check_runtime_state()
-                    last_runtime_check_at = now
+                latest_ticker = ticker_stream.latest() if ticker_stream else None
+                ticker_map = {args.symbol.upper(): latest_ticker} if latest_ticker else None
+                if now - last_position_sync_at >= max(engine.config.position_sync_interval_seconds, 1.0):
+                    engine.check_runtime_state(tickers=ticker_map, sync_positions=True)
+                    last_position_sync_at = now
+                elif now - last_rest_risk_check_at >= engine.config.runtime_check_interval_seconds():
+                    engine.check_runtime_state(tickers=ticker_map, sync_positions=False)
+                    last_rest_risk_check_at = now
     finally:
+        if "ticker_stream" in locals() and ticker_stream is not None:
+            ticker_stream.stop()
         service.stop()
 
 

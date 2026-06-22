@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -17,6 +19,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import websockets
 from dotenv import load_dotenv
 
 from tq_app.notifications import send_resend_email
@@ -72,6 +75,8 @@ class LiveTradingConfig:
     position_sync_interval_seconds: float = 30.0
     risk_exits_enabled: bool = False
     risk_check_interval_seconds: float = 5.0
+    risk_websocket_ticker_enabled: bool = True
+    risk_websocket_ticker_stale_seconds: float = 5.0
     risk_error_email_cooldown_seconds: float = 300.0
     exchange_disaster_sl_enabled: bool = True
     risk_close_managed_size_only: bool = True
@@ -146,6 +151,8 @@ class LiveTradingConfig:
             position_sync_interval_seconds=_env_float("LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS", 30.0),
             risk_exits_enabled=_env_bool("LIVE_TRADING_RISK_EXITS_ENABLED", False),
             risk_check_interval_seconds=_env_float("LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS", 5.0),
+            risk_websocket_ticker_enabled=_env_bool("LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED", True),
+            risk_websocket_ticker_stale_seconds=_env_float("LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS", 5.0),
             risk_error_email_cooldown_seconds=_env_float("LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS", 300.0),
             exchange_disaster_sl_enabled=_env_bool("LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED", True),
             risk_close_managed_size_only=_env_bool("LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY", True),
@@ -397,6 +404,149 @@ class BitgetFuturesTradeClient:
         if code and code != "00000":
             raise RuntimeError(f"Bitget API {path} 返回错误 {code}: {payload.get('msg') or payload}")
         return payload
+
+
+class BitgetTickerWebSocket:
+    WS_URL = "wss://ws.bitget.com/v2/ws/public"
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        product_type: str,
+        logger: logging.Logger,
+    ) -> None:
+        self.symbol = symbol.upper()
+        self.product_type = product_type.upper()
+        self.logger = logger
+        self._stop_event = threading.Event()
+        self._condition = threading.Condition()
+        self._thread: threading.Thread | None = None
+        self._latest: dict[str, Any] | None = None
+        self._version = 0
+        self._status = "stopped"
+        self._last_error = ""
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name=f"bitget-ticker-{self.symbol}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
+
+    def latest(self) -> dict[str, Any] | None:
+        with self._condition:
+            return dict(self._latest) if self._latest else None
+
+    def version(self) -> int:
+        with self._condition:
+            return self._version
+
+    def wait_for_update(self, last_version: int | None, timeout: float) -> int:
+        with self._condition:
+            if last_version is None or self._version != last_version:
+                return self._version
+            self._condition.wait_for(lambda: self._version != last_version or self._stop_event.is_set(), timeout=timeout)
+            return self._version
+
+    def status(self) -> dict[str, Any]:
+        with self._condition:
+            return {
+                "status": self._status,
+                "version": self._version,
+                "last_error": self._last_error,
+                "latest_ts": self._latest.get("ts") if self._latest else None,
+                "latest_received_at_ms": self._latest.get("_received_at_ms") if self._latest else None,
+            }
+
+    def _run(self) -> None:
+        try:
+            asyncio.run(self._run_forever())
+        except Exception as exc:
+            with self._condition:
+                self._status = "stopped_error"
+                self._last_error = str(exc)
+                self._condition.notify_all()
+
+    async def _run_forever(self) -> None:
+        backoff = 1.0
+        while not self._stop_event.is_set():
+            try:
+                with self._condition:
+                    self._status = "connecting"
+                    self._condition.notify_all()
+                async with websockets.connect(self.WS_URL, ping_interval=None, close_timeout=5) as websocket:
+                    await websocket.send(json.dumps({
+                        "op": "subscribe",
+                        "args": [
+                            {
+                                "instType": self.product_type,
+                                "channel": "ticker",
+                                "instId": self.symbol,
+                            }
+                        ],
+                    }, separators=(",", ":")))
+                    with self._condition:
+                        self._status = "connected"
+                        self._last_error = ""
+                        self._condition.notify_all()
+                    backoff = 1.0
+                    ping_task = asyncio.create_task(self._ping_loop(websocket))
+                    try:
+                        while not self._stop_event.is_set():
+                            message = await asyncio.wait_for(websocket.recv(), timeout=45)
+                            self._handle_message(message)
+                    finally:
+                        ping_task.cancel()
+            except Exception as exc:
+                with self._condition:
+                    self._status = "reconnecting"
+                    self._last_error = str(exc)
+                    self._condition.notify_all()
+                self.logger.warning("Bitget ticker WebSocket 断开，准备重连: %s", exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    async def _ping_loop(self, websocket: Any) -> None:
+        while not self._stop_event.is_set():
+            await asyncio.sleep(30)
+            await websocket.send("ping")
+
+    def _handle_message(self, message: Any) -> None:
+        if message == "pong":
+            return
+        try:
+            payload = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if payload.get("event") == "error":
+            raise RuntimeError(f"Bitget ticker WebSocket error: {payload}")
+        arg = payload.get("arg") if isinstance(payload, dict) else {}
+        if not isinstance(arg, dict) or arg.get("channel") != "ticker":
+            return
+        data = payload.get("data")
+        if not isinstance(data, list) or not data:
+            return
+        item = next((entry for entry in data if isinstance(entry, dict)), None)
+        if not item:
+            return
+        if str(item.get("instId") or item.get("symbol") or "").upper() != self.symbol:
+            return
+        ticker = dict(item)
+        ticker["_received_at_ms"] = int(time.time() * 1000)
+        ticker["_source"] = "bitget_ws_ticker"
+        with self._condition:
+            self._latest = ticker
+            self._version += 1
+            self._status = "streaming"
+            self._condition.notify_all()
 
 
 class LiveTradingEngine:
@@ -963,41 +1113,57 @@ class LiveTradingEngine:
         self._send_email(result)
         return result
 
-    def check_runtime_state(self) -> None:
-        self.sync_local_positions_with_exchange()
-        self.check_live_risk_exits()
+    def check_runtime_state(
+        self,
+        *,
+        tickers: dict[str, dict[str, Any]] | None = None,
+        sync_positions: bool = True,
+    ) -> list[TradeExecutionResult]:
+        if sync_positions:
+            self.sync_local_positions_with_exchange()
+        return self.check_live_risk_exits(tickers=tickers, use_exchange_positions=sync_positions)
 
-    def check_live_risk_exits(self) -> list[TradeExecutionResult]:
+    def check_live_risk_exits(
+        self,
+        *,
+        tickers: dict[str, dict[str, Any]] | None = None,
+        use_exchange_positions: bool = True,
+    ) -> list[TradeExecutionResult]:
         if not self.config.risk_exits_enabled:
             return []
         if not self._is_real_trading_mode():
             return []
 
-        client = BitgetFuturesTradeClient(self.project_root)
-        exchange_positions = self._exchange_open_positions(client)
-        if not exchange_positions:
-            return []
-
         state = self._read_state()
         positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
+        client: BitgetFuturesTradeClient | None = None
+        if use_exchange_positions:
+            client = BitgetFuturesTradeClient(self.project_root)
+            exchange_positions = self._exchange_open_positions(client)
+        else:
+            exchange_positions = self._local_risk_managed_positions(positions, tickers=tickers)
+        if not exchange_positions:
+            return []
+        if client is None:
+            client = BitgetFuturesTradeClient(self.project_root)
         now_ms = int(time.time() * 1000)
         changed = False
         results: list[TradeExecutionResult] = []
 
         for exchange_position in exchange_positions:
-            local_position = self._matching_open_local_position(positions, exchange_position)
+            local_position = exchange_position.pop("_local_position", None) or self._matching_open_local_position(positions, exchange_position)
             if local_position is None:
                 continue
             if local_position.get("risk_managed") is False:
                 continue
             try:
-                ticker = client.get_ticker(symbol=exchange_position["symbol"], product_type=self.config.product_type)
+                ticker = self._ticker_for_live_risk(client, exchange_position["symbol"], tickers=tickers)
                 current_price = _ticker_price_for_entry_source(ticker, self.config.risk_price_source)
                 risk_state = self._update_live_risk_state(local_position, exchange_position, current_price, now_ms)
-                self._sync_exchange_protective_stop(client, local_position, exchange_position, risk_state)
                 changed = True
                 exit_reason = self._live_risk_exit_reason(local_position, risk_state, now_ms)
                 if exit_reason is None:
+                    self._sync_exchange_protective_stop(client, local_position, exchange_position, risk_state)
                     continue
                 result = self._close_position_for_live_risk(client, exchange_position, local_position, risk_state, exit_reason)
                 results.append(result)
@@ -1083,6 +1249,58 @@ class LiveTradingEngine:
             if key == expected_key:
                 return position
         return None
+
+    def _local_risk_managed_positions(
+        self,
+        positions: list[dict[str, Any]],
+        *,
+        tickers: dict[str, dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        scoped_symbols = {symbol.upper() for symbol in (tickers or {})}
+        result: list[dict[str, Any]] = []
+        for position in positions:
+            if str(position.get("status") or "open").lower() != "open":
+                continue
+            if position.get("risk_managed") is False:
+                continue
+            symbol = str(position.get("symbol") or "").upper()
+            side = str(position.get("side") or "").lower()
+            if not symbol or side not in {"buy", "sell"}:
+                continue
+            if scoped_symbols and symbol not in scoped_symbols:
+                continue
+            result.append(
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "holdSide": str(position.get("holdSide") or ("long" if side == "buy" else "short")),
+                    "size": str(position.get("exchange_size") or position.get("size") or position.get("managed_size") or ""),
+                    "raw": position.get("exchange_position") if isinstance(position.get("exchange_position"), dict) else {},
+                    "_local_position": position,
+                }
+            )
+        return result
+
+    def _ticker_for_live_risk(
+        self,
+        client: BitgetFuturesTradeClient,
+        symbol: str,
+        *,
+        tickers: dict[str, dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        ticker = (tickers or {}).get(symbol.upper())
+        if ticker and self._is_fresh_ws_ticker(ticker):
+            return ticker
+        return client.get_ticker(symbol=symbol, product_type=self.config.product_type)
+
+    def _is_fresh_ws_ticker(self, ticker: dict[str, Any]) -> bool:
+        if ticker.get("_source") != "bitget_ws_ticker":
+            return False
+        received_at = _optional_int(ticker.get("_received_at_ms")) or 0
+        if received_at <= 0:
+            return False
+        max_age_ms = int(max(self.config.risk_websocket_ticker_stale_seconds, 0.5) * 1000)
+        return int(time.time() * 1000) - received_at <= max_age_ms
 
     def _update_live_risk_state(
         self,
@@ -2311,6 +2529,7 @@ class LiveTradingEngine:
             {
                 "status": "open",
                 "source": source,
+                "risk_managed": is_real_position,
                 "symbol": decision.symbol,
                 "side": decision.side,
                 "holdSide": "long" if decision.side == "buy" else "short",

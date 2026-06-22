@@ -157,6 +157,12 @@ LIVE_TRADING_RISK_EXITS_ENABLED: false
 # 持仓风控检查间隔，单位秒。真实实盘建议 5-10 秒。
 LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
 
+# true=常驻实盘使用 Bitget WebSocket ticker 驱动风控价格更新。
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED: true
+
+# WebSocket ticker 超过多少秒没更新就视为过期，并回退 REST ticker。
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS: 5
+
 # 同一仓位风控异常邮件冷却时间，单位秒，避免 API 异常时连续轰炸邮箱。
 LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
 

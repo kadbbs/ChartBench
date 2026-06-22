@@ -180,6 +180,8 @@ API Key 需要 Transfer 权限。
 ```yaml
 LIVE_TRADING_RISK_EXITS_ENABLED: true
 LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED: true
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS: 5
 LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
 LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED: true
 LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY: true
@@ -211,7 +213,9 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 - 开仓成功后会先确认 Bitget 已能查到同向持仓，再设置交易所服务器端灾难止损。
 - 交易所端灾难止损使用 Bitget `POST /api/v2/mix/order/place-pos-tpsl`，只覆盖本策略计算出的 `stopLossSize`。
 - 当保本/移动保护线抬高时，会通过 Bitget `POST /api/v2/mix/order/modify-tpsl-order` 尝试同步上移交易所端 stop loss。
-- 本地常驻进程会按 `LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS` 检查真实持仓风控，当前 `live_5u` 为 `5` 秒。
+- 本地常驻进程会订阅 Bitget 公共 WebSocket ticker，收到 tick 后立即用最新标记价检查已管理仓位风控。
+- 如果 WebSocket ticker 超过 `LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS` 未更新，会回退 REST ticker。
+- 持仓同步仍按 `LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS` 定期查询 Bitget，tick 风控不会每个 tick 都查私有持仓接口。
 - 本地触发风控时优先只平本策略记录的 `managed_size`；如果交易所仓位大小一致，才使用 Bitget `close-positions` 快速平仓。
 - 如果只平了 `managed_size` 后交易所仍有同方向剩余仓位，剩余仓位会被视为手动/外部仓位，自动排除风控直到该方向仓位清空。
 - 平仓提交后会再次查询 Bitget 持仓，确认该方向仓位已关闭或已减少到目标 size，否则不把本地仓位标记为 closed。
@@ -225,7 +229,7 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 
 - 服务器端只挂灾难止损；启动失败、保本和移动保护仍依赖本地常驻进程。
 - 服务器端止损会尽量随保护线上移，但修改失败时仍会触发本地异常邮件；是否已真正生效以 Bitget 返回为准。
-- 最大浮盈/浮亏按每次风控检查时的 ticker 更新，不是交易所逐 tick 回放。
+- 本地最大浮盈/浮亏由 Bitget WebSocket ticker 推动更新；WebSocket 断线或过期时会自动退回 REST ticker。
 
 ## 策略决策
 
@@ -331,6 +335,7 @@ API Key 至少需要：
 - 交易所端仓位止损：`POST /api/v2/mix/order/place-pos-tpsl`
 - 修改交易所端止损：`POST /api/v2/mix/order/modify-tpsl-order`
 - 取消交易所端止损：`POST /api/v2/mix/order/cancel-plan-order`
+- 公共 ticker WebSocket：`wss://ws.bitget.com/v2/ws/public`，订阅 `channel=ticker`
 
 官方文档：
 
@@ -342,6 +347,8 @@ API Key 至少需要：
 - https://www.bitget.com/api-doc/contract/plan/Place-Pos-Tpsl-Order
 - https://www.bitget.com/api-doc/contract/plan/Modify-Tpsl-Order
 - https://www.bitget.com/api-doc/contract/plan/Cancel-Plan-Order
+- https://www.bitget.com/api-doc/common/websocket-intro
+- https://www.bitget.com/zh-CN/api-doc/classic/contract/websocket/public/Tickers-Channel
 - https://www.bitget.com/api-doc/spot/account/Get-Account-Assets
 - https://www.bitget.com/api-doc/spot/account/Wallet-Transfer
 
