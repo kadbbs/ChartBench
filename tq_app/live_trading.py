@@ -210,6 +210,8 @@ class TradeDecision:
     bar_time_label: str = ""
     atr_value: float | None = None
     client_oid: str | None = None
+    htf_lock_key: str | None = None
+    htf_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -854,12 +856,15 @@ class LiveTradingEngine:
         bar_low = _optional_float(target_candle.get("low"))
         bar_close = _optional_float(target_candle.get("close"))
         side, reason = self._side_from_strategy(marker_texts, indicator_values, indicator_colors, bar_high=bar_high, bar_low=bar_low)
+        htf_lock_key: str | None = None
+        htf_context: dict[str, Any] = {}
         if side is not None:
-            htf_ok, htf_reason = self._higher_timeframe_hull_allows_side(side, snapshot.get("higher_timeframe"))
+            htf_ok, htf_reason, htf_context = self._higher_timeframe_hull_allows_side(side, snapshot.get("higher_timeframe"), symbol=symbol)
             if not htf_ok:
                 side = None
                 reason = htf_reason
             else:
+                htf_lock_key = str(htf_context.get("lock_key") or "") or None
                 reason = f"{reason}；{htf_reason}"
         atr_value = self._atr_at(snapshot, bar_time)
         bar_time_label = self._bar_time_label(snapshot, bar_time)
@@ -900,6 +905,8 @@ class LiveTradingEngine:
             bar_time_label=bar_time_label,
             atr_value=atr_value,
             client_oid=client_oid,
+            htf_lock_key=htf_lock_key,
+            htf_context=htf_context,
         )
 
     def execute_decision(self, decision: TradeDecision) -> TradeExecutionResult:
@@ -924,6 +931,23 @@ class LiveTradingEngine:
                 already_executed=True,
             )
             self._log_result(result)
+            return result
+        locked_entry = self._htf_entry_lock(decision)
+        if locked_entry is not None:
+            result = TradeExecutionResult(
+                decision=decision,
+                dry_run=True,
+                enabled=self.config.enabled,
+                response={
+                    "htfEntryLocked": True,
+                    "message": "同一个高周期过滤阶段内，同方向已开过仓；即使此前已平仓，本阶段也不再重复开同向仓位。",
+                    "lock": locked_entry,
+                    "htfContext": decision.htf_context,
+                },
+            )
+            self._record_execution(result)
+            self._log_result(result)
+            self._send_email(result)
             return result
         self.sync_local_positions_with_exchange(symbol=decision.symbol)
         local_position = self._local_same_side_position(decision)
@@ -2317,24 +2341,40 @@ class LiveTradingEngine:
                 values.append(float(value))
         return values
 
-    def _higher_timeframe_hull_allows_side(self, side: str, htf_snapshot: Any) -> tuple[bool, str]:
+    def _higher_timeframe_hull_allows_side(
+        self,
+        side: str,
+        htf_snapshot: Any,
+        *,
+        symbol: str,
+    ) -> tuple[bool, str, dict[str, Any]]:
         if not self.config.htf_hull_filter_enabled:
-            return True, "1h Hull 趋势过滤未启用。"
+            return True, "1h Hull 趋势过滤未启用。", {}
         if not isinstance(htf_snapshot, dict):
-            return False, "缺少高周期 Hull 快照，无法确认 1h 趋势，禁止开仓。"
+            return False, "缺少高周期 Hull 快照，无法确认 1h 趋势，禁止开仓。", {}
 
         trend, detail = self._higher_timeframe_hull_trend(htf_snapshot)
         duration = htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds
         label = detail.get("bar_time_label") or detail.get("bar_time") or "-"
+        lock_context = {
+            "symbol": symbol.upper(),
+            "side": side,
+            "duration_seconds": int(duration),
+            "bar_time": detail.get("bar_time"),
+            "bar_time_label": detail.get("bar_time_label"),
+            "trend": trend,
+        }
+        if detail.get("bar_time") is not None:
+            lock_context["lock_key"] = self._htf_entry_lock_key(symbol, side, int(duration), int(detail["bar_time"]))
         if trend == "buy":
             if side == "sell":
-                return False, f"{duration}s Hull 为红色多趋势，禁止 5m 反向开空；1h={label}"
-            return True, f"{duration}s Hull 为红色多趋势，允许顺势开多；1h={label}"
+                return False, f"{duration}s Hull 为红色多趋势，禁止 5m 反向开空；1h={label}", lock_context
+            return True, f"{duration}s Hull 为红色多趋势，允许顺势开多；1h={label}", lock_context
         if trend == "sell":
             if side == "buy":
-                return False, f"{duration}s Hull 为绿色空趋势，禁止 5m 反向开多；1h={label}"
-            return True, f"{duration}s Hull 为绿色空趋势，允许顺势开空；1h={label}"
-        return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}"
+                return False, f"{duration}s Hull 为绿色空趋势，禁止 5m 反向开多；1h={label}", lock_context
+            return True, f"{duration}s Hull 为绿色空趋势，允许顺势开空；1h={label}", lock_context
+        return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}", lock_context
 
     def _higher_timeframe_hull_trend(self, htf_snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         candles = htf_snapshot.get("candles") or []
@@ -2450,6 +2490,10 @@ class LiveTradingEngine:
     def _client_oid(self, symbol: str, side: str, bar_time: int | None) -> str:
         return f"tq-live-{symbol.lower()}-{side}-{bar_time or int(time.time())}"[:64]
 
+    @staticmethod
+    def _htf_entry_lock_key(symbol: str, side: str, duration_seconds: int, htf_bar_time: int) -> str:
+        return f"{str(symbol or '').upper()}:{str(side or '').lower()}:htf:{int(duration_seconds)}:{int(htf_bar_time)}"
+
     def _wait_until_same_side_position_open(
         self,
         client: BitgetFuturesTradeClient,
@@ -2465,6 +2509,43 @@ class LiveTradingEngine:
     def _already_executed(self, client_oid: str) -> bool:
         state = self._read_state()
         return client_oid in set(state.get("client_oids") or [])
+
+    def _htf_entry_lock(self, decision: TradeDecision) -> dict[str, Any] | None:
+        if not decision.htf_lock_key:
+            return None
+        state = self._read_state()
+        locks = state.get("htf_entry_locks")
+        if not isinstance(locks, dict):
+            return None
+        entry = locks.get(decision.htf_lock_key)
+        return entry if isinstance(entry, dict) else None
+
+    def _record_htf_entry_lock_if_needed(self, result: TradeExecutionResult) -> None:
+        decision = result.decision
+        if decision.action != "place_order" or decision.side not in {"buy", "sell"}:
+            return
+        if result.error or result.already_executed or not decision.htf_lock_key:
+            return
+        response = result.response if isinstance(result.response, dict) else {}
+        if not response.get("order"):
+            return
+        state = self._read_state()
+        locks = state.get("htf_entry_locks")
+        if not isinstance(locks, dict):
+            locks = {}
+        locks[decision.htf_lock_key] = {
+            "key": decision.htf_lock_key,
+            "symbol": decision.symbol,
+            "side": decision.side,
+            "clientOid": decision.client_oid,
+            "created_at": int(time.time() * 1000),
+            "bar_time": decision.bar_time,
+            "bar_time_label": decision.bar_time_label,
+            "htf_context": decision.htf_context,
+            "note": "同一个高周期过滤阶段内，同方向只允许开一次仓；平仓后本锁仍保留到高周期 key 变化。",
+        }
+        state["htf_entry_locks"] = dict(list(locks.items())[-1000:])
+        self._write_state(state)
 
     def _record_execution(self, result: TradeExecutionResult) -> None:
         self.config.order_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2487,6 +2568,7 @@ class LiveTradingEngine:
             state["client_oids"] = client_oids
             self._write_state(state)
         self._record_local_position_if_needed(result)
+        self._record_htf_entry_lock_if_needed(result)
 
     @staticmethod
     def _should_update_execution_state(result: TradeExecutionResult) -> bool:
@@ -2584,6 +2666,8 @@ class LiveTradingEngine:
             status = "失败"
         elif decision.action == "risk_close":
             status = "已风控平仓"
+        elif response.get("htfEntryLocked"):
+            status = "高周期锁跳过"
         else:
             status = "已持仓跳过" if response.get("sameSidePosition") else ("DRY-RUN" if result.dry_run else "已下单")
         action_label = self._email_action_label(result)
@@ -2616,6 +2700,8 @@ class LiveTradingEngine:
         response = result.response or {}
         if result.decision.action == "risk_close":
             return {"buy": "风控平多", "sell": "风控平空"}.get(result.decision.side or "", "风控平仓")
+        if response.get("htfEntryLocked"):
+            return {"buy": "1h内已开过多单，跳过", "sell": "1h内已开过空单，跳过"}.get(result.decision.side or "", "高周期锁跳过")
         if response.get("sameSidePosition"):
             return {"buy": "已有多单，跳过", "sell": "已有空单，跳过"}.get(result.decision.side or "", "已有仓位，跳过")
         if self.config.log_only or response.get("logOnly"):
