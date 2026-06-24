@@ -21,11 +21,13 @@ class SnapshotBuilder:
         provider: str,
         duration_seconds: int,
         indicator_ids: list[str],
+        indicator_params: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.provider = provider
         self.duration_seconds = duration_seconds
         self.indicator_ids = indicator_ids
+        self.indicator_params = indicator_params or {}
         self.registry = build_indicator_registry(project_root)
 
     def build_full(self, bars: pd.DataFrame) -> dict[str, Any]:
@@ -33,7 +35,7 @@ class SnapshotBuilder:
         indicators: list[IndicatorResult] = []
         for indicator_id in self.indicator_ids:
             indicator = self.registry.get(indicator_id)
-            indicators.append(indicator.build(normalized, indicator.resolve_params(None)))
+            indicators.append(indicator.build(normalized, indicator.resolve_params(self.indicator_params.get(indicator_id))))
         return {
             "symbol": self.symbol,
             "provider": self.provider,

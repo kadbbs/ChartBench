@@ -19,7 +19,7 @@ from tq_app.live_trading import LiveTradingConfig
 
 
 MATRIX_DIR = "config/backtest_matrices"
-MATRIX_KEYS = (
+BACKTEST_MATRIX_KEYS = (
     "risk_exits_enabled",
     "startup_check_bars_5m",
     "startup_max_favorable_points",
@@ -34,6 +34,7 @@ MATRIX_KEYS = (
     "trailing_trigger_3_points",
     "trailing_protect_3_ratio",
 )
+INDICATOR_MATRIX_PREFIX = "indicator."
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,7 +133,8 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     for index, params in enumerate(combinations, start=1):
         run_dir = output_dir / "runs" / f"run_{index:04d}"
-        config = replace(base_config, output_dir=run_dir, **params)
+        config_params, indicator_params = _split_matrix_params(params)
+        config = replace(base_config, output_dir=run_dir, indicator_params=indicator_params, **config_params)
         strategy = build_strategy(_str(profile, "strategy", "live_decision"), project_root, live_config)
         result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)
         rows.append(_summary_row(index, params, result.metrics, run_dir))
@@ -144,7 +146,7 @@ def main() -> None:
 
 def _matrix_combinations(matrix: dict[str, str]) -> list[dict[str, Any]]:
     values: list[tuple[str, list[Any]]] = []
-    for key in MATRIX_KEYS:
+    for key in _matrix_keys(matrix):
         if key not in matrix:
             continue
         values.append((key, [_coerce_matrix_value(key, item) for item in _split_list(matrix[key])]))
@@ -153,6 +155,27 @@ def _matrix_combinations(matrix: dict[str, str]) -> list[dict[str, Any]]:
     keys = [item[0] for item in values]
     value_lists = [item[1] for item in values]
     return [dict(zip(keys, items)) for items in itertools.product(*value_lists)]
+
+
+def _matrix_keys(matrix: dict[str, str]) -> list[str]:
+    known_keys = [key for key in BACKTEST_MATRIX_KEYS if key in matrix]
+    indicator_keys = sorted(key for key in matrix if key.startswith(INDICATOR_MATRIX_PREFIX))
+    return known_keys + indicator_keys
+
+
+def _split_matrix_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    config_params: dict[str, Any] = {}
+    indicator_params: dict[str, dict[str, Any]] = {}
+    for key, value in params.items():
+        if not key.startswith(INDICATOR_MATRIX_PREFIX):
+            config_params[key] = value
+            continue
+        remainder = key[len(INDICATOR_MATRIX_PREFIX) :]
+        indicator_id, separator, param_key = remainder.partition(".")
+        if not indicator_id or not separator or not param_key:
+            raise ValueError(f"无效指标矩阵参数: {key}")
+        indicator_params.setdefault(indicator_id, {})[param_key] = value
+    return config_params, indicator_params
 
 
 def _summary_row(index: int, params: dict[str, Any], metrics: dict[str, Any], run_dir: Path) -> dict[str, Any]:
@@ -237,12 +260,18 @@ def _split_list(value: str) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-def _coerce_matrix_value(key: str, value: str) -> bool | int | float:
+def _coerce_matrix_value(key: str, value: str) -> bool | int | float | str:
+    text = str(value).strip()
     if key == "risk_exits_enabled":
-        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-    if key.endswith("_bars_5m"):
-        return int(value)
-    return float(value)
+        return text.lower() in {"1", "true", "yes", "y", "on"}
+    if text.lower() in {"true", "false", "yes", "no", "on", "off"}:
+        return text.lower() in {"true", "yes", "on"}
+    if key.endswith("_bars_5m") or text.lstrip("-").isdigit():
+        return int(text)
+    try:
+        return float(text)
+    except ValueError:
+        return text
 
 
 def _str(values: dict[str, str], key: str, default: str) -> str:

@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -78,7 +79,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache", action="store_true", default=profile_bool("cache_enabled", False), help="启用回测 K 线本地缓存；默认关闭，不影响在线回测。")
     parser.add_argument("--no-cache", action="store_true", help="即使配置文件开启缓存，也强制使用在线 K 线。")
     parser.add_argument("--cache-dir", default=profile_str("cache_dir", "data_cache/backtest_klines"), help="回测 K 线缓存目录。")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.indicator_params = _profile_indicator_params(profile_values)
+    return args
 
 
 def main() -> None:
@@ -165,6 +168,7 @@ def main() -> None:
         trailing_protect_2_ratio=args.trailing_protect_2_ratio,
         trailing_trigger_3_points=args.trailing_trigger_3_points,
         trailing_protect_3_ratio=args.trailing_protect_3_ratio,
+        indicator_params=args.indicator_params,
         output_dir=Path(args.output_dir),
     )
     result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)
@@ -200,6 +204,33 @@ def _resolve_data_length(
     duration_ms = max(int(duration_seconds), 1) * 1000
     bars = int((end_time_ms - start_time_ms) // duration_ms) + 1
     return max(bars, 1)
+
+
+def _profile_indicator_params(profile_values: dict[str, str]) -> dict[str, dict[str, Any]]:
+    params: dict[str, dict[str, Any]] = {}
+    prefix = "indicator."
+    for key, raw_value in profile_values.items():
+        if not key.startswith(prefix):
+            continue
+        remainder = key[len(prefix) :]
+        indicator_id, separator, param_key = remainder.partition(".")
+        if not indicator_id or not separator or not param_key:
+            raise ValueError(f"无效指标参数配置: {key}")
+        params.setdefault(indicator_id, {})[param_key] = _coerce_profile_value(raw_value)
+    return params
+
+
+def _coerce_profile_value(value: str) -> bool | int | float | str:
+    text = str(value).strip()
+    lower_text = text.lower()
+    if lower_text in {"true", "false", "yes", "no", "on", "off"}:
+        return lower_text in {"true", "yes", "on"}
+    if text.lstrip("-").isdigit():
+        return int(text)
+    try:
+        return float(text)
+    except ValueError:
+        return text
 
 
 if __name__ == "__main__":

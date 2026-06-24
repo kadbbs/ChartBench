@@ -1,0 +1,50 @@
+# =============================================================================
+# 参数矩阵：BTCUSDT 5m 指标参数扫描 v1
+# -----------------------------------------------------------------------------
+# 常用命令：
+# ./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1 --dry-run
+# ./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1
+#
+# 写法说明：
+# - indicator.<指标ID>.<参数名>: 候选值1,候选值2
+# - 所有候选值会做笛卡尔组合；本版是 2 * 2 * 2 = 8 组，先保证能跑起来。
+# - 当前实盘策略真正参与入场判断的是 merged_dkx_hull_ut 和 stc。
+# - MACD 目前只展示/邮件附带，不参与入场判断，所以本矩阵先不扫 MACD。
+# =============================================================================
+
+base_profile: btc_5m_range_cached
+output_dir: backtest_outputs/matrix/btc_indicator_param_matrix_v1
+
+# 固定使用当前 BTC run_0024 风控参数，先单独观察“指标参数”对信号质量的影响。
+risk_exits_enabled: true
+startup_check_bars_5m: 24
+startup_max_favorable_points: 300
+startup_current_points: -120
+disaster_stop_points: -1800
+breakeven_trigger_points: 800
+breakeven_stop_points: 100
+trailing_trigger_1_points: 2000
+trailing_protect_1_ratio: 0.40
+trailing_trigger_2_points: 4000
+trailing_protect_2_ratio: 0.50
+trailing_trigger_3_points: 8000
+trailing_protect_3_ratio: 0.60
+
+# STC：默认是 80 / 27 / 50 / 0.5。
+# length 越小越敏感，越大越慢；先只测试默认和偏快一档。
+indicator.stc.length: 60,80
+indicator.stc.fast_length: 27
+indicator.stc.slow_length: 50
+indicator.stc.factor: 0.5
+
+# Hull Suite：默认 hull_length=55，hull_variation=Hma。
+# hull_length 越小趋势线越贴近价格，信号更快但噪音也更大。
+indicator.merged_dkx_hull_ut.hull_variation: Hma
+indicator.merged_dkx_hull_ut.hull_length: 45,55
+indicator.merged_dkx_hull_ut.hull_length_mult: 1.0
+
+# UT Bot：默认 sensitivity=2.0，atr_period=6。
+# sensitivity 越小越敏感，越大越保守；先测 1.5 和 2.0。
+indicator.merged_dkx_hull_ut.ut_sensitivity: 1.5,2.0
+indicator.merged_dkx_hull_ut.ut_atr_period: 6
+indicator.merged_dkx_hull_ut.ut_use_heikin_ashi: false

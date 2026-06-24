@@ -191,19 +191,21 @@ fee_rate: 0.00023
 
 ## 参数矩阵
 
-矩阵回测用于批量扫描风控参数。
+矩阵回测用于批量扫描风控参数，也可以扫描当前策略实际用到的指标参数。
 
 先检查组合数：
 
 ```bash
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix --dry-run
 ./myvenv/bin/python run_backtest_matrix.py --matrix sol_risk_matrix --dry-run
+./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1 --dry-run
 ```
 
 正式运行：
 
 ```bash
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix
+./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1
 ```
 
 输出：
@@ -226,6 +228,16 @@ backtest_outputs/matrix/btc_risk_matrix/
 - 扣费后点数
 - 手续费
 - 参数组合
+
+指标参数矩阵写法示例：
+
+```yaml
+indicator.stc.length: 60,80
+indicator.merged_dkx_hull_ut.hull_length: 45,55
+indicator.merged_dkx_hull_ut.ut_sensitivity: 1.5,2.0
+```
+
+当前实盘入场逻辑主要使用 `merged_dkx_hull_ut` 的 DKX/UT 信号、Hull 趋势带，以及 `stc` 的数值和颜色。`macd` 目前只用于展示/通知，不参与入场判断，因此首版指标矩阵没有扫描 MACD。
 
 建议：
 

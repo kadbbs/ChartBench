@@ -49,6 +49,7 @@ class BacktestConfig:
     trailing_protect_2_ratio: float = 0.50
     trailing_trigger_3_points: float = 8000.0
     trailing_protect_3_ratio: float = 0.60
+    indicator_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     output_dir: Path = Path("backtest_outputs/latest")
 
 
@@ -131,6 +132,7 @@ class BacktestEngine:
             provider=self.config.provider,
             duration_seconds=self.config.duration_seconds,
             indicator_ids=["merged_dkx_hull_ut", "stc", "macd"],
+            indicator_params=self.config.indicator_params,
         )
         full_snapshot = low_builder.build_full(bars)
 
@@ -142,6 +144,7 @@ class BacktestEngine:
                 provider=self.config.provider,
                 duration_seconds=self.live_config.htf_hull_duration_seconds,
                 indicator_ids=["merged_dkx_hull_ut", "stc"],
+                indicator_params=self.config.indicator_params,
             )
             htf_snapshot = htf_builder.build_full(htf_bars)
 

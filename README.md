@@ -133,6 +133,8 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 ```bash
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix --dry-run
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix
+./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1 --dry-run
+./myvenv/bin/python run_backtest_matrix.py --matrix btc_indicator_param_matrix_v1
 ```
 
 ## 当前默认交易模型
