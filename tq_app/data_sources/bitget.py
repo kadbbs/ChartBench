@@ -40,6 +40,7 @@ BITGET_GRANULARITY_MAP = {
     86400: "1D",
 }
 MAX_CANDLE_LIMIT = 1000
+MAX_CANDLE_TIME_RANGE_MS = 90 * 24 * 60 * 60 * 1000
 WS_RECV_TIMEOUT_SECONDS = 25
 WS_RECONNECT_MIN_DELAY_SECONDS = 1
 WS_RECONNECT_MAX_DELAY_SECONDS = 30
@@ -54,6 +55,15 @@ def _ws_channel_for_duration(duration_seconds: int) -> str | None:
     if granularity is None:
         return None
     return f"candle{granularity}"
+
+
+def _floor_bitget_time_ms(timestamp_ms: int, duration_ms: int, granularity: str) -> int:
+    safe_duration = max(int(duration_ms), 1)
+    # Bitget's plain 1D/12H/6H candles are anchored to UTC+8. The separate
+    # "*utc" granularities use UTC anchors, but this project requests plain
+    # granularities such as 1D.
+    anchor = 0 if str(granularity).lower().endswith("utc") else -8 * 60 * 60 * 1000
+    return int((timestamp_ms - anchor) // safe_duration * safe_duration + anchor)
 
 
 def _bitget_get_json(path: str, params: dict[str, Any] | None = None, project_root: Path | None = None) -> Any:
@@ -467,13 +477,15 @@ class BitgetDataSource(DataSource):
 
         duration_ms = int(self.duration_seconds) * 1000
         requested_count = max(int(self.data_length), 1)
-        end_time = (int(time.time() * 1000) // duration_ms) * duration_ms
+        end_time = _floor_bitget_time_ms(int(time.time() * 1000), duration_ms, granularity)
         start_time = end_time - requested_count * duration_ms
         rows: list[list[Any]] = []
         seen: set[int] = set()
-        cursor = start_time
+        cursor = _floor_bitget_time_ms(start_time, duration_ms, granularity)
         while cursor < end_time:
-            chunk_end = min(cursor + MAX_CANDLE_LIMIT * duration_ms, end_time)
+            max_chunk_span = min(MAX_CANDLE_LIMIT * duration_ms, MAX_CANDLE_TIME_RANGE_MS)
+            chunk_end = min(cursor + max_chunk_span, end_time)
+            chunk_end = max(_floor_bitget_time_ms(chunk_end, duration_ms, granularity), cursor + duration_ms)
             limit = max(int((chunk_end - cursor) // duration_ms), 1)
             payload = _bitget_get_json(
                 "/api/v2/mix/market/candles",
