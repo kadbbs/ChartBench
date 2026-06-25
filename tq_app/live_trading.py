@@ -295,6 +295,9 @@ class BitgetFuturesTradeClient:
     def place_position_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v2/mix/order/place-pos-tpsl", body=payload)
 
+    def place_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v2/mix/order/place-tpsl-order", body=payload)
+
     def modify_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v2/mix/order/modify-tpsl-order", body=payload)
 
@@ -2471,20 +2474,20 @@ class LiveTradingEngine:
             "marginCoin": self.config.margin_coin,
             "productType": self.config.product_type,
             "symbol": decision.symbol,
-            "stopLossTriggerPrice": _decimal_to_string(trigger_price),
-            "stopLossSize": _decimal_to_string(stop_size),
-            "stopLossTriggerType": "mark_price",
-            "stopLossExecutePrice": "0",
+            "planType": "loss_plan",
+            "triggerPrice": _decimal_to_string(trigger_price),
+            "triggerType": "mark_price",
             "holdSide": hold_side if self.config.position_mode == "hedge_mode" else decision.side,
-            "stopLossClientOid": f"tq-sl-{decision.symbol.lower()}-{decision.side}-{decision.bar_time or int(time.time())}"[:64],
+            "size": _decimal_to_string(stop_size),
+            "clientOid": f"tq-sl-{decision.symbol.lower()}-{decision.side}-{decision.bar_time or int(time.time())}"[:64],
         }
-        response = client.place_position_tpsl_order(payload)
+        response = client.place_tpsl_order(payload)
         self.logger.warning("已设置交易所服务器端灾难止损: %s", json.dumps({"request": payload, "response": response}, ensure_ascii=False))
         return {
             "request": payload,
             "response": response,
             "orderRef": _tpsl_order_ref(response),
-            "triggerPrice": payload["stopLossTriggerPrice"],
+            "triggerPrice": payload["triggerPrice"],
         }
 
     def _client_oid(self, symbol: str, side: str, bar_time: int | None) -> str:

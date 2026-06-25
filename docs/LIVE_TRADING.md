@@ -214,7 +214,7 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 实现方式：
 
 - 开仓成功后会先确认 Bitget 已能查到同向持仓，再设置交易所服务器端灾难止损。
-- 交易所端灾难止损使用 Bitget `POST /api/v2/mix/order/place-pos-tpsl`，只覆盖本策略计算出的 `stopLossSize`。
+- 交易所端灾难止损使用 Bitget `POST /api/v2/mix/order/place-tpsl-order`，按 `loss_plan + size` 只覆盖本策略计算出的下单数量。
 - 当保本/移动保护线抬高时，会通过 Bitget `POST /api/v2/mix/order/modify-tpsl-order` 尝试同步上移交易所端 stop loss。
 - 本地常驻进程会订阅 Bitget 公共 WebSocket ticker，收到 tick 后立即用最新标记价检查已管理仓位风控。
 - 如果 WebSocket ticker 超过 `LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS` 未更新，会回退 REST ticker。
@@ -335,7 +335,7 @@ API Key 至少需要：
 - 预检查设置杠杆：`POST /api/v2/mix/account/set-leverage`
 - 下单：`POST /api/v2/mix/order/place-order`
 - 反向仓位/风控快速平仓：`POST /api/v2/mix/order/close-positions`
-- 交易所端仓位止损：`POST /api/v2/mix/order/place-pos-tpsl`
+- 交易所端按数量止损计划单：`POST /api/v2/mix/order/place-tpsl-order`
 - 修改交易所端止损：`POST /api/v2/mix/order/modify-tpsl-order`
 - 取消交易所端止损：`POST /api/v2/mix/order/cancel-plan-order`
 - 公共 ticker WebSocket：`wss://ws.bitget.com/v2/ws/public`，订阅 `channel=ticker`
