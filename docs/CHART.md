@@ -1,0 +1,164 @@
+# 图表模块
+
+图表模块用于查看 Bitget 合约行情、K 线、成交量和指标信号。它是实盘和回测共用信号体系的可视化入口。
+
+## 入口
+
+```bash
+./myvenv/bin/python web_tq_chart.py
+```
+
+默认监听：
+
+```text
+http://0.0.0.0:8050
+```
+
+如果希望启动后自动打开浏览器：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --open-browser
+```
+
+## 常用命令
+
+指定合约和周期：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT --duration 300 --length 800
+```
+
+指定监听地址和端口：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --host 0.0.0.0 --port 8050
+```
+
+## 配置
+
+图表默认配置放在 `config/defaults.yaml`：
+
+```yaml
+TQ_DEFAULT_PROVIDER: bitget
+TQ_DEFAULT_SYMBOL: BTCUSDT
+TQ_DEFAULT_DURATION_SECONDS: 300
+TQ_DEFAULT_DATA_LENGTH: 800
+TQ_DEFAULT_REFRESH_MS: 200
+TQ_DEFAULT_HOST: 0.0.0.0
+TQ_DEFAULT_PORT: 8050
+TQ_DEFAULT_BAR_MODE: time
+```
+
+命令行参数优先级最高。例如临时看 SOL：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT
+```
+
+## 支持的图表模式
+
+当前入口参数保留以下模式：
+
+```text
+time   # 时间 K 线，当前主要使用模式
+tick   # Tick 图预留
+range  # Range Bar 预留
+renko  # Renko 预留
+```
+
+Bitget 当前主链路建议使用 `time`。
+
+## Web API
+
+图表服务由 Flask 提供，主要接口在 `tq_app/web.py`：
+
+```text
+GET /                 # 图表页面
+GET /api/config       # 当前数据源、合约、周期、指标元信息
+GET /api/snapshot     # 当前 K 线、成交量、指标序列
+GET /api/stream       # SSE 推送 snapshot 更新
+GET /api/health       # 行情源健康状态
+```
+
+示例：
+
+```bash
+curl "http://127.0.0.1:8050/api/health"
+curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
+```
+
+## 行情链路
+
+图表模块的核心流程：
+
+1. `web_tq_chart.py` 加载 `config/defaults.yaml` 和 `.env`。
+2. 创建 `MarketDataService`。
+3. `MarketDataService` 创建 Bitget 数据源。
+4. 数据源拉取历史 K 线并保持 WebSocket / 轮询更新。
+5. 服务计算指标。
+6. Flask API 返回前端可直接渲染的 snapshot。
+
+关键文件：
+
+```text
+web_tq_chart.py
+tq_app/web.py
+tq_app/service.py
+tq_app/data_sources/bitget.py
+tq_app/indicators/
+custom_indicators.py
+static/app.js
+static/styles.css
+templates/index.html
+```
+
+## 指标
+
+默认图表会加载指标注册表里的默认指标。当前策略重点使用：
+
+```text
+merged_dkx_hull_ut
+stc
+macd
+```
+
+`merged_dkx_hull_ut` 来自 `custom_indicators.py`，会生成：
+
+- UT / DKX 买卖 marker。
+- Hull 红带/绿带。
+- 策略用于判断 K 线和 Hull 带相对位置。
+
+`stc` 和 `macd` 在 `tq_app/indicators/builtin.py`。
+
+## 合约切换
+
+常见 USDT 永续可以直接用 Bitget 合约代码：
+
+```text
+BTCUSDT
+ETHUSDT
+SOLUSDT
+DOGEUSDT
+```
+
+命令行示例：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT
+```
+
+## 故障排查
+
+如果页面打不开：
+
+- 确认进程还在运行。
+- 确认端口没有被占用。
+- 本机访问优先试 `http://127.0.0.1:8050`。
+- 服务器访问确认安全组或防火墙放行端口。
+
+如果图表没有数据：
+
+- 看 `/api/health`。
+- 确认合约代码是 Bitget U 本位合约。
+- 确认 `BITGET_DEFAULT_PRODUCT_TYPE` 是 `USDT-FUTURES`。
+- 网络异常时重启图表进程。

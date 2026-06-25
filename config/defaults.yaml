@@ -112,7 +112,7 @@ LIVE_TRADING_ENTRY_TIME_END: 24:00
 LIVE_TRADING_HTF_HULL_FILTER_ENABLED: true
 
 # 高周期周期，单位秒。3600=1h。
-LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 3600
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
 
 # 信号来源模式：
 # any=Buy/买 或 Sell/卖 任一触发
@@ -146,6 +146,58 @@ LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS: 30
 
 # true=只在真实交易模式同步，避免观察模式的虚拟仓位被空账号覆盖。
 LIVE_TRADING_POSITION_SYNC_REAL_ONLY: true
+
+
+# ===== 实盘持仓风控出场 =====
+
+# false=不开启真实持仓风控平仓；true=常驻实盘进程会按同步间隔检查持仓并触发市价平仓。
+# 该逻辑只在 LIVE_TRADING_MODE=live 时真正平仓，不影响 email / dry-run 观察链路。
+LIVE_TRADING_RISK_EXITS_ENABLED: false
+
+# 持仓风控检查间隔，单位秒。真实实盘建议 5-10 秒。
+LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
+
+# true=常驻实盘使用 Bitget WebSocket ticker 驱动风控价格更新。
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED: true
+
+# WebSocket ticker 超过多少秒没更新就视为过期，并回退 REST ticker。
+LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS: 5
+
+# 同一仓位风控异常邮件冷却时间，单位秒，避免 API 异常时连续轰炸邮箱。
+LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
+
+# 是否在开仓后立刻设置 Bitget 服务器端灾难止损，作为程序断线/宕机时的兜底。
+LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED: true
+
+# true=风控平仓优先只平本策略记录的 managed_size，避免手动同向加仓后被整体平掉。
+LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY: true
+
+# 风控检查价格来源。mark_price=标记价；last/market=最新成交价；index_price=指数价。
+LIVE_TRADING_RISK_PRICE_SOURCE: mark_price
+
+# 启动失败止损：开仓后第 N 根 5m K 线检查一次。
+LIVE_TRADING_RISK_STARTUP_CHECK_BARS_5M: 24
+
+# 启动失败止损条件 1：开仓以来最大浮盈小于该点数。
+LIVE_TRADING_RISK_STARTUP_MAX_FAVORABLE_POINTS: 300
+
+# 启动失败止损条件 2：检查时当前点数低于该点数。
+LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -120
+
+# 灾难硬止损：最大浮亏或当前浮亏达到该点数时立即平仓。
+LIVE_TRADING_RISK_DISASTER_STOP_POINTS: -1800
+
+# 保本保护：最大浮盈达到 trigger 后，把保护线抬到 stop 点。
+LIVE_TRADING_RISK_BREAKEVEN_TRIGGER_POINTS: 800
+LIVE_TRADING_RISK_BREAKEVEN_STOP_POINTS: 100
+
+# 移动保护：最大浮盈达到 trigger 后，保护最大浮盈的一定比例。
+LIVE_TRADING_RISK_TRAILING_TRIGGER_1_POINTS: 2000
+LIVE_TRADING_RISK_TRAILING_PROTECT_1_RATIO: 0.4
+LIVE_TRADING_RISK_TRAILING_TRIGGER_2_POINTS: 4000
+LIVE_TRADING_RISK_TRAILING_PROTECT_2_RATIO: 0.5
+LIVE_TRADING_RISK_TRAILING_TRIGGER_3_POINTS: 8000
+LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 
 
 # ===== 邮件通知 =====

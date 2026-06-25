@@ -1,36 +1,36 @@
 # =============================================================================
-# 回测配置：BTCUSDT 5m 指定时间区间 + 本地 K 线缓存
+# 回测配置：SOLUSDT 5m 指定时间区间 + 本地 K 线缓存
 # -----------------------------------------------------------------------------
 # 用途：
-# - 第一次运行会从 Bitget 公共接口拉取 K 线，并写入本地缓存。
+# - 第一次运行会从 Bitget 公共接口拉取 SOLUSDT K 线，并写入本地缓存。
 # - 后续同一合约 / 周期 / K 线类型 / 已覆盖时间区间，会优先读取本地缓存。
 # - 不会影响普通在线回测；只有 cache_enabled: true 或命令行 --cache 才启用。
 #
 # 常用命令：
-# ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached
+# ./myvenv/bin/python run_backtest.py --profile sol_5m_range_cached
 #
 # 如需临时绕过缓存、强制重新在线拉取：
-# ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached --no-cache
+# ./myvenv/bin/python run_backtest.py --profile sol_5m_range_cached --no-cache
 #
 # 注意：
 # - cache_dir 是本地缓存目录，已加入 .gitignore，不应提交。
 # - 回测总资金 20000U，单笔固定使用 1000U 保证金，10倍杠杆。
+# - 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
 # =============================================================================
 
-symbol: BTCUSDT
+symbol: SOLUSDT
 duration: 300
-start_time: "2023-03-31 00:00:00"
+start_time: "2026-03-31 00:00:00"
 end_time: "2026-06-20 00:00:00"
 strategy: live_decision
 product_type: USDT-FUTURES
 kline_type: MARKET
 initial_equity: 20000
 margin_ratio_per_trade: 0
-# 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
 fee_rate: 0.00023
 slippage_rate: 0
 warmup_bars: 80
-output_dir: backtest_outputs/btc_5m_range_cached_1d
+output_dir: backtest_outputs/sol_5m_range_cached_46
 
 # 本配置专门用于缓存回测；普通 profile 默认仍走在线接口。
 cache_enabled: true

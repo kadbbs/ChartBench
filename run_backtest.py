@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
 from tq_app.backtesting.data import fetch_bitget_candles
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
 from tq_app.live_trading import LiveTradingConfig
@@ -55,11 +56,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BITGET_KLINE_TYPE", "MARKET")))
     parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
-    parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 1_000.0), help="回测初始权益，默认 1000U。")
+    parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 20_000.0), help="回测初始权益，默认 20000U。")
     parser.add_argument("--risk-per-trade", type=float, default=profile_float("risk_per_trade", 0.01))
-    parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", 0.0006))
+    parser.add_argument("--margin-ratio-per-trade", type=float, default=profile_float("margin_ratio_per_trade", 0.0), help="单笔保证金占当前权益比例；默认 0 表示使用固定 1000U 保证金。")
+    parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", DEFAULT_BACKTEST_FEE_RATE))
     parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
     parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
+    parser.add_argument("--risk-exits", action=argparse.BooleanOptionalAction, default=profile_bool("risk_exits_enabled", True), help="是否启用回测持仓风控出场；用 --no-risk-exits 可回到只按反向信号换仓的老撮合模型。")
+    parser.add_argument("--startup-check-bars-5m", type=int, default=profile_int("startup_check_bars_5m", 24))
+    parser.add_argument("--startup-max-favorable-points", type=float, default=profile_float("startup_max_favorable_points", 300.0))
+    parser.add_argument("--startup-current-points", type=float, default=profile_float("startup_current_points", -150.0))
+    parser.add_argument("--disaster-stop-points", type=float, default=profile_float("disaster_stop_points", -1800.0))
+    parser.add_argument("--breakeven-trigger-points", type=float, default=profile_float("breakeven_trigger_points", 800.0))
+    parser.add_argument("--breakeven-stop-points", type=float, default=profile_float("breakeven_stop_points", 100.0))
+    parser.add_argument("--trailing-trigger-1-points", type=float, default=profile_float("trailing_trigger_1_points", 2000.0))
+    parser.add_argument("--trailing-protect-1-ratio", type=float, default=profile_float("trailing_protect_1_ratio", 0.40))
+    parser.add_argument("--trailing-trigger-2-points", type=float, default=profile_float("trailing_trigger_2_points", 4000.0))
+    parser.add_argument("--trailing-protect-2-ratio", type=float, default=profile_float("trailing_protect_2_ratio", 0.50))
+    parser.add_argument("--trailing-trigger-3-points", type=float, default=profile_float("trailing_trigger_3_points", 8000.0))
+    parser.add_argument("--trailing-protect-3-ratio", type=float, default=profile_float("trailing_protect_3_ratio", 0.60))
     parser.add_argument("--output-dir", default=profile_str("output_dir", "backtest_outputs/latest"))
     parser.add_argument("--cache", action="store_true", default=profile_bool("cache_enabled", False), help="启用回测 K 线本地缓存；默认关闭，不影响在线回测。")
     parser.add_argument("--no-cache", action="store_true", help="即使配置文件开启缓存，也强制使用在线 K 线。")
@@ -129,6 +144,7 @@ def main() -> None:
         initial_equity=args.initial_equity,
         risk_per_trade=args.risk_per_trade,
         margin_amount=1_000.0,
+        margin_ratio_per_trade=args.margin_ratio_per_trade,
         leverage=10.0,
         fee_rate=args.fee_rate,
         slippage_rate=args.slippage_rate,
@@ -138,6 +154,19 @@ def main() -> None:
         tp2_r_multiple=float(live_config.tp2_r_multiple),
         atr_period=live_config.atr_period,
         warmup_bars=args.warmup_bars,
+        risk_exits_enabled=args.risk_exits,
+        startup_check_bars_5m=args.startup_check_bars_5m,
+        startup_max_favorable_points=args.startup_max_favorable_points,
+        startup_current_points=args.startup_current_points,
+        disaster_stop_points=args.disaster_stop_points,
+        breakeven_trigger_points=args.breakeven_trigger_points,
+        breakeven_stop_points=args.breakeven_stop_points,
+        trailing_trigger_1_points=args.trailing_trigger_1_points,
+        trailing_protect_1_ratio=args.trailing_protect_1_ratio,
+        trailing_trigger_2_points=args.trailing_trigger_2_points,
+        trailing_protect_2_ratio=args.trailing_protect_2_ratio,
+        trailing_trigger_3_points=args.trailing_trigger_3_points,
+        trailing_protect_3_ratio=args.trailing_protect_3_ratio,
         output_dir=Path(args.output_dir),
     )
     result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)

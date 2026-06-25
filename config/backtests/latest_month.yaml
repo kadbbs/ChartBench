@@ -9,7 +9,7 @@
 # 常用命令：
 # ./myvenv/bin/python run_backtest.py --profile latest_month
 #
-# 回测仓位固定在代码中：1000U 保证金、10倍杠杆。
+# 回测总资金 20000U，单笔固定使用 1000U 保证金，10倍杠杆。
 # =============================================================================
 
 symbol: BTCUSDT
@@ -18,9 +18,10 @@ length: 8657
 strategy: live_decision
 product_type: USDT-FUTURES
 kline_type: MARKET
-initial_equity: 1000
-fee_rate: 0.0006
+initial_equity: 20000
+margin_ratio_per_trade: 0
+# 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
+fee_rate: 0.00023
 slippage_rate: 0
 warmup_bars: 80
 output_dir: backtest_outputs/latest
-

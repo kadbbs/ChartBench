@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,80 @@ def attach_higher_timeframe(
     htf = slice_snapshot(htf_snapshot, len(htf_candles))
     snapshot["higher_timeframe"] = htf
     return snapshot
+
+
+class BacktestSnapshotSlicer:
+    def __init__(self, snapshot: dict[str, Any], *, max_bars: int) -> None:
+        self.snapshot = snapshot
+        self.max_bars = max(int(max_bars), 2)
+        self.candles = list(snapshot.get("candles") or [])
+        self.candle_times = [int(item.get("time") or 0) for item in self.candles]
+        self.volume = list(snapshot.get("volume") or [])
+        self.volume_times = [int(item.get("time") or 0) for item in self.volume]
+        self.time_labels = dict(snapshot.get("time_labels") or {})
+        self.indicators = [_CachedIndicator(item) for item in snapshot.get("indicators") or []]
+
+    def slice(self, end_exclusive: int) -> dict[str, Any]:
+        end = min(max(int(end_exclusive), 0), len(self.candles))
+        start = max(0, end - self.max_bars)
+        candles = self.candles[start:end]
+        sliced = dict(self.snapshot)
+        sliced["candles"] = candles
+        sliced["data_length"] = len(candles)
+        sliced["last_close"] = candles[-1]["close"] if candles else None
+        if not candles:
+            sliced["volume"] = []
+            sliced["time_labels"] = {}
+            sliced["indicators"] = []
+            return sliced
+
+        start_time = int(candles[0]["time"])
+        end_time = int(candles[-1]["time"])
+        volume_start = bisect_left(self.volume_times, start_time)
+        volume_end = bisect_right(self.volume_times, end_time)
+        sliced["volume"] = self.volume[volume_start:volume_end]
+        sliced["time_labels"] = {str(time_value): self.time_labels.get(str(time_value), "") for time_value in self.candle_times[start:end]}
+        sliced["indicators"] = [indicator.slice(start_time, end_time) for indicator in self.indicators]
+        return sliced
+
+    def slice_until_time(self, current_time: int) -> dict[str, Any]:
+        return self.slice(bisect_right(self.candle_times, int(current_time)))
+
+
+class _CachedIndicator:
+    def __init__(self, indicator: dict[str, Any]) -> None:
+        self.template = indicator
+        self.series = [_CachedSeries(item) for item in indicator.get("series") or []]
+
+    def slice(self, start_time: int, end_time: int) -> dict[str, Any]:
+        indicator = dict(self.template)
+        indicator["series"] = [series.slice(start_time, end_time) for series in self.series]
+        return indicator
+
+
+class _CachedSeries:
+    def __init__(self, series: dict[str, Any]) -> None:
+        self.template = series
+        self.data = list(series.get("data") or [])
+        self.data_times = [int(item.get("time") or 0) for item in self.data]
+        options = series.get("options") or {}
+        self.marker_keys = [key for key in ("candleMarkers", "markers") if key in options]
+        self.markers = {key: list(options.get(key) or []) for key in self.marker_keys}
+        self.marker_times = {key: [int(item.get("time") or 0) for item in self.markers[key]] for key in self.marker_keys}
+
+    def slice(self, start_time: int, end_time: int) -> dict[str, Any]:
+        series = dict(self.template)
+        data_start = bisect_left(self.data_times, start_time)
+        data_end = bisect_right(self.data_times, end_time)
+        series["data"] = self.data[data_start:data_end]
+        if self.marker_keys:
+            options = dict(series.get("options") or {})
+            for key in self.marker_keys:
+                marker_start = bisect_left(self.marker_times[key], start_time)
+                marker_end = bisect_right(self.marker_times[key], end_time)
+                options[key] = self.markers[key][marker_start:marker_end]
+            series["options"] = options
+        return series
 
 
 def normalize_bars(bars: pd.DataFrame) -> pd.DataFrame:

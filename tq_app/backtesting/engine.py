@@ -10,10 +10,13 @@ from typing import Any
 
 import pandas as pd
 
-from tq_app.backtesting.snapshot import SnapshotBuilder, attach_higher_timeframe, slice_snapshot
+from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
 from tq_app.backtesting.strategies import KlineStrategy
 from tq_app.live_trading import LiveTradingConfig
 from tq_app.service import DISPLAY_TIMEZONE
+
+
+DEFAULT_BACKTEST_FEE_RATE = 0.00023
 
 
 @dataclass(slots=True)
@@ -21,11 +24,12 @@ class BacktestConfig:
     symbol: str
     provider: str = "bitget"
     duration_seconds: int = 300
-    initial_equity: float = 1_000.0
+    initial_equity: float = 20_000.0
     risk_per_trade: float = 0.01
     margin_amount: float = 1_000.0
+    margin_ratio_per_trade: float = 0.0
     leverage: float = 10.0
-    fee_rate: float = 0.0006
+    fee_rate: float = DEFAULT_BACKTEST_FEE_RATE
     slippage_rate: float = 0.0
     stop_atr_multiplier: float = 2.0
     tp1_r_multiple: float = 1.0
@@ -33,6 +37,19 @@ class BacktestConfig:
     tp2_r_multiple: float = 1.5
     atr_period: int = 14
     warmup_bars: int = 80
+    risk_exits_enabled: bool = True
+    startup_check_bars_5m: int = 24
+    startup_max_favorable_points: float = 300.0
+    startup_current_points: float = -150.0
+    disaster_stop_points: float = -1800.0
+    breakeven_trigger_points: float = 800.0
+    breakeven_stop_points: float = 100.0
+    trailing_trigger_1_points: float = 2000.0
+    trailing_protect_1_ratio: float = 0.40
+    trailing_trigger_2_points: float = 4000.0
+    trailing_protect_2_ratio: float = 0.50
+    trailing_trigger_3_points: float = 8000.0
+    trailing_protect_3_ratio: float = 0.60
     output_dir: Path = Path("backtest_outputs/latest")
 
 
@@ -69,6 +86,17 @@ class Position:
     trade: BacktestTrade
     remaining_qty: float
     risk_amount: float
+    entry_index: int
+    max_favorable_points: float = 0.0
+    max_adverse_points: float = 0.0
+    protected_stop_points: float | None = None
+
+
+@dataclass(slots=True)
+class RiskExit:
+    reason: str
+    price: float
+    marker_text: str
 
 
 @dataclass(slots=True)
@@ -120,6 +148,9 @@ class BacktestEngine:
 
         candles = full_snapshot["candles"]
         time_labels = full_snapshot.get("time_labels") or {}
+        snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
+        snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
+        htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
         equity = float(self.config.initial_equity)
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
@@ -131,8 +162,28 @@ class BacktestEngine:
             entry_candle = candles[entry_index]
             signal_index = entry_index - 1
             signal_candle = candles[signal_index]
-            snapshot = slice_snapshot(full_snapshot, entry_index + 1)
-            snapshot = attach_higher_timeframe(snapshot, htf_snapshot, int(entry_candle["time"]))
+            risk_closed = False
+
+            if position is not None and self.config.risk_exits_enabled:
+                risk_exit = self._risk_exit(position, entry_candle, entry_index)
+                if risk_exit is not None:
+                    realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
+                    equity += realized
+                    equity_curve.append(equity)
+                    markers.append(
+                        _marker(
+                            entry_candle["time"],
+                            "aboveBar" if position.trade.side == "buy" else "belowBar",
+                            "#ff9800",
+                            risk_exit.marker_text,
+                        )
+                    )
+                    position = None
+                    risk_closed = True
+
+            snapshot = snapshot_slicer.slice(entry_index + 1)
+            if htf_slicer is not None:
+                snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
             signal = self.strategy.evaluate(snapshot)
 
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
@@ -156,12 +207,13 @@ class BacktestEngine:
                 position = None
 
             if position is None:
-                if signal.side in {"buy", "sell"}:
+                if not risk_closed and signal.side in {"buy", "sell"}:
                     trade, position = self._open_position(
                         trade_id=next_trade_id,
                         side=signal.side,
                         signal_candle=signal_candle,
                         entry_candle=entry_candle,
+                        entry_index=entry_index,
                         equity=equity,
                         reason=signal.reason,
                         time_labels=time_labels,
@@ -176,6 +228,20 @@ class BacktestEngine:
                             f"OPEN {signal.side.upper()}",
                         )
                     )
+                    risk_exit = self._risk_exit(position, entry_candle, entry_index) if self.config.risk_exits_enabled else None
+                    if risk_exit is not None:
+                        realized = self._close_remaining(position, entry_candle, risk_exit.reason, time_labels, price=risk_exit.price)
+                        equity += realized
+                        equity_curve.append(equity)
+                        markers.append(
+                            _marker(
+                                entry_candle["time"],
+                                "aboveBar" if position.trade.side == "buy" else "belowBar",
+                                "#ff9800",
+                                risk_exit.marker_text,
+                            )
+                        )
+                        position = None
 
         if position is not None:
             open_trade = position.trade
@@ -206,6 +272,7 @@ class BacktestEngine:
         side: str,
         signal_candle: dict[str, Any],
         entry_candle: dict[str, Any],
+        entry_index: int,
         equity: float,
         reason: str,
         time_labels: dict[str, str],
@@ -228,18 +295,55 @@ class BacktestEngine:
             signal_reason=reason,
         )
         trade.fees += abs(qty * entry_price) * self.config.fee_rate
-        return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount)
+        return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount, entry_index=entry_index)
 
     def _order_qty(self, entry_price: float, equity: float) -> float:
-        notional = max(self.config.margin_amount * self.config.leverage, 0.0)
+        margin_amount = equity * self.config.margin_ratio_per_trade if self.config.margin_ratio_per_trade > 0 else self.config.margin_amount
+        notional = max(margin_amount * self.config.leverage, 0.0)
         if entry_price <= 0 or notional <= 0:
-            raise RuntimeError("回测下单数量无效：请检查 margin_amount / leverage。")
+            raise RuntimeError("回测下单数量无效：请检查 margin_ratio_per_trade / margin_amount / leverage。")
         return notional / entry_price
 
     def _exit_price(self, candle: dict[str, Any], side: str, close_at_close: bool = False) -> float:
         base_price = float(candle["close"] if close_at_close else candle["open"])
         exit_side = "sell" if side == "buy" else "buy"
         return _apply_slippage(base_price, exit_side, self.config.slippage_rate)
+
+    def _risk_exit(self, position: Position, candle: dict[str, Any], candle_index: int) -> RiskExit | None:
+        trade = position.trade
+        entry_price = trade.entry_price
+        side = trade.side
+        position.max_favorable_points = max(position.max_favorable_points, _candle_favorable_points(side, entry_price, candle))
+        position.max_adverse_points = min(position.max_adverse_points, _candle_adverse_points(side, entry_price, candle))
+
+        if position.max_adverse_points <= self.config.disaster_stop_points:
+            return RiskExit(
+                reason="disaster_hard_stop",
+                price=_price_for_points(side, entry_price, self.config.disaster_stop_points),
+                marker_text="CLOSE DISASTER",
+            )
+
+        protection_points = _protection_points(position.max_favorable_points, self.config)
+        if protection_points is not None:
+            position.protected_stop_points = max(position.protected_stop_points or protection_points, protection_points)
+            if _candle_touches_points(candle, side, entry_price, position.protected_stop_points):
+                reason = "breakeven_protection" if position.protected_stop_points <= self.config.breakeven_stop_points else "trailing_protection"
+                return RiskExit(
+                    reason=reason,
+                    price=_price_for_points(side, entry_price, position.protected_stop_points),
+                    marker_text="CLOSE PROTECT",
+                )
+
+        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds, self.config.startup_check_bars_5m):
+            close_points = _points(side, entry_price, float(candle["close"]))
+            if position.max_favorable_points < self.config.startup_max_favorable_points and close_points < self.config.startup_current_points:
+                return RiskExit(
+                    reason="startup_failure_stop",
+                    price=float(candle["close"]),
+                    marker_text="CLOSE STARTUP",
+                )
+
+        return None
 
     def _close_partial(
         self,
@@ -339,6 +443,47 @@ def _points(side: str, entry: float, exit_price: float) -> float:
     return (exit_price - entry) * direction
 
 
+def _price_for_points(side: str, entry: float, points: float) -> float:
+    direction = 1.0 if side == "buy" else -1.0
+    return entry + points * direction
+
+
+def _candle_favorable_points(side: str, entry: float, candle: dict[str, Any]) -> float:
+    if side == "buy":
+        return float(candle["high"]) - entry
+    return entry - float(candle["low"])
+
+
+def _candle_adverse_points(side: str, entry: float, candle: dict[str, Any]) -> float:
+    if side == "buy":
+        return float(candle["low"]) - entry
+    return entry - float(candle["high"])
+
+
+def _candle_touches_points(candle: dict[str, Any], side: str, entry: float, points: float) -> bool:
+    if side == "buy":
+        return float(candle["low"]) <= _price_for_points(side, entry, points)
+    return float(candle["high"]) >= _price_for_points(side, entry, points)
+
+
+def _protection_points(max_favorable_points: float, config: BacktestConfig) -> float | None:
+    if max_favorable_points >= config.trailing_trigger_3_points:
+        return max_favorable_points * config.trailing_protect_3_ratio
+    if max_favorable_points >= config.trailing_trigger_2_points:
+        return max_favorable_points * config.trailing_protect_2_ratio
+    if max_favorable_points >= config.trailing_trigger_1_points:
+        return max_favorable_points * config.trailing_protect_1_ratio
+    if max_favorable_points >= config.breakeven_trigger_points:
+        return config.breakeven_stop_points
+    return None
+
+
+def _startup_check_bars(duration_seconds: int, check_bars_5m: int) -> int:
+    if duration_seconds <= 0:
+        return max(int(check_bars_5m), 1)
+    return max(1, round((max(int(check_bars_5m), 1) * 300) / duration_seconds))
+
+
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return price * (1.0 + direction * max(slippage_rate, 0.0))
@@ -415,6 +560,21 @@ def _max_drawdown(equity_curve: list[float]) -> float:
     return max_dd
 
 
+def _position_model_description(config: dict[str, Any]) -> str:
+    initial_equity = float(config.get("initial_equity") or 0.0)
+    margin_ratio = float(config.get("margin_ratio_per_trade") or 0.0)
+    leverage = float(config.get("leverage") or 0.0)
+    if margin_ratio > 0:
+        initial_margin = initial_equity * margin_ratio
+        initial_notional = initial_margin * leverage
+        return (
+            f"总资金 {_fmt(initial_equity)}U，单笔保证金按当前权益的 {_fmt(margin_ratio * 100)}% 动态计算"
+            f"（首笔约 {_fmt(initial_margin)}U），{_fmt(leverage)}倍杠杆，首笔名义价值约 {_fmt(initial_notional)}U"
+        )
+    margin_amount = float(config.get("margin_amount") or 0.0)
+    return f"每笔固定使用 {_fmt(margin_amount)}U 保证金，{_fmt(leverage)}倍杠杆，名义价值约 {_fmt(margin_amount * leverage)}U"
+
+
 def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[str, Any]:
     candles = snapshot.get("candles") or []
     first_candle = candles[0] if candles else {}
@@ -424,6 +584,7 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
         "title": f"{result.config.get('symbol')} {result.config.get('duration_seconds')}s 回测报告",
         "strategy": result.config.get("strategy"),
         "execution_model": result.config.get("execution_model"),
+        "position_model": _position_model_description(result.config),
         "period": {
             "start": _time_label(snapshot, int(first_candle.get("time") or 0)) if first_candle else "",
             "end": _time_label(snapshot, int(last_candle.get("time") or 0)) if last_candle else "",
@@ -439,12 +600,38 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
             "total_points": metrics.get("total_points", 0.0),
             "total_net_points": metrics.get("total_net_points", 0.0),
         },
-        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，不自动模拟止盈止损；回测结束时仍未平仓的最后一笔交易会被丢弃；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
+        "professional_note": f"当前回测按实盘式反向信号换仓模型撮合，并包含启动失败止损、灾难硬止损、保本保护和分段移动保护；回测结束时仍未平仓的最后一笔交易会被丢弃；{_position_model_description(result.config)}，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
     }
 
 
 def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[str, Any]:
     closed = [item for item in result.trades if item.exit_time is not None]
+    risk_exits_enabled = bool(result.config.get("risk_exits_enabled", True))
+    assumptions = [
+        "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
+        "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
+    ]
+    if risk_exits_enabled:
+        assumptions.extend(
+            [
+                "持仓期间先检查风控出场；若本根 K 线被风控平仓，本根不再重新开仓。",
+                "启动失败止损：开仓后第 24 根 5 分钟 K 线检查，若最大浮盈小于 300 点且当前点数小于 -150 点，则按当根 close 平仓。",
+                "灾难硬止损：任何 K 线内最大浮亏达到 -1800 点，则按 -1800 点价格平仓。",
+                "保本保护：开仓后最大浮盈达到 800 点，保护线抬到 +100 点。",
+                "移动保护：最大浮盈达到 2000/4000/8000 点后，分别保护最大浮盈的 40%/50%/60%。",
+                "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
+            ]
+        )
+    else:
+        assumptions.append("未启用回测持仓风控出场；持仓只会因反向实盘信号平仓/反手。")
+    assumptions.extend(
+        [
+            "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
+            _position_model_description(result.config),
+            "手续费按成交名义价值双边计入；默认 fee_rate=0.00023，在 10 倍杠杆下一次开平仓合计约为保证金的 0.46%；slippage_rate 按开平仓方向调整价格。",
+            "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
+        ]
+    )
     return {
         "market": _market_summary(snapshot),
         "risk": _risk_summary(result),
@@ -458,14 +645,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
             "by_entry_month": _period_trade_summary(closed, "%Y-%m"),
         },
         "key_trades": _key_trades(closed),
-        "assumptions": [
-            "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
-            "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
-            "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
-            "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
-            "手续费按成交名义价值双边计入；slippage_rate 按开平仓方向调整价格。",
-            "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
-        ],
+        "assumptions": assumptions,
     }
 
 
@@ -694,7 +874,7 @@ def _markdown_report_zh(report: dict[str, Any]) -> str:
         "## 核心结论",
         f"- 策略：`{summary.get('strategy')}`",
         f"- 撮合模型：`{summary.get('execution_model')}`",
-        "- 仓位：1000U 保证金，10倍杠杆",
+        f"- 仓位：{summary.get('position_model', '')}",
         f"- 回测区间：{summary.get('period', {}).get('start', '')} 至 {summary.get('period', {}).get('end', '')}",
         f"- K 线数量：{summary.get('period', {}).get('bars', 0)}",
         f"- 净收益：{_fmt(headline.get('net_profit'))}，收益率：{_fmt(headline.get('return_pct'))}%",
