@@ -15,6 +15,7 @@ from tq_app.data_sources.bitget import (
 
 
 HISTORY_CANDLE_LIMIT = 200
+HISTORY_MAX_TIME_RANGE_MS = 90 * 24 * 60 * 60 * 1000
 MIN_VALID_CANDLE_TIME_MS = 946_684_800_000
 
 
@@ -114,12 +115,18 @@ def _fetch_bitget_candles_online(
     duration_ms = int(duration_seconds) * 1000
     rows: list[list[Any]] = []
     seen: set[int] = set()
-    cursor = max(start_time - duration_ms, 0) if start_time_ms is not None else start_time
-    while cursor < end_time:
+    cursor_start = max(start_time - duration_ms, 0) if start_time_ms is not None else start_time
+    cursor = _floor_bitget_time_ms(cursor_start, duration_ms, granularity)
+    effective_end_time = _floor_bitget_time_ms(end_time, duration_ms, granularity)
+    if effective_end_time <= cursor:
+        effective_end_time = cursor + duration_ms
+    while cursor < effective_end_time:
         use_history_endpoint = start_time_ms is not None
         limit_per_request = HISTORY_CANDLE_LIMIT if use_history_endpoint else MAX_CANDLE_LIMIT
         path = "/api/v2/mix/market/history-candles" if use_history_endpoint else "/api/v2/mix/market/candles"
-        chunk_end = min(cursor + limit_per_request * duration_ms, end_time)
+        max_chunk_span = min(limit_per_request * duration_ms, HISTORY_MAX_TIME_RANGE_MS) if use_history_endpoint else limit_per_request * duration_ms
+        chunk_end = min(cursor + max_chunk_span, effective_end_time)
+        chunk_end = max(_floor_bitget_time_ms(chunk_end, duration_ms, granularity), cursor + duration_ms)
         limit = max(int((chunk_end - cursor) // duration_ms), 1)
         params = {
             "symbol": symbol.upper(),
@@ -293,6 +300,15 @@ def _missing_ranges(
 
 def _range_count(start_time: int, end_time: int, duration_ms: int) -> int:
     return max(int((end_time - start_time) // duration_ms) + 1, 1)
+
+
+def _floor_bitget_time_ms(timestamp_ms: int, duration_ms: int, granularity: str) -> int:
+    safe_duration = max(int(duration_ms), 1)
+    # Bitget's plain 1D/12H/6H candles are anchored to UTC+8. The separate
+    # "*utc" granularities use UTC anchors, but this project requests plain
+    # granularities such as 1D.
+    anchor = 0 if str(granularity).lower().endswith("utc") else -8 * 60 * 60 * 1000
+    return int((timestamp_ms - anchor) // safe_duration * safe_duration + anchor)
 
 
 def _datetime_ms(values: pd.Series) -> pd.Series:
