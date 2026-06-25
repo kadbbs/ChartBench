@@ -14,7 +14,7 @@
 #
 # 注意：
 # - cache_dir 是本地缓存目录，已加入 .gitignore，不应提交。
-# - 回测仓位固定在代码中：1000U 保证金、10倍杠杆。
+# - 回测总资金 20000U，单笔固定使用 1000U 保证金，10倍杠杆。
 # =============================================================================
 
 symbol: BTCUSDT
@@ -24,7 +24,8 @@ end_time: "2026-06-20 00:00:00"
 strategy: live_decision
 product_type: USDT-FUTURES
 kline_type: MARKET
-initial_equity: 1000
+initial_equity: 20000
+margin_ratio_per_trade: 0
 # 10x 下单边名义费率 0.00023，开平仓合计约为保证金的 0.46%。
 fee_rate: 0.00023
 slippage_rate: 0

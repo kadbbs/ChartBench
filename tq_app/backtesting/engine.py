@@ -24,9 +24,10 @@ class BacktestConfig:
     symbol: str
     provider: str = "bitget"
     duration_seconds: int = 300
-    initial_equity: float = 1_000.0
+    initial_equity: float = 20_000.0
     risk_per_trade: float = 0.01
     margin_amount: float = 1_000.0
+    margin_ratio_per_trade: float = 0.0
     leverage: float = 10.0
     fee_rate: float = DEFAULT_BACKTEST_FEE_RATE
     slippage_rate: float = 0.0
@@ -297,9 +298,10 @@ class BacktestEngine:
         return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount, entry_index=entry_index)
 
     def _order_qty(self, entry_price: float, equity: float) -> float:
-        notional = max(self.config.margin_amount * self.config.leverage, 0.0)
+        margin_amount = equity * self.config.margin_ratio_per_trade if self.config.margin_ratio_per_trade > 0 else self.config.margin_amount
+        notional = max(margin_amount * self.config.leverage, 0.0)
         if entry_price <= 0 or notional <= 0:
-            raise RuntimeError("回测下单数量无效：请检查 margin_amount / leverage。")
+            raise RuntimeError("回测下单数量无效：请检查 margin_ratio_per_trade / margin_amount / leverage。")
         return notional / entry_price
 
     def _exit_price(self, candle: dict[str, Any], side: str, close_at_close: bool = False) -> float:
@@ -558,6 +560,21 @@ def _max_drawdown(equity_curve: list[float]) -> float:
     return max_dd
 
 
+def _position_model_description(config: dict[str, Any]) -> str:
+    initial_equity = float(config.get("initial_equity") or 0.0)
+    margin_ratio = float(config.get("margin_ratio_per_trade") or 0.0)
+    leverage = float(config.get("leverage") or 0.0)
+    if margin_ratio > 0:
+        initial_margin = initial_equity * margin_ratio
+        initial_notional = initial_margin * leverage
+        return (
+            f"总资金 {_fmt(initial_equity)}U，单笔保证金按当前权益的 {_fmt(margin_ratio * 100)}% 动态计算"
+            f"（首笔约 {_fmt(initial_margin)}U），{_fmt(leverage)}倍杠杆，首笔名义价值约 {_fmt(initial_notional)}U"
+        )
+    margin_amount = float(config.get("margin_amount") or 0.0)
+    return f"每笔固定使用 {_fmt(margin_amount)}U 保证金，{_fmt(leverage)}倍杠杆，名义价值约 {_fmt(margin_amount * leverage)}U"
+
+
 def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[str, Any]:
     candles = snapshot.get("candles") or []
     first_candle = candles[0] if candles else {}
@@ -567,6 +584,7 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
         "title": f"{result.config.get('symbol')} {result.config.get('duration_seconds')}s 回测报告",
         "strategy": result.config.get("strategy"),
         "execution_model": result.config.get("execution_model"),
+        "position_model": _position_model_description(result.config),
         "period": {
             "start": _time_label(snapshot, int(first_candle.get("time") or 0)) if first_candle else "",
             "end": _time_label(snapshot, int(last_candle.get("time") or 0)) if last_candle else "",
@@ -582,7 +600,7 @@ def _report_summary(result: BacktestResult, snapshot: dict[str, Any]) -> dict[st
             "total_points": metrics.get("total_points", 0.0),
             "total_net_points": metrics.get("total_net_points", 0.0),
         },
-        "professional_note": "当前回测按实盘式反向信号换仓模型撮合，并包含启动失败止损、灾难硬止损、保本保护和分段移动保护；回测结束时仍未平仓的最后一笔交易会被丢弃；仓位固定为 1000U 保证金、10倍杠杆，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
+        "professional_note": f"当前回测按实盘式反向信号换仓模型撮合，并包含启动失败止损、灾难硬止损、保本保护和分段移动保护；回测结束时仍未平仓的最后一笔交易会被丢弃；{_position_model_description(result.config)}，未包含资金费率、爆仓强平、盘口冲击和真实成交滑点。",
     }
 
 
@@ -609,7 +627,7 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
     assumptions.extend(
         [
             "回测结束时仍未出现反向信号平仓的最后一笔交易会被丢弃，不计入交易明细、收益、点数和胜率统计。",
-            "每笔固定使用 1000U 保证金，并按 10 倍杠杆放大为 10000U 名义价值。",
+            _position_model_description(result.config),
             "手续费按成交名义价值双边计入；默认 fee_rate=0.00023，在 10 倍杠杆下一次开平仓合计约为保证金的 0.46%；slippage_rate 按开平仓方向调整价格。",
             "未模拟资金费率、爆仓强平、最小下单量、价格精度、盘口深度、订单失败和真实 API 延迟。",
         ]
@@ -856,7 +874,7 @@ def _markdown_report_zh(report: dict[str, Any]) -> str:
         "## 核心结论",
         f"- 策略：`{summary.get('strategy')}`",
         f"- 撮合模型：`{summary.get('execution_model')}`",
-        "- 仓位：1000U 保证金，10倍杠杆",
+        f"- 仓位：{summary.get('position_model', '')}",
         f"- 回测区间：{summary.get('period', {}).get('start', '')} 至 {summary.get('period', {}).get('end', '')}",
         f"- K 线数量：{summary.get('period', {}).get('bars', 0)}",
         f"- 净收益：{_fmt(headline.get('net_profit'))}，收益率：{_fmt(headline.get('return_pct'))}%",

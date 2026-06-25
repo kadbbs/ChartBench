@@ -56,8 +56,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BITGET_KLINE_TYPE", "MARKET")))
     parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
-    parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 1_000.0), help="回测初始权益，默认 1000U。")
+    parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 20_000.0), help="回测初始权益，默认 20000U。")
     parser.add_argument("--risk-per-trade", type=float, default=profile_float("risk_per_trade", 0.01))
+    parser.add_argument("--margin-ratio-per-trade", type=float, default=profile_float("margin_ratio_per_trade", 0.0), help="单笔保证金占当前权益比例；默认 0 表示使用固定 1000U 保证金。")
     parser.add_argument("--fee-rate", type=float, default=profile_float("fee_rate", DEFAULT_BACKTEST_FEE_RATE))
     parser.add_argument("--slippage-rate", type=float, default=profile_float("slippage_rate", 0.0))
     parser.add_argument("--warmup-bars", type=int, default=profile_int("warmup_bars", 80))
@@ -143,6 +144,7 @@ def main() -> None:
         initial_equity=args.initial_equity,
         risk_per_trade=args.risk_per_trade,
         margin_amount=1_000.0,
+        margin_ratio_per_trade=args.margin_ratio_per_trade,
         leverage=10.0,
         fee_rate=args.fee_rate,
         slippage_rate=args.slippage_rate,
