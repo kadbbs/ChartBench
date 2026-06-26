@@ -2351,13 +2351,15 @@ class LiveTradingEngine:
         *,
         symbol: str,
     ) -> tuple[bool, str, dict[str, Any]]:
+        configured_label = _duration_label(self.config.htf_hull_duration_seconds)
         if not self.config.htf_hull_filter_enabled:
-            return True, "1h Hull 趋势过滤未启用。", {}
+            return True, f"{configured_label} Hull 趋势过滤未启用。", {}
         if not isinstance(htf_snapshot, dict):
-            return False, "缺少高周期 Hull 快照，无法确认 1h 趋势，禁止开仓。", {}
+            return False, f"缺少高周期 Hull 快照，无法确认 {configured_label} 趋势，禁止开仓。", {}
 
         trend, detail = self._higher_timeframe_hull_trend(htf_snapshot)
         duration = htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds
+        duration_label = _duration_label(int(duration))
         label = detail.get("bar_time_label") or detail.get("bar_time") or "-"
         lock_context = {
             "symbol": symbol.upper(),
@@ -2371,12 +2373,12 @@ class LiveTradingEngine:
             lock_context["lock_key"] = self._htf_entry_lock_key(symbol, side, int(duration), int(detail["bar_time"]))
         if trend == "buy":
             if side == "sell":
-                return False, f"{duration}s Hull 为红色多趋势，禁止 5m 反向开空；1h={label}", lock_context
-            return True, f"{duration}s Hull 为红色多趋势，允许顺势开多；1h={label}", lock_context
+                return False, f"{duration_label} Hull 为红色多趋势，禁止 5m 反向开空；{duration_label}={label}", lock_context
+            return True, f"{duration_label} Hull 为红色多趋势，允许顺势开多；{duration_label}={label}", lock_context
         if trend == "sell":
             if side == "buy":
-                return False, f"{duration}s Hull 为绿色空趋势，禁止 5m 反向开多；1h={label}", lock_context
-            return True, f"{duration}s Hull 为绿色空趋势，允许顺势开空；1h={label}", lock_context
+                return False, f"{duration_label} Hull 为绿色空趋势，禁止 5m 反向开多；{duration_label}={label}", lock_context
+            return True, f"{duration_label} Hull 为绿色空趋势，允许顺势开空；{duration_label}={label}", lock_context
         return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}", lock_context
 
     def _higher_timeframe_hull_trend(self, htf_snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
@@ -2401,12 +2403,14 @@ class LiveTradingEngine:
         }
         if red_band and not green_band:
             if stc_trend != "buy":
-                detail["reason"] = "1h Hull 为红色上升趋势，但 1h STC 不是上升色"
+                duration_label = _duration_label(int(htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
+                detail["reason"] = f"{duration_label} Hull 为红色上升趋势，但 {duration_label} STC 不是上升色"
                 return None, detail
             return "buy", detail
         if green_band and not red_band:
             if stc_trend != "sell":
-                detail["reason"] = "1h Hull 为绿色下降趋势，但 1h STC 不是下降色"
+                duration_label = _duration_label(int(htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
+                detail["reason"] = f"{duration_label} Hull 为绿色下降趋势，但 {duration_label} STC 不是下降色"
                 return None, detail
             return "sell", detail
         detail["reason"] = "红带/绿带状态为空或同时存在"
@@ -2704,7 +2708,11 @@ class LiveTradingEngine:
         if result.decision.action == "risk_close":
             return {"buy": "风控平多", "sell": "风控平空"}.get(result.decision.side or "", "风控平仓")
         if response.get("htfEntryLocked"):
-            return {"buy": "1h内已开过多单，跳过", "sell": "1h内已开过空单，跳过"}.get(result.decision.side or "", "高周期锁跳过")
+            duration_label = _duration_label(self.config.htf_hull_duration_seconds)
+            return {
+                "buy": f"{duration_label}内已开过多单，跳过",
+                "sell": f"{duration_label}内已开过空单，跳过",
+            }.get(result.decision.side or "", "高周期锁跳过")
         if response.get("sameSidePosition"):
             return {"buy": "已有多单，跳过", "sell": "已有空单，跳过"}.get(result.decision.side or "", "已有仓位，跳过")
         if self.config.log_only or response.get("logOnly"):
@@ -2906,6 +2914,20 @@ def _format_price(value: float | None) -> str:
 
 def _format_float_list(values: list[float]) -> str:
     return "[" + ", ".join(_format_price(value) for value in values) + "]"
+
+
+def _duration_label(duration_seconds: int) -> str:
+    seconds = max(int(duration_seconds), 1)
+    if seconds % 86400 == 0:
+        days = seconds // 86400
+        return f"{days}D" if days != 1 else "1D"
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours}h"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes}m"
+    return f"{seconds}s"
 
 
 def _append_reverse_close_response(existing: dict[str, Any] | None, new_response: dict[str, Any]) -> dict[str, Any]:
