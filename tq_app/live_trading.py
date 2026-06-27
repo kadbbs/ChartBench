@@ -2714,6 +2714,7 @@ class LiveTradingEngine:
         action_label = self._email_action_label(result)
         side_label = {"buy": "多单", "sell": "空单"}.get(decision.side or "", decision.side or "-")
         price_label = f"{decision.bar_close:.2f}" if decision.bar_close is not None else "-"
+        htf_context_label = self._email_htf_context_label(result)
         subject = f"[TQ Live] {status} {action_label} {decision.symbol} {price_label} {decision.bar_time_label or decision.bar_time}"
         html = (
             "<h3>TQ Live Trading</h3>"
@@ -2726,6 +2727,7 @@ class LiveTradingEngine:
             f"<p><b>OHLC:</b> O={_format_price(decision.bar_open)} H={_format_price(decision.bar_high)} L={_format_price(decision.bar_low)} C={_format_price(decision.bar_close)}</p>"
             f"<p><b>Signals:</b> {', '.join(decision.marker_texts) or '-'}</p>"
             f"<p><b>Reason:</b> {decision.reason}</p>"
+            f"<p><b>HTF Lock:</b> {htf_context_label}</p>"
             f"<p><b>Error:</b> {result.error or '-'}</p>"
             f"<pre>{json.dumps(decision.indicator_values, ensure_ascii=False, indent=2)}</pre>"
             f"<pre>{json.dumps(decision.indicator_colors, ensure_ascii=False, indent=2)}</pre>"
@@ -2744,8 +2746,8 @@ class LiveTradingEngine:
         if response.get("htfEntryLocked"):
             duration_label = _duration_label(self.config.htf_hull_duration_seconds)
             return {
-                "buy": f"{duration_label}内已开过多单，跳过",
-                "sell": f"{duration_label}内已开过空单，跳过",
+                "buy": f"{duration_label} Hull同色周期内已开过多单，跳过",
+                "sell": f"{duration_label} Hull同色周期内已开过空单，跳过",
             }.get(result.decision.side or "", "高周期锁跳过")
         if response.get("sameSidePosition"):
             return {"buy": "已有多单，跳过", "sell": "已有空单，跳过"}.get(result.decision.side or "", "已有仓位，跳过")
@@ -2754,6 +2756,19 @@ class LiveTradingEngine:
         if result.dry_run or response.get("dryRun"):
             return f"模拟{side_label}"
         return f"真实{side_label}"
+
+    def _email_htf_context_label(self, result: TradeExecutionResult) -> str:
+        context = result.decision.htf_context
+        response = result.response if isinstance(result.response, dict) else {}
+        if response.get("htfContext"):
+            context = response.get("htfContext") or context
+        if not context:
+            return "-"
+        duration = _duration_label(int(context.get("duration_seconds") or self.config.htf_hull_duration_seconds))
+        trend_label = {"buy": "红色多趋势", "sell": "绿色空趋势"}.get(str(context.get("trend") or ""), str(context.get("trend") or "-"))
+        trend_start = context.get("trend_start_time_label") or context.get("trend_start_time") or "-"
+        bar_label = context.get("bar_time_label") or context.get("bar_time") or "-"
+        return f"{duration} {trend_label}，颜色周期起点={trend_start}，当前高周期K={bar_label}"
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name, "").strip()
