@@ -157,6 +157,7 @@ class BacktestEngine:
         markers: list[dict[str, Any]] = []
         position: Position | None = None
         next_trade_id = 1
+        htf_entry_locks: set[str] = set()
 
         for entry_index in range(max(self.config.warmup_bars, 1), len(candles)):
             entry_candle = candles[entry_index]
@@ -185,6 +186,9 @@ class BacktestEngine:
             if htf_slicer is not None:
                 snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
             signal = self.strategy.evaluate(snapshot)
+            if signal.side in {"buy", "sell"} and signal.htf_lock_key and signal.htf_lock_key in htf_entry_locks:
+                signal.side = None
+                signal.reason = "同一个高周期 Hull 颜色周期内，同方向已开过仓；即使此前已平仓，本周期也不再重复开同向仓位。"
 
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
                 realized = self._close_remaining(
@@ -220,6 +224,8 @@ class BacktestEngine:
                     )
                     next_trade_id += 1
                     trades.append(trade)
+                    if signal.htf_lock_key:
+                        htf_entry_locks.add(signal.htf_lock_key)
                     markers.append(
                         _marker(
                             entry_candle["time"],
@@ -256,6 +262,9 @@ class BacktestEngine:
                 "output_dir": str(self.config.output_dir),
                 "strategy": self.strategy.name,
                 "execution_model": "live_reverse_signal",
+                "htf_hull_filter_enabled": self.live_config.htf_hull_filter_enabled,
+                "htf_hull_duration_seconds": self.live_config.htf_hull_duration_seconds,
+                "htf_entry_lock_model": "hull_trend_segment",
             },
             metrics=metrics,
             trades=trades,
@@ -611,6 +620,11 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "信号在目标 K 线收完后确认，下一根 K 线 open 成交。",
         "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
     ]
+    if result.config.get("htf_hull_filter_enabled"):
+        assumptions.append(
+            f"高周期 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
+            "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
+        )
     if risk_exits_enabled:
         assumptions.extend(
             [

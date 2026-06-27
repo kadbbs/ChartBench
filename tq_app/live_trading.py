@@ -2367,10 +2367,12 @@ class LiveTradingEngine:
             "duration_seconds": int(duration),
             "bar_time": detail.get("bar_time"),
             "bar_time_label": detail.get("bar_time_label"),
+            "trend_start_time": detail.get("trend_start_time"),
+            "trend_start_time_label": detail.get("trend_start_time_label"),
             "trend": trend,
         }
-        if detail.get("bar_time") is not None:
-            lock_context["lock_key"] = self._htf_entry_lock_key(symbol, side, int(duration), int(detail["bar_time"]))
+        if detail.get("trend_start_time") is not None:
+            lock_context["lock_key"] = self._htf_entry_lock_key(symbol, side, int(duration), int(detail["trend_start_time"]))
         if trend == "buy":
             if side == "sell":
                 return False, f"{duration_label} Hull 为红色多趋势，禁止 5m 反向开空；{duration_label}={label}", lock_context
@@ -2386,6 +2388,7 @@ class LiveTradingEngine:
         if not candles:
             return None, {"reason": "高周期快照没有 K 线"}
         target_index = -2 if self.config.use_closed_bar and len(candles) >= 2 else -1
+        actual_index = len(candles) + target_index if target_index < 0 else target_index
         target_candle = candles[target_index]
         bar_time = int(target_candle.get("time") or 0)
         indicator_values, indicator_colors = self._indicator_context_at(htf_snapshot, bar_time)
@@ -2402,12 +2405,14 @@ class LiveTradingEngine:
             "stc_trend": stc_trend,
         }
         if red_band and not green_band:
+            self._attach_hull_trend_start(htf_snapshot, candles, actual_index, "buy", detail)
             if stc_trend != "buy":
                 duration_label = _duration_label(int(htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
                 detail["reason"] = f"{duration_label} Hull 为红色上升趋势，但 {duration_label} STC 不是上升色"
                 return None, detail
             return "buy", detail
         if green_band and not red_band:
+            self._attach_hull_trend_start(htf_snapshot, candles, actual_index, "sell", detail)
             if stc_trend != "sell":
                 duration_label = _duration_label(int(htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
                 detail["reason"] = f"{duration_label} Hull 为绿色下降趋势，但 {duration_label} STC 不是下降色"
@@ -2415,6 +2420,35 @@ class LiveTradingEngine:
             return "sell", detail
         detail["reason"] = "红带/绿带状态为空或同时存在"
         return None, detail
+
+    def _attach_hull_trend_start(
+        self,
+        htf_snapshot: dict[str, Any],
+        candles: list[dict[str, Any]],
+        target_index: int,
+        trend: str,
+        detail: dict[str, Any],
+    ) -> None:
+        start_index = max(min(target_index, len(candles) - 1), 0)
+        for index in range(start_index - 1, -1, -1):
+            candle = candles[index]
+            candle_time = int(candle.get("time") or 0)
+            if self._hull_trend_at(htf_snapshot, candle_time) != trend:
+                break
+            start_index = index
+        start_time = int(candles[start_index].get("time") or 0)
+        detail["trend_start_time"] = start_time
+        detail["trend_start_time_label"] = self._bar_time_label(htf_snapshot, start_time)
+
+    def _hull_trend_at(self, snapshot: dict[str, Any], bar_time: int) -> str | None:
+        indicator_values, _indicator_colors = self._indicator_context_at(snapshot, bar_time)
+        red_band = self._hull_band_values(indicator_values, "buy")
+        green_band = self._hull_band_values(indicator_values, "sell")
+        if red_band and not green_band:
+            return "buy"
+        if green_band and not red_band:
+            return "sell"
+        return None
 
     @staticmethod
     def _stc_trend_from_color(color: str) -> str | None:
