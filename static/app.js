@@ -2165,11 +2165,25 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return provider === "bitget" && barMode === "time";
+  return ["binance", "bitget"].includes(provider) && barMode === "time";
 }
 
 function wsIntervalForProvider(provider, durationSeconds) {
   const providerIntervals = {
+    binance: {
+      60: "1m",
+      180: "3m",
+      300: "5m",
+      900: "15m",
+      1800: "30m",
+      3600: "1h",
+      7200: "2h",
+      14400: "4h",
+      21600: "6h",
+      28800: "8h",
+      43200: "12h",
+      86400: "1d",
+    },
     bitget: {
       60: "1m",
       180: "3m",
@@ -2744,7 +2758,7 @@ function isIndicatorEnabled(indicatorId) {
 
 function buildDefaultTerminalTemplate() {
   return {
-    provider: state.config?.provider || "bitget",
+    provider: state.config?.provider || "binance",
     symbol: state.config?.symbol || "BTCUSDT",
     duration_seconds: state.config?.duration_seconds || 60,
     bar_mode: state.config?.bar_mode || "time",

@@ -89,7 +89,7 @@ def load_backtest_profile(project_root: Path, profile: str | None) -> dict[str, 
 
 
 def effective_config_snapshot(keys: list[str] | None = None) -> dict[str, Any]:
-    selected_keys = keys or sorted(key for key in os.environ if key.startswith(("LIVE_TRADING_", "TQ_DEFAULT_", "BITGET_")))
+    selected_keys = keys or sorted(key for key in os.environ if key.startswith(("LIVE_TRADING_", "TQ_DEFAULT_", "BINANCE_", "BITGET_")))
     snapshot: dict[str, Any] = {}
     for key in selected_keys:
         if key not in os.environ:

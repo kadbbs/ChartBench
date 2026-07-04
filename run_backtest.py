@@ -9,7 +9,7 @@ import pandas as pd
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
-from tq_app.backtesting.data import fetch_bitget_candles
+from tq_app.backtesting.data import fetch_market_candles
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
 from tq_app.live_trading import LiveTradingConfig
 from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str, runtime_project_root
@@ -47,13 +47,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run K-line level backtest with pluggable strategies.")
     parser.add_argument("--profile", default=early_args.profile, help="回测配置档案名称，对应 config/backtests/<name>.yaml")
     parser.add_argument("--list-profiles", action="store_true", help="列出可用回测配置档案后退出。")
-    parser.add_argument("--provider", default=profile_str("provider", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)), choices=[DEFAULT_PROVIDER])
+    parser.add_argument("--provider", default=profile_str("provider", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)), choices=["binance", "bitget"])
     parser.add_argument("--symbol", default=profile_str("symbol", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL)))
     parser.add_argument("--duration", type=int, default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)))
     parser.add_argument("--length", type=int, default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)))
     parser.add_argument("--strategy", default=profile_str("strategy", "live_decision"), help="回测策略名。默认复用当前实盘策略。")
-    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES")))
-    parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BITGET_KLINE_TYPE", "MARKET")))
+    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "UM-FUTURES")))
+    parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BINANCE_KLINE_TYPE", "MARKET")))
     parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
     parser.add_argument("--initial-equity", type=float, default=profile_float("initial_equity", 20_000.0), help="回测初始权益，默认 20000U。")
@@ -105,7 +105,8 @@ def main() -> None:
         end_time_ms=end_time_ms,
     )
 
-    bars = fetch_bitget_candles(
+    bars = fetch_market_candles(
+        provider=args.provider,
         project_root=project_root,
         symbol=args.symbol,
         product_type=args.product_type,
@@ -124,7 +125,8 @@ def main() -> None:
         htf_start_time_ms = None
         if start_time_ms is not None:
             htf_start_time_ms = max(start_time_ms - 120 * live_config.htf_hull_duration_seconds * 1000, 0)
-        htf_bars = fetch_bitget_candles(
+        htf_bars = fetch_market_candles(
+            provider=args.provider,
             project_root=project_root,
             symbol=args.symbol,
             product_type=args.product_type,

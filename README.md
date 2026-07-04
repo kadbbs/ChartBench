@@ -1,9 +1,9 @@
-# Bitget ChartBench
+# Binance ChartBench
 
-ChartBench 是一个围绕 Bitget U 本位永续合约的轻量项目，包含三条核心链路：
+ChartBench 是一个围绕 Binance USD-M 永续合约的轻量项目，包含三条核心链路：
 
 - 图表模块：实时 K 线、指标、Web 图表和合约切换。
-- 实盘模块：复用图表信号，执行观察邮件、dry-run 或真实 Bitget 市价开仓，并支持持仓后的实盘风控平仓。
+- 实盘模块：复用图表信号，执行观察邮件、dry-run 或真实 Binance 市价开仓，并支持持仓后的实盘风控平仓。
 - 回测模块：按 K 线级别复现实盘决策，支持本地 K 线缓存、风控出场、legacy 撮合和参数矩阵。
 
 ## 文档入口
@@ -45,7 +45,7 @@ docs/BACKTESTING.md    # 回测、缓存、legacy 模型、参数矩阵
     ├── live_trading.py             # 实盘执行核心
     ├── notifications.py            # 邮件发送
     ├── backtesting/                # 回测引擎和策略注册
-    ├── data_sources/               # Bitget 行情/接口适配
+    ├── data_sources/               # Binance/Bitget 行情接口适配
     └── indicators/                 # 内置指标
 ```
 
@@ -72,9 +72,8 @@ config/backtest_matrices/*.yaml  # 参数矩阵方案
 `.env` 只建议放：
 
 ```env
-BITGET_API_KEY=
-BITGET_API_SECRET=
-BITGET_API_PASSPHRASE=
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
 RESEND_API_KEY=
 RESEND_FROM_EMAIL=
 LIVE_TRADING_EMAIL_TO=
@@ -137,12 +136,27 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 
 ## 当前默认交易模型
 
-- 交易标的默认 `BTCUSDT`，产品线默认 `USDT-FUTURES`。
+- 交易标的默认 `BTCUSDT`，provider 默认 `binance`，产品线默认 `UM-FUTURES`。
 - 实盘真实 profile `live_5u` 使用 `5U` 保证金、`10x`、逐仓，并启用 BTC run_0024 持仓风控出场参数。
-- Bitget 实盘下单使用双向持仓 `hedge_mode` 参数格式，但策略层面禁止真实多空同时持有。
+- Binance 实盘下单使用 Hedge Mode 参数格式：开多 `BUY/LONG`，开空 `SELL/SHORT`；策略层面禁止真实多空同时持有。
 - 回测默认总资金 `20000U`，单笔固定使用 `1000U` 保证金，`10x` 杠杆，即 `10000U` 名义价值。
 - 回测默认手续费 `fee_rate=0.00023`，在 10x 下一次开平仓合计约为保证金 `0.46%`。
 - 回测默认启用持仓风控出场；legacy profile 可关闭。
+
+## Binance 链路
+
+当前主链路已切到 Binance USD-M Futures：
+
+```text
+REST 基础地址：https://fapi.binance.com
+WebSocket 行情：wss://fstream.binance.com/market
+K 线接口：GET /fapi/v1/klines
+市价下单：POST /fapi/v1/order
+交易所端条件止损：POST /fapi/v1/algoOrder
+持仓查询：GET /fapi/v3/positionRisk
+```
+
+Bitget provider 仍保留在代码里，主要用于对比或回退；默认运行、图表、回测和实盘入口都走 `binance`。
 
 ## 输出目录
 

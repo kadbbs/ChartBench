@@ -26,6 +26,8 @@ from tq_app.notifications import send_resend_email
 
 
 BITGET_API_BASE = "https://api.bitget.com"
+BINANCE_FAPI_BASE = "https://fapi.binance.com"
+BINANCE_SPOT_BASE = "https://api.binance.com"
 DEFAULT_LOG_PATH = Path("logs/live_trading.log")
 DEFAULT_ORDER_LOG_PATH = Path("logs/live_trading_orders.jsonl")
 DEFAULT_STATE_PATH = Path("logs/live_trading_state.json")
@@ -118,7 +120,7 @@ class LiveTradingConfig:
             enabled=enabled,
             dry_run=dry_run,
             log_only=log_only,
-            product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BITGET_DEFAULT_PRODUCT_TYPE", "USDT-FUTURES")).strip().upper(),
+            product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BINANCE_DEFAULT_PRODUCT_TYPE", "UM-FUTURES")).strip().upper(),
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
             margin_mode="isolated",
             position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "hedge_mode").strip().lower(),
@@ -554,6 +556,404 @@ class BitgetTickerWebSocket:
             self._condition.notify_all()
 
 
+class BinanceFuturesTradeClient:
+    def __init__(self, project_root: Path, api_base: str | None = None) -> None:
+        load_dotenv(project_root / ".env")
+        self.api_base = (api_base or os.getenv("BINANCE_FAPI_BASE", "").strip() or BINANCE_FAPI_BASE).rstrip("/")
+        self.spot_base = (os.getenv("BINANCE_SPOT_BASE", "").strip() or BINANCE_SPOT_BASE).rstrip("/")
+        self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
+        self.secret = os.getenv("BINANCE_API_SECRET", "").strip()
+        if not self.api_key or not self.secret:
+            raise RuntimeError("缺少 Binance API 配置：BINANCE_API_KEY / BINANCE_API_SECRET。")
+
+    def get_all_positions(self, *, product_type: str, margin_coin: str = "USDT") -> dict[str, Any]:
+        data = self._request("GET", "/fapi/v3/positionRisk")
+        return {"code": "00000", "data": data if isinstance(data, list) else []}
+
+    def get_futures_accounts(self, *, product_type: str) -> dict[str, Any]:
+        payload = self._request("GET", "/fapi/v3/account")
+        assets = payload.get("assets") if isinstance(payload, dict) else []
+        data: list[dict[str, Any]] = []
+        for asset in assets or []:
+            if not isinstance(asset, dict):
+                continue
+            coin = str(asset.get("asset") or "").upper()
+            data.append(
+                {
+                    "marginCoin": coin,
+                    "available": asset.get("availableBalance"),
+                    "availableBalance": asset.get("availableBalance"),
+                    "crossWalletBalance": asset.get("crossWalletBalance"),
+                }
+            )
+        return {"code": "00000", "data": data}
+
+    def get_spot_assets(self, *, coin: str) -> dict[str, Any]:
+        payload = self._request("GET", "/api/v3/account", base=self.spot_base)
+        balances = payload.get("balances") if isinstance(payload, dict) else []
+        data = [
+            {"coin": item.get("asset"), "coinName": item.get("asset"), "available": item.get("free")}
+            for item in balances or []
+            if isinstance(item, dict) and str(item.get("asset") or "").upper() == coin.upper()
+        ]
+        return {"code": "00000", "data": data}
+
+    def transfer_between_accounts(
+        self,
+        *,
+        from_type: str,
+        to_type: str,
+        amount: str,
+        coin: str,
+        client_oid: str | None = None,
+    ) -> dict[str, Any]:
+        transfer_type = "MAIN_UMFUTURE" if from_type == "spot" and to_type == "usdt_futures" else ""
+        if not transfer_type:
+            raise RuntimeError(f"Binance 暂不支持该划转方向: {from_type}->{to_type}")
+        data = self._request(
+            "POST",
+            "/sapi/v1/asset/transfer",
+            params={"type": transfer_type, "asset": coin.upper(), "amount": amount},
+            base=self.spot_base,
+        )
+        return {"code": "00000", "data": data}
+
+    def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = self._request("POST", "/fapi/v1/order", params=self._binance_order_payload(payload))
+        return {"code": "00000", "data": data}
+
+    def close_position_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(payload.get("symbol") or "").upper()
+        hold_side = str(payload.get("holdSide") or "").lower()
+        if hold_side not in {"long", "short"}:
+            raise RuntimeError(f"Binance 平仓需要 holdSide long/short: {payload}")
+        position = next(
+            (
+                item
+                for item in self.get_all_positions(product_type=str(payload.get("productType") or "")).get("data", [])
+                if str(item.get("symbol") or "").upper() == symbol and str(item.get("positionSide") or "").upper() == hold_side.upper()
+            ),
+            None,
+        )
+        size = abs(_optional_decimal(position.get("positionAmt")) or Decimal("0")) if position else Decimal("0")
+        if size <= 0:
+            return {"code": "00000", "data": {"symbol": symbol, "status": "NO_POSITION"}}
+        side = "SELL" if hold_side == "long" else "BUY"
+        order = {
+            "symbol": symbol,
+            "side": side,
+            "positionSide": hold_side.upper(),
+            "type": "MARKET",
+            "quantity": _decimal_to_string(size),
+            "newClientOrderId": f"tq-close-{symbol.lower()}-{hold_side}-{int(time.time())}"[:36],
+            "newOrderRespType": "RESULT",
+        }
+        data = self._request("POST", "/fapi/v1/order", params=order)
+        return {"code": "00000", "data": data}
+
+    def place_position_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.place_tpsl_order(payload)
+
+    def place_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = self._request("POST", "/fapi/v1/algoOrder", params=self._binance_algo_payload(payload))
+        return {"code": "00000", "data": data}
+
+    def modify_tpsl_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cancel_payload = {
+            "symbol": payload.get("symbol"),
+            "clientAlgoId": payload.get("clientOid"),
+            "algoId": payload.get("orderId"),
+        }
+        self.cancel_plan_order(cancel_payload)
+        return self.place_tpsl_order(payload)
+
+    def cancel_plan_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        refs: list[dict[str, Any]] = []
+        for item in payload.get("orderIdList") or []:
+            if isinstance(item, dict):
+                refs.append(item)
+        if not refs:
+            refs.append(payload)
+        responses = []
+        for ref in refs:
+            params = {key: value for key, value in {"algoId": ref.get("orderId") or ref.get("algoId"), "clientAlgoId": ref.get("clientOid") or ref.get("clientAlgoId")}.items() if value}
+            if not params:
+                continue
+            try:
+                responses.append(self._request("DELETE", "/fapi/v1/algoOrder", params=params))
+            except RuntimeError as exc:
+                if "-2011" not in str(exc) and "-4045" not in str(exc):
+                    raise
+                responses.append({"ignored": str(exc)})
+        return {"code": "00000", "data": responses}
+
+    def get_ticker(self, *, symbol: str, product_type: str) -> dict[str, Any]:
+        premium = _public_get_json(self.api_base, "/fapi/v1/premiumIndex", {"symbol": symbol.upper()})
+        last = _public_get_json(self.api_base, "/fapi/v2/ticker/price", {"symbol": symbol.upper()})
+        return {
+            "symbol": symbol.upper(),
+            "markPrice": str(premium.get("markPrice") or ""),
+            "indexPrice": str(premium.get("indexPrice") or ""),
+            "lastPr": str(last.get("price") or premium.get("markPrice") or ""),
+            "ts": int(premium.get("time") or int(time.time() * 1000)),
+        }
+
+    def get_contracts(self, *, product_type: str) -> list[dict[str, Any]]:
+        payload = _public_get_json(self.api_base, "/fapi/v1/exchangeInfo", {})
+        contracts: list[dict[str, Any]] = []
+        for item in payload.get("symbols") or []:
+            if not isinstance(item, dict):
+                continue
+            filters = {str(entry.get("filterType")): entry for entry in item.get("filters") or [] if isinstance(entry, dict)}
+            lot_filter = filters.get("LOT_SIZE") or {}
+            price_filter = filters.get("PRICE_FILTER") or {}
+            contracts.append(
+                {
+                    **item,
+                    "minTradeNum": lot_filter.get("minQty"),
+                    "sizeMultiplier": lot_filter.get("stepSize"),
+                    "priceEndStep": price_filter.get("tickSize"),
+                    "volumePlace": item.get("quantityPrecision"),
+                    "pricePlace": item.get("pricePrecision"),
+                }
+            )
+        return contracts
+
+    def get_order_detail(self, *, symbol: str, product_type: str, client_oid: str | None = None, order_id: str | None = None) -> dict[str, Any]:
+        params = {"symbol": symbol.upper(), "origClientOrderId": client_oid, "orderId": order_id}
+        data = self._request("GET", "/fapi/v1/order", params=params)
+        return {"code": "00000", "data": data}
+
+    def set_leverage(
+        self,
+        *,
+        symbol: str,
+        product_type: str,
+        margin_coin: str,
+        leverage: str,
+        hold_side: str | None = None,
+    ) -> dict[str, Any]:
+        data = self._request("POST", "/fapi/v1/leverage", params={"symbol": symbol.upper(), "leverage": leverage})
+        return {"code": "00000", "data": data}
+
+    def set_margin_mode(
+        self,
+        *,
+        symbol: str,
+        product_type: str,
+        margin_coin: str,
+        margin_mode: str,
+    ) -> dict[str, Any]:
+        margin_type = "ISOLATED" if margin_mode.lower() == "isolated" else "CROSSED"
+        try:
+            data = self._request("POST", "/fapi/v1/marginType", params={"symbol": symbol.upper(), "marginType": margin_type})
+        except RuntimeError as exc:
+            if "-4046" not in str(exc):
+                raise
+            data = {"msg": "No need to change margin type.", "code": -4046}
+        return {"code": "00000", "data": data}
+
+    def _binance_order_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "type" in payload and "quantity" in payload:
+            return payload
+        side = str(payload.get("side") or "").lower()
+        if side not in {"buy", "sell"}:
+            raise RuntimeError(f"未知下单方向: {side}")
+        order_side = "BUY" if side == "buy" else "SELL"
+        position_side = "LONG" if side == "buy" else "SHORT"
+        if str(payload.get("tradeSide") or "").lower() == "close":
+            order_side = "SELL" if side == "buy" else "BUY"
+        request = {
+            "symbol": str(payload.get("symbol") or "").upper(),
+            "side": order_side,
+            "positionSide": position_side,
+            "type": "MARKET",
+            "quantity": payload.get("size") or payload.get("quantity"),
+            "newClientOrderId": payload.get("clientOid") or payload.get("newClientOrderId"),
+            "newOrderRespType": "RESULT",
+        }
+        return {key: value for key, value in request.items() if value not in (None, "")}
+
+    def _binance_algo_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        hold_side = str(payload.get("holdSide") or "").lower()
+        if hold_side not in {"long", "short"}:
+            raise RuntimeError(f"Binance 止损需要 holdSide long/short: {payload}")
+        side = "SELL" if hold_side == "long" else "BUY"
+        request = {
+            "algoType": "CONDITIONAL",
+            "symbol": str(payload.get("symbol") or "").upper(),
+            "side": side,
+            "positionSide": hold_side.upper(),
+            "type": "STOP_MARKET",
+            "quantity": payload.get("size"),
+            "triggerPrice": payload.get("triggerPrice"),
+            "workingType": "MARK_PRICE" if str(payload.get("triggerType") or "").lower() == "mark_price" else "CONTRACT_PRICE",
+            "clientAlgoId": payload.get("clientOid"),
+            "newOrderRespType": "ACK",
+        }
+        return {key: value for key, value in request.items() if value not in (None, "")}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        base: str | None = None,
+    ) -> Any:
+        method = method.upper()
+        request_params = {key: value for key, value in (params or {}).items() if value not in (None, "")}
+        request_params["timestamp"] = int(time.time() * 1000)
+        query = urlencode(request_params)
+        signature = hmac.new(self.secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+        query = f"{query}&signature={signature}"
+        url_base = (base or self.api_base).rstrip("/")
+        if method == "GET":
+            url = f"{url_base}{path}?{query}"
+            data = None
+        else:
+            url = f"{url_base}{path}"
+            data = query.encode("utf-8")
+        request = Request(
+            url,
+            data=data,
+            headers={"X-MBX-APIKEY": self.api_key, "Content-Type": "application/x-www-form-urlencoded"},
+            method=method,
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                text = response.read().decode("utf-8")
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Binance API {path} HTTP {exc.code}: {body or exc.reason}") from exc
+        return json.loads(text) if text else {}
+
+
+class BinanceTickerWebSocket:
+    def __init__(self, *, symbol: str, product_type: str, logger: logging.Logger) -> None:
+        self.symbol = symbol.upper()
+        self.product_type = product_type.upper()
+        self.logger = logger
+        self._stop_event = threading.Event()
+        self._condition = threading.Condition()
+        self._thread: threading.Thread | None = None
+        self._latest: dict[str, Any] | None = None
+        self._version = 0
+        self._status = "stopped"
+        self._last_error = ""
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name=f"binance-ticker-{self.symbol}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
+
+    def latest(self) -> dict[str, Any] | None:
+        with self._condition:
+            return dict(self._latest) if self._latest else None
+
+    def version(self) -> int:
+        with self._condition:
+            return self._version
+
+    def wait_for_update(self, last_version: int | None, timeout: float) -> int:
+        with self._condition:
+            if last_version is None or self._version != last_version:
+                return self._version
+            self._condition.wait_for(lambda: self._version != last_version or self._stop_event.is_set(), timeout=timeout)
+            return self._version
+
+    def status(self) -> dict[str, Any]:
+        with self._condition:
+            return {
+                "status": self._status,
+                "version": self._version,
+                "last_error": self._last_error,
+                "latest_ts": self._latest.get("ts") if self._latest else None,
+                "latest_received_at_ms": self._latest.get("_received_at_ms") if self._latest else None,
+            }
+
+    def _run(self) -> None:
+        try:
+            asyncio.run(self._run_forever())
+        except Exception as exc:
+            with self._condition:
+                self._status = "stopped_error"
+                self._last_error = str(exc)
+                self._condition.notify_all()
+
+    async def _run_forever(self) -> None:
+        backoff = 1.0
+        stream_url = f"{os.getenv('BINANCE_WS_MARKET_BASE', '').strip().rstrip('/') or 'wss://fstream.binance.com/market'}/ws/{self.symbol.lower()}@markPrice@1s"
+        while not self._stop_event.is_set():
+            try:
+                with self._condition:
+                    self._status = "connecting"
+                    self._condition.notify_all()
+                async with websockets.connect(stream_url, ping_interval=20, close_timeout=5) as websocket:
+                    with self._condition:
+                        self._status = "connected"
+                        self._last_error = ""
+                        self._condition.notify_all()
+                    backoff = 1.0
+                    while not self._stop_event.is_set():
+                        message = await asyncio.wait_for(websocket.recv(), timeout=45)
+                        self._handle_message(message)
+            except Exception as exc:
+                with self._condition:
+                    self._status = "reconnecting"
+                    self._last_error = str(exc)
+                    self._condition.notify_all()
+                self.logger.warning("Binance ticker WebSocket 断开，准备重连: %s", exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    def _handle_message(self, message: Any) -> None:
+        if isinstance(message, bytes):
+            message = message.decode("utf-8")
+        try:
+            payload = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if str(payload.get("s") or "").upper() != self.symbol:
+            return
+        ticker = {
+            "symbol": self.symbol,
+            "markPrice": payload.get("p"),
+            "indexPrice": payload.get("i"),
+            "lastPr": payload.get("p"),
+            "ts": payload.get("E"),
+            "_received_at_ms": int(time.time() * 1000),
+            "_source": "binance_ws_ticker",
+        }
+        with self._condition:
+            self._latest = ticker
+            self._version += 1
+            self._status = "streaming"
+            self._condition.notify_all()
+
+
+def _public_get_json(base: str, path: str, params: dict[str, Any]) -> Any:
+    query = urlencode({key: value for key, value in params.items() if value not in (None, "")})
+    url = f"{base.rstrip('/')}{path}" if not query else f"{base.rstrip('/')}{path}?{query}"
+    with urlopen(url, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict) and int(payload.get("code", 0) or 0) < 0:
+        raise RuntimeError(f"Binance API {path} 返回错误 {payload.get('code')}: {payload.get('msg') or payload}")
+    return payload
+
+
+BitgetFuturesTradeClient = BinanceFuturesTradeClient
+BitgetTickerWebSocket = BinanceTickerWebSocket
+
+
 class LiveTradingEngine:
     def __init__(self, project_root: Path, config: LiveTradingConfig | None = None) -> None:
         self.project_root = project_root
@@ -612,7 +1012,7 @@ class LiveTradingEngine:
                 {
                     "configured": self.config.position_mode,
                     "required": "hedge_mode",
-                    "note": "实盘下单前请在 Bitget 后台确认 USDT-FUTURES 已是双向持仓；程序不会在信号触发时临时切换持仓模式。",
+                    "note": "实盘下单前请在 Binance 后台确认 USD-M 已是 Hedge Mode；程序不会在信号触发时临时切换持仓模式。",
                 },
             )
             if self.config.position_mode != "hedge_mode":
@@ -623,7 +1023,7 @@ class LiveTradingEngine:
                 return PreflightResult(ok=False, checks=checks, error="实盘持仓风控配置不安全，请先修正 LIVE_TRADING_RISK_* 配置。")
 
             client = BitgetFuturesTradeClient(self.project_root)
-            add_check("api_credentials", True, "Bitget API 凭据已加载")
+            add_check("api_credentials", True, "Binance API 凭据已加载")
 
             positions_payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
             add_check("private_positions", True, {"code": positions_payload.get("code"), "items": len(positions_payload.get("data") or [])})
@@ -635,7 +1035,7 @@ class LiveTradingEngine:
                     return PreflightResult(
                         ok=False,
                         checks=checks,
-                        error="当前产品线仍有持仓，Bitget 不允许切换逐仓/全仓；请先处理持仓后再运行 --preflight。",
+                        error="当前产品线仍有持仓，Binance 不允许切换逐仓/全仓；请先处理持仓后再运行 --preflight。",
                     )
                 margin_mode_response = client.set_margin_mode(
                     symbol=symbol,
@@ -691,7 +1091,7 @@ class LiveTradingEngine:
             contract = next((item for item in contracts if str(item.get("symbol") or "").upper() == symbol.upper()), None)
             add_check("contract", contract is not None, self._contract_preflight_detail(contract))
             if contract is None:
-                return PreflightResult(ok=False, checks=checks, error=f"未找到 Bitget 合约: {symbol}")
+                return PreflightResult(ok=False, checks=checks, error=f"未找到 Binance 合约: {symbol}")
 
             precision_ok, precision_detail = self._preflight_precision(size=size, contract=contract)
             add_check("precision", precision_ok, precision_detail)
@@ -1027,7 +1427,7 @@ class LiveTradingEngine:
                 enabled=self.config.enabled,
                 request=request,
                 response={"preflight": asdict(preflight)},
-                error=f"Bitget 实盘预检查失败: {preflight.error or 'unknown'}",
+                error=f"Binance 实盘预检查失败: {preflight.error or 'unknown'}",
             )
             self._log_result(result)
             self._send_email(result)
@@ -1321,7 +1721,7 @@ class LiveTradingEngine:
         return client.get_ticker(symbol=symbol, product_type=self.config.product_type)
 
     def _is_fresh_ws_ticker(self, ticker: dict[str, Any]) -> bool:
-        if ticker.get("_source") != "bitget_ws_ticker":
+        if ticker.get("_source") not in {"binance_ws_ticker", "bitget_ws_ticker"}:
             return False
         received_at = _optional_int(ticker.get("_received_at_ms")) or 0
         if received_at <= 0:
@@ -1923,7 +2323,7 @@ class LiveTradingEngine:
             symbol = str(position.get("symbol") or "").upper()
             if symbol != decision.symbol:
                 continue
-            hold_side = str(position.get("holdSide") or position.get("posSide") or "").lower()
+            hold_side = str(position.get("holdSide") or position.get("posSide") or position.get("positionSide") or "").lower()
             if hold_side and hold_side != expected_hold_side:
                 continue
             if self.config.position_mode == "one_way_mode" and not hold_side:
@@ -1935,10 +2335,10 @@ class LiveTradingEngine:
                     "symbol": symbol,
                     "holdSide": hold_side or expected_hold_side,
                     "total": str(position.get("total", "") or ""),
-                    "available": str(position.get("available", "") or ""),
+                    "available": str(position.get("available", "") or position.get("positionAmt", "") or ""),
                     "locked": str(position.get("locked", "") or ""),
-                    "marginSize": str(position.get("marginSize", "") or ""),
-                    "unrealizedPL": str(position.get("unrealizedPL", "") or ""),
+                    "marginSize": str(position.get("marginSize", "") or position.get("positionInitialMargin", "") or ""),
+                    "unrealizedPL": str(position.get("unrealizedPL", "") or position.get("unRealizedProfit", "") or ""),
                 }
         return None
 
@@ -1962,7 +2362,7 @@ class LiveTradingEngine:
         except Exception as exc:
             now = time.monotonic()
             if now - self._last_position_sync_warning_at >= 60:
-                self.logger.warning("Bitget 持仓同步失败，本地仓位暂不覆盖: %s", exc)
+                self.logger.warning("Binance 持仓同步失败，本地仓位暂不覆盖: %s", exc)
                 self._last_position_sync_warning_at = now
             return {"skipped": True, "reason": str(exc)}
 
@@ -1999,7 +2399,7 @@ class LiveTradingEngine:
                 position["status"] = "closed"
                 position["closed_at"] = now_ms
                 position["close_reason"] = "exchange_sync_no_position"
-                position["sync_source"] = "bitget"
+                position["sync_source"] = "binance"
                 changed = True
                 closed += 1
                 continue
@@ -2053,7 +2453,7 @@ class LiveTradingEngine:
                     "created_at": exchange_position.get("opened_at") or now_ms,
                     "synced_at": now_ms,
                     "note": (
-                        "由 Bitget 实际持仓同步写入；未知来源仓位默认不自动风控，避免误平手动仓位。"
+                        "由 Binance 实际持仓同步写入；未知来源仓位默认不自动风控，避免误平手动仓位。"
                         if key not in risk_exclusions
                         else "该方向存在本策略部分平仓后剩余的手动/外部仓位，已排除自动风控直到该方向仓位清空。"
                     ),
@@ -2069,14 +2469,14 @@ class LiveTradingEngine:
             state["last_position_sync"] = {
                 "ts": now_ms,
                 "symbol": scoped_symbol or "*",
-                "source": "bitget",
+                "source": "binance",
                 "open_count": len(exchange_positions),
                 "added": added,
                 "updated": updated,
                 "closed": closed,
             }
             self._write_state(state)
-            self.logger.info("Bitget 持仓已同步到本地账本: %s", json.dumps(state["last_position_sync"], ensure_ascii=False))
+            self.logger.info("Binance 持仓已同步到本地账本: %s", json.dumps(state["last_position_sync"], ensure_ascii=False))
         return {"skipped": False, "open_count": len(exchange_positions), "added": added, "updated": updated, "closed": closed}
 
     def _exchange_open_positions(self, client: BitgetFuturesTradeClient, *, symbol: str | None = None) -> list[dict[str, Any]]:
@@ -2093,7 +2493,7 @@ class LiveTradingEngine:
             size = self._position_size(position)
             if size <= 0:
                 continue
-            hold_side = str(position.get("holdSide") or position.get("posSide") or "").lower()
+            hold_side = str(position.get("holdSide") or position.get("posSide") or position.get("positionSide") or "").lower()
             if hold_side not in {"long", "short"}:
                 hold_side = self._one_way_position_side(position) or ""
             side = {"long": "buy", "short": "sell"}.get(hold_side)
@@ -2106,10 +2506,10 @@ class LiveTradingEngine:
                     "holdSide": hold_side,
                     "size": str(size),
                     "total": str(position.get("total", "") or ""),
-                    "available": str(position.get("available", "") or ""),
+                    "available": str(position.get("available", "") or position.get("positionAmt", "") or ""),
                     "locked": str(position.get("locked", "") or ""),
-                    "marginSize": str(position.get("marginSize", "") or ""),
-                    "unrealizedPL": str(position.get("unrealizedPL", "") or ""),
+                    "marginSize": str(position.get("marginSize", "") or position.get("positionInitialMargin", "") or ""),
+                    "unrealizedPL": str(position.get("unrealizedPL", "") or position.get("unRealizedProfit", "") or ""),
                     "entry_price": _exchange_position_entry_price_text(position),
                     "opened_at": _exchange_position_opened_at_ms(position),
                     "raw": position,
@@ -2151,7 +2551,7 @@ class LiveTradingEngine:
 
     @staticmethod
     def _position_size(position: dict[str, Any]) -> float:
-        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
+        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize", "positionAmt"):
             try:
                 value = abs(float(position.get(key) or 0))
             except (TypeError, ValueError):
@@ -2162,7 +2562,7 @@ class LiveTradingEngine:
 
     @staticmethod
     def _one_way_position_side(position: dict[str, Any]) -> str | None:
-        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize"):
+        for key in ("total", "available", "locked", "holdVol", "pos", "positionSize", "positionAmt"):
             try:
                 value = float(position.get(key) or 0)
             except (TypeError, ValueError):
@@ -2892,6 +3292,7 @@ def _exchange_position_entry_price_text(position: dict[str, Any]) -> str | None:
         "breakEvenPrice",
         "holdAvgPrice",
         "avgPrice",
+        "entryPrice",
     ):
         value = position.get(key)
         if value not in (None, ""):

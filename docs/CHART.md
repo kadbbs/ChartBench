@@ -1,6 +1,6 @@
 # 图表模块
 
-图表模块用于查看 Bitget 合约行情、K 线、成交量和指标信号。它是实盘和回测共用信号体系的可视化入口。
+图表模块用于查看 Binance USD-M 合约行情、K 线、成交量和指标信号。它是实盘和回测共用信号体系的可视化入口。
 
 ## 入口
 
@@ -39,7 +39,7 @@ http://0.0.0.0:8050
 图表默认配置放在 `config/defaults.yaml`：
 
 ```yaml
-TQ_DEFAULT_PROVIDER: bitget
+TQ_DEFAULT_PROVIDER: binance
 TQ_DEFAULT_SYMBOL: BTCUSDT
 TQ_DEFAULT_DURATION_SECONDS: 300
 TQ_DEFAULT_DATA_LENGTH: 800
@@ -66,7 +66,7 @@ range  # Range Bar 预留
 renko  # Renko 预留
 ```
 
-Bitget 当前主链路建议使用 `time`。
+Binance 当前主链路建议使用 `time`。
 
 ## Web API
 
@@ -93,8 +93,8 @@ curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
 
 1. `web_tq_chart.py` 加载 `config/defaults.yaml` 和 `.env`。
 2. 创建 `MarketDataService`。
-3. `MarketDataService` 创建 Bitget 数据源。
-4. 数据源拉取历史 K 线并保持 WebSocket / 轮询更新。
+3. `MarketDataService` 创建 Binance 数据源。
+4. 数据源通过 Binance REST 拉取历史 K 线，并通过 WebSocket / SSE 推送更新。
 5. 服务计算指标。
 6. Flask API 返回前端可直接渲染的 snapshot。
 
@@ -104,7 +104,7 @@ curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
 web_tq_chart.py
 tq_app/web.py
 tq_app/service.py
-tq_app/data_sources/bitget.py
+tq_app/data_sources/binance.py
 tq_app/indicators/
 custom_indicators.py
 static/app.js
@@ -132,7 +132,7 @@ macd
 
 ## 合约切换
 
-常见 USDT 永续可以直接用 Bitget 合约代码：
+常见 USD-M 永续可以直接用 Binance 合约代码：
 
 ```text
 BTCUSDT
@@ -159,6 +159,7 @@ DOGEUSDT
 如果图表没有数据：
 
 - 看 `/api/health`。
-- 确认合约代码是 Bitget U 本位合约。
-- 确认 `BITGET_DEFAULT_PRODUCT_TYPE` 是 `USDT-FUTURES`。
+- 确认合约代码是 Binance USD-M 合约。
+- 确认 `TQ_DEFAULT_PROVIDER` 是 `binance`。
+- 确认 `BINANCE_DEFAULT_PRODUCT_TYPE` 是 `UM-FUTURES`。
 - 网络异常时重启图表进程。

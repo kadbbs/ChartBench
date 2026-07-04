@@ -30,7 +30,7 @@ margin_ratio_per_trade: 0
 fee_rate: 0.00023
 slippage_rate: 0
 warmup_bars: 80
-output_dir: backtest_outputs/btc_5m_range_cached_1d
+output_dir: backtest_outputs/btc_5m_range_cached_4h_hull_filter
 
 # 本配置专门用于缓存回测；普通 profile 默认仍走在线接口。
 cache_enabled: true

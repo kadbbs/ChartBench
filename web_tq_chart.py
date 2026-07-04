@@ -15,7 +15,7 @@ from tq_app.config_profiles import load_layered_env
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
 
-DEFAULT_PROVIDER = "bitget"
+DEFAULT_PROVIDER = "binance"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_DURATION_SECONDS = 180
 DEFAULT_DATA_LENGTH = 800
@@ -142,8 +142,8 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     load_layered_env(runtime_project_root())
-    parser = argparse.ArgumentParser(description="Bitget 行情浏览器图表工作台")
-    parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=[DEFAULT_PROVIDER], help="数据源名称，当前仅支持 bitget")
+    parser = argparse.ArgumentParser(description="Binance 行情浏览器图表工作台")
+    parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=["binance", "bitget"], help="数据源名称")
     parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL), help="合约代码，例如 BTCUSDT")
     parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS), help="K 线周期，单位秒")
     parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH), help="拉取 K 线数量")

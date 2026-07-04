@@ -12,7 +12,7 @@ import pandas as pd
 
 from run_backtest import _parse_time_ms, _resolve_data_length, runtime_project_root
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
-from tq_app.backtesting.data import fetch_bitget_candles
+from tq_app.backtesting.data import fetch_market_candles
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
 from tq_app.config_profiles import load_backtest_profile, load_layered_env
 from tq_app.live_trading import LiveTradingConfig
@@ -64,7 +64,8 @@ def main() -> None:
 
     live_config = LiveTradingConfig.from_env(project_root)
     symbol = _str(profile, "symbol", "BTCUSDT").upper()
-    product_type = _str(profile, "product_type", "USDT-FUTURES")
+    provider = _str(profile, "provider", "binance")
+    product_type = _str(profile, "product_type", "UM-FUTURES")
     duration = _int(profile, "duration", 300)
     kline_type = _str(profile, "kline_type", "MARKET")
     start_time_ms = _parse_time_ms(_str(profile, "start_time", ""))
@@ -78,7 +79,8 @@ def main() -> None:
     cache_enabled = _bool(profile, "cache_enabled", False)
     cache_dir = Path(_str(profile, "cache_dir", "data_cache/backtest_klines"))
 
-    bars = fetch_bitget_candles(
+    bars = fetch_market_candles(
+        provider=provider,
         project_root=project_root,
         symbol=symbol,
         product_type=product_type,
@@ -96,7 +98,8 @@ def main() -> None:
         htf_start_time_ms = None
         if start_time_ms is not None:
             htf_start_time_ms = max(start_time_ms - 120 * live_config.htf_hull_duration_seconds * 1000, 0)
-        htf_bars = fetch_bitget_candles(
+        htf_bars = fetch_market_candles(
+            provider=provider,
             project_root=project_root,
             symbol=symbol,
             product_type=product_type,
@@ -111,7 +114,7 @@ def main() -> None:
 
     base_config = BacktestConfig(
         symbol=symbol,
-        provider=_str(profile, "provider", "bitget"),
+        provider=provider,
         duration_seconds=duration,
         initial_equity=_float(profile, "initial_equity", 20_000.0),
         risk_per_trade=_float(profile, "risk_per_trade", 0.01),

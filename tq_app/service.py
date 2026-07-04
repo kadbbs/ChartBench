@@ -11,9 +11,11 @@ import pandas as pd
 
 from tq_app.contracts import (
     format_contract_label,
+    load_binance_contract_catalog,
     load_bitget_contract_catalog,
 )
 from tq_app.data_sources import DataSource, create_data_source, get_available_data_sources
+from tq_app.data_sources.binance import BINANCE_INTERVAL_MAP, load_binance_account_summary
 from tq_app.data_sources.bitget import BITGET_GRANULARITY_MAP, load_bitget_account_summary
 from tq_app.indicators import build_indicator_registry
 from tq_app.models import IndicatorMeta, IndicatorResult
@@ -31,6 +33,7 @@ DEFAULT_RANGE_TICKS = 10
 DEFAULT_BRICK_LENGTH = 10000
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 BITGET_PROVIDER = "bitget"
+BINANCE_PROVIDER = "binance"
 
 
 class MarketDataService:
@@ -254,7 +257,12 @@ class MarketDataService:
         if cached is not None:
             return cached
 
-        if provider == BITGET_PROVIDER:
+        if provider == BINANCE_PROVIDER:
+            try:
+                contracts = load_binance_contract_catalog(self.project_root)
+            except Exception:
+                contracts = []
+        elif provider == BITGET_PROVIDER:
             try:
                 contracts = load_bitget_contract_catalog(self.project_root)
             except Exception:
@@ -325,10 +333,11 @@ class MarketDataService:
             return data_source
 
     def _resolve_provider(self, provider: str | None) -> str:
-        candidate = (provider or BITGET_PROVIDER).strip()
-        if candidate and candidate != BITGET_PROVIDER:
-            raise ValueError(f"未知数据源: {candidate}，当前仅支持 {BITGET_PROVIDER}")
-        return BITGET_PROVIDER
+        candidate = (provider or BINANCE_PROVIDER).strip().lower()
+        available = set(get_available_data_sources())
+        if candidate not in available:
+            raise ValueError(f"未知数据源: {candidate}，当前支持: {', '.join(sorted(available))}")
+        return candidate
 
     def _default_symbol_for_provider(self, provider: str) -> str:
         contracts = self._load_contracts(provider)
@@ -344,6 +353,11 @@ class MarketDataService:
         return dict(contract)
 
     def _provider_account(self, provider: str) -> dict[str, Any]:
+        if provider == BINANCE_PROVIDER:
+            try:
+                return load_binance_account_summary(self.project_root)
+            except Exception:
+                return {}
         if provider == BITGET_PROVIDER:
             try:
                 return load_bitget_account_summary(self.project_root)
@@ -353,6 +367,8 @@ class MarketDataService:
 
     @staticmethod
     def _provider_hint(provider: str) -> str:
+        if provider == BINANCE_PROVIDER:
+            return "当前使用 Binance USD-M Futures 公共行情，K 线口径为官方 MARKET 成交价。浏览器只连接本机后端；后端通过 Binance REST 初始化历史 K 线，并通过 Binance WebSocket /market 更新当前 K 线。"
         if provider == BITGET_PROVIDER:
             return "当前使用 Bitget USDT-FUTURES 公共行情，K 线口径默认是官方 MARKET 成交价。浏览器只连接本机后端；后端通过 Bitget REST 初始化历史 K 线，并通过 Bitget WebSocket 更新当前 K 线。"
         return ""
@@ -362,13 +378,15 @@ class MarketDataService:
 
     @staticmethod
     def _duration_options_for_provider(provider: str) -> list[int]:
+        if provider == BINANCE_PROVIDER:
+            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BINANCE_INTERVAL_MAP]
         if provider == BITGET_PROVIDER:
             return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BITGET_GRANULARITY_MAP]
         return DEFAULT_DURATION_OPTIONS
 
     @staticmethod
     def _bar_modes_for_provider(provider: str) -> list[dict[str, Any]]:
-        if provider == BITGET_PROVIDER:
+        if provider in {BINANCE_PROVIDER, BITGET_PROVIDER}:
             return [item for item in DEFAULT_BAR_MODES if item["id"] == "time"]
         return DEFAULT_BAR_MODES
 

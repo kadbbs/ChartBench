@@ -9,16 +9,16 @@
 # 建议：
 # - 这里放大多数场景都一样的默认值。
 # - 每个运行方案的差异放到 config/profiles/*.yaml。
-# - API Key、Secret、Passphrase、邮箱收件人等私人信息继续放 .env。
+# - API Key、Secret、邮箱收件人等私人信息继续放 .env。
 # =============================================================================
 
 
 # ===== 图表 / 行情默认参数 =====
 
-# 当前只支持 bitget。
-TQ_DEFAULT_PROVIDER: bitget
+# 当前主链路使用 binance，保留 bitget provider 方便对比。
+TQ_DEFAULT_PROVIDER: binance
 
-# 默认交易合约。换币种可改成 ETHUSDT、SOLUSDT 等 Bitget U 本位合约代码。
+# 默认交易合约。换币种可改成 ETHUSDT、SOLUSDT 等 Binance USD-M 合约代码。
 TQ_DEFAULT_SYMBOL: BTCUSDT
 
 # 默认 K 线周期，单位秒。常用：180=3m，300=5m，900=15m，3600=1h。
@@ -34,7 +34,7 @@ TQ_DEFAULT_REFRESH_MS: 200
 TQ_DEFAULT_HOST: 0.0.0.0
 TQ_DEFAULT_PORT: 8050
 
-# 当前 Bitget 数据源只支持 time。
+# 当前 Binance/Bitget 数据源只支持 time。
 TQ_DEFAULT_BAR_MODE: time
 
 # Range/Renko 预留参数；当前 time 模式不会用。
@@ -42,26 +42,30 @@ TQ_DEFAULT_RANGE_TICKS: 10
 TQ_DEFAULT_BRICK_LENGTH: 10000
 
 
-# ===== Bitget 行情 / 产品参数 =====
+# ===== Binance 行情 / 产品参数 =====
 
-# 当前项目默认跑 USDT 本位合约。
+# 当前项目默认跑 Binance USD-M 合约。
+BINANCE_DEFAULT_PRODUCT_TYPE: UM-FUTURES
+BINANCE_KLINE_TYPE: MARKET
+BINANCE_FAPI_BASE: https://fapi.binance.com
+BINANCE_WS_MARKET_BASE: wss://fstream.binance.com/market
+
+# Bitget provider 保留为备用对比链路。
 BITGET_DEFAULT_PRODUCT_TYPE: USDT-FUTURES
 BITGET_PRODUCT_TYPES: USDT-FUTURES
-
-# K 线口径：MARKET=成交价，MARK=标记价，INDEX=指数价。
 BITGET_KLINE_TYPE: MARKET
 
 
 # ===== 实盘账户 / 合约参数 =====
 
-# Bitget 产品类型，应与行情产品类型保持一致。
-LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
+# Binance 产品类型，应与行情产品类型保持一致。
+LIVE_TRADING_PRODUCT_TYPE: UM-FUTURES
 
 # 保证金币种。
 LIVE_TRADING_MARGIN_COIN: USDT
 
 # 持仓模式：one_way_mode=单向持仓；hedge_mode=双向持仓。
-# 当前实盘按 Bitget 双向持仓下单：开多 side=buy/tradeSide=open，开空 side=sell/tradeSide=open。
+# 当前实盘按 Binance Hedge Mode 下单：开多 BUY/LONG，开空 SELL/SHORT。
 LIVE_TRADING_POSITION_MODE: hedge_mode
 
 # 保证金模式固定逐仓。当前实盘代码也会强制使用 isolated。
@@ -74,7 +78,7 @@ LIVE_TRADING_MARGIN_AMOUNT: 5
 LIVE_TRADING_LEVERAGE: 10
 
 # 合约账户 USDT 不足时，是否从现货账户自动划转。
-# 真实启用需要 Bitget API Key 开启 Transfer 权限。
+# 真实启用需要 Binance API Key 开启划转权限。
 LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: true
 
 # 自动划转目标比例。1.1 表示合约账户至少保留 margin_amount * 1.1。
@@ -91,7 +95,7 @@ LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0
 # 开仓记录价格来源：mark_price=标记价；bar_close=信号 K 线收盘价。
 LIVE_TRADING_ENTRY_PRICE_SOURCE: mark_price
 
-# 价格小数位和数量小数位，需要按 Bitget 合约规格确认。
+# 价格小数位和数量小数位，需要按 Binance 合约规格确认。
 LIVE_TRADING_PRICE_DECIMALS: 1
 LIVE_TRADING_SIZE_DECIMALS: 4
 
@@ -112,7 +116,7 @@ LIVE_TRADING_ENTRY_TIME_END: 24:00
 LIVE_TRADING_HTF_HULL_FILTER_ENABLED: true
 
 # 高周期周期，单位秒。3600=1h。
-LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 14400
 
 # 信号来源模式：
 # any=Buy/买 或 Sell/卖 任一触发
@@ -138,7 +142,7 @@ LIVE_TRADING_LOCAL_POSITION_ENABLED: true
 # 观察/邮件模式是否也记录虚拟 open 仓位。
 LIVE_TRADING_LOCAL_POSITION_RECORD_OBSERVATION: true
 
-# 真实模式下是否用 Bitget 实际持仓同步本地账本。
+# 真实模式下是否用 Binance 实际持仓同步本地账本。
 LIVE_TRADING_POSITION_SYNC_ENABLED: true
 
 # 持仓同步间隔，单位秒。
@@ -157,7 +161,7 @@ LIVE_TRADING_RISK_EXITS_ENABLED: false
 # 持仓风控检查间隔，单位秒。真实实盘建议 5-10 秒。
 LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
 
-# true=常驻实盘使用 Bitget WebSocket ticker 驱动风控价格更新。
+# true=常驻实盘使用 Binance WebSocket ticker 驱动风控价格更新。
 LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED: true
 
 # WebSocket ticker 超过多少秒没更新就视为过期，并回退 REST ticker。
@@ -166,7 +170,7 @@ LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS: 5
 # 同一仓位风控异常邮件冷却时间，单位秒，避免 API 异常时连续轰炸邮箱。
 LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
 
-# 是否在开仓后立刻设置 Bitget 服务器端灾难止损，作为程序断线/宕机时的兜底。
+# 是否在开仓后立刻设置 Binance 服务器端灾难止损，作为程序断线/宕机时的兜底。
 LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED: true
 
 # true=风控平仓优先只平本策略记录的 managed_size，避免手动同向加仓后被整体平掉。

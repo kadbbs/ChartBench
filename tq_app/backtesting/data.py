@@ -7,6 +7,11 @@ from typing import Any
 import pandas as pd
 from dotenv import load_dotenv
 
+from tq_app.data_sources.binance import (
+    BINANCE_INTERVAL_MAP,
+    MAX_KLINE_LIMIT as BINANCE_MAX_KLINE_LIMIT,
+    _binance_get_json,
+)
 from tq_app.data_sources.bitget import (
     BITGET_GRANULARITY_MAP,
     MAX_CANDLE_LIMIT,
@@ -17,6 +22,179 @@ from tq_app.data_sources.bitget import (
 HISTORY_CANDLE_LIMIT = 200
 HISTORY_MAX_TIME_RANGE_MS = 90 * 24 * 60 * 60 * 1000
 MIN_VALID_CANDLE_TIME_MS = 946_684_800_000
+
+
+def fetch_market_candles(
+    *,
+    provider: str,
+    project_root: Path,
+    symbol: str,
+    product_type: str,
+    duration_seconds: int,
+    data_length: int,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    kline_type: str = "MARKET",
+    cache_enabled: bool = False,
+    cache_dir: Path | None = None,
+) -> pd.DataFrame:
+    provider_name = (provider or "binance").strip().lower()
+    if provider_name == "binance":
+        return fetch_binance_candles(
+            project_root=project_root,
+            symbol=symbol,
+            product_type=product_type,
+            duration_seconds=duration_seconds,
+            data_length=data_length,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            kline_type=kline_type,
+            cache_enabled=cache_enabled,
+            cache_dir=cache_dir,
+        )
+    if provider_name == "bitget":
+        return fetch_bitget_candles(
+            project_root=project_root,
+            symbol=symbol,
+            product_type=product_type,
+            duration_seconds=duration_seconds,
+            data_length=data_length,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            kline_type=kline_type,
+            cache_enabled=cache_enabled,
+            cache_dir=cache_dir,
+        )
+    raise RuntimeError(f"未知回测行情 provider: {provider}")
+
+
+def fetch_binance_candles(
+    *,
+    project_root: Path,
+    symbol: str,
+    product_type: str,
+    duration_seconds: int,
+    data_length: int,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    kline_type: str = "MARKET",
+    cache_enabled: bool = False,
+    cache_dir: Path | None = None,
+) -> pd.DataFrame:
+    load_dotenv(project_root / ".env")
+    interval = BINANCE_INTERVAL_MAP.get(duration_seconds)
+    if interval is None:
+        raise RuntimeError(f"Binance 暂不支持 {duration_seconds} 秒周期。")
+    if kline_type.upper() != "MARKET":
+        raise RuntimeError("Binance 回测当前只支持 MARKET K 线。")
+
+    duration_ms = int(duration_seconds) * 1000
+    requested_count = max(int(data_length), 1)
+    end_time = end_time_ms or (int(time.time() * 1000) // duration_ms) * duration_ms
+    start_time = start_time_ms if start_time_ms is not None else end_time - requested_count * duration_ms
+    if start_time >= end_time:
+        raise RuntimeError("回测开始时间必须早于结束时间。")
+
+    if cache_enabled:
+        cache_path = _cache_path(
+            project_root=project_root,
+            cache_dir=cache_dir,
+            symbol=symbol,
+            product_type=f"BINANCE_{product_type}",
+            duration_seconds=duration_seconds,
+            kline_type=kline_type,
+        )
+        cached_frame = _read_cache_frame(cache_path)
+        cached_slice = _slice_frame(cached_frame, start_time, end_time, requested_count, start_time_ms)
+        if _cache_covers(cached_slice, start_time, end_time, duration_ms, requested_count, start_time_ms):
+            return cached_slice
+        fetched_frames = [
+            _fetch_binance_candles_online(
+                project_root=project_root,
+                symbol=symbol,
+                duration_seconds=duration_seconds,
+                requested_count=_range_count(missing_start, missing_end, duration_ms),
+                start_time=missing_start,
+                end_time=missing_end,
+                start_time_ms=missing_start,
+            )
+            for missing_start, missing_end in _missing_ranges(cached_frame, start_time, end_time, duration_ms)
+        ]
+        frame = _merge_frames(cached_frame, *fetched_frames)
+        _write_cache_frame(cache_path, frame)
+        final_slice = _slice_frame(frame, start_time, end_time, requested_count, start_time_ms)
+        if not _cache_covers(final_slice, start_time, end_time, duration_ms, requested_count, start_time_ms):
+            _assert_time_range_covered(final_slice, start_time, end_time, duration_ms, symbol)
+        return final_slice
+
+    return _fetch_binance_candles_online(
+        project_root=project_root,
+        symbol=symbol,
+        duration_seconds=duration_seconds,
+        requested_count=requested_count,
+        start_time=start_time,
+        end_time=end_time,
+        start_time_ms=start_time_ms,
+    )
+
+
+def _fetch_binance_candles_online(
+    *,
+    project_root: Path,
+    symbol: str,
+    duration_seconds: int,
+    requested_count: int,
+    start_time: int,
+    end_time: int,
+    start_time_ms: int | None,
+) -> pd.DataFrame:
+    interval = BINANCE_INTERVAL_MAP.get(duration_seconds)
+    if interval is None:
+        raise RuntimeError(f"Binance 暂不支持 {duration_seconds} 秒周期。")
+    duration_ms = int(duration_seconds) * 1000
+    rows: list[list[Any]] = []
+    seen: set[int] = set()
+    cursor = max(start_time - duration_ms, 0) if start_time_ms is not None else start_time
+    cursor = (cursor // duration_ms) * duration_ms
+    effective_end_time = (end_time // duration_ms) * duration_ms
+    if effective_end_time <= cursor:
+        effective_end_time = cursor + duration_ms
+    while cursor < effective_end_time:
+        limit = min(BINANCE_MAX_KLINE_LIMIT, max(int((effective_end_time - cursor) // duration_ms), 1))
+        payload = _binance_get_json(
+            "/fapi/v1/klines",
+            {
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "startTime": cursor,
+                "endTime": effective_end_time,
+                "limit": limit,
+            },
+            project_root=project_root,
+        )
+        batch = payload if isinstance(payload, list) else []
+        if not batch:
+            break
+        for item in batch:
+            if not item or len(item) < 6:
+                continue
+            ts = int(item[0])
+            if ts in seen or ts < start_time or ts > end_time:
+                continue
+            seen.add(ts)
+            rows.append(item)
+        next_cursor = int(batch[-1][0]) + duration_ms
+        if next_cursor <= cursor:
+            break
+        cursor = next_cursor
+
+    if not rows:
+        raise RuntimeError(f"Binance 中暂无 {symbol} 的可用 K 线。")
+    frame = rows_to_frame(rows)
+    if start_time_ms is None:
+        return frame.tail(requested_count).reset_index(drop=True)
+    _assert_time_range_covered(frame, start_time, end_time, duration_ms, symbol)
+    return frame.reset_index(drop=True)
 
 
 def fetch_bitget_candles(
