@@ -2165,10 +2165,13 @@ async function fetchJson(url) {
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
-  return ["binance", "bitget"].includes(provider) && barMode === "time";
+  return ["tianqin", "binance", "bitget"].includes(provider) && barMode === "time";
 }
 
 function wsIntervalForProvider(provider, durationSeconds) {
+  if (provider === "tianqin" && durationSeconds > 0 && durationSeconds <= 86400) {
+    return String(durationSeconds);
+  }
   const providerIntervals = {
     binance: {
       60: "1m",
@@ -2759,7 +2762,7 @@ function isIndicatorEnabled(indicatorId) {
 function buildDefaultTerminalTemplate() {
   return {
     provider: state.config?.provider || "binance",
-    symbol: state.config?.symbol || "BTCUSDT",
+    symbol: state.config?.symbol || "SHFE.cu2607",
     duration_seconds: state.config?.duration_seconds || 60,
     bar_mode: state.config?.bar_mode || "time",
     range_ticks: state.config?.range_ticks || 10,

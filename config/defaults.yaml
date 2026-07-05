@@ -15,10 +15,14 @@
 
 # ===== 图表 / 行情默认参数 =====
 
-# 当前主链路使用 binance，保留 bitget provider 方便对比。
+# 全局默认 provider 仍给实盘/回测使用；图表可以用下面的 TQ_CHART_* 单独覆盖。
 TQ_DEFAULT_PROVIDER: binance
 
-# 默认交易合约。换币种可改成 ETHUSDT、SOLUSDT 等 Binance USD-M 合约代码。
+# 图表默认使用天勤量化行情，不影响实盘/回测入口。
+TQ_CHART_DEFAULT_PROVIDER: tianqin
+TQ_CHART_DEFAULT_SYMBOL: SHFE.cu2607
+
+# 默认交易合约。实盘/回测默认仍是 Binance USD-M 合约代码。
 TQ_DEFAULT_SYMBOL: BTCUSDT
 
 # 默认 K 线周期，单位秒。常用：180=3m，300=5m，900=15m，3600=1h。
@@ -34,12 +38,20 @@ TQ_DEFAULT_REFRESH_MS: 200
 TQ_DEFAULT_HOST: 0.0.0.0
 TQ_DEFAULT_PORT: 8050
 
-# 当前 Binance/Bitget 数据源只支持 time。
+# 当前 Tianqin/Binance/Bitget 数据源只支持 time。
 TQ_DEFAULT_BAR_MODE: time
 
 # Range/Renko 预留参数；当前 time 模式不会用。
 TQ_DEFAULT_RANGE_TICKS: 10
 TQ_DEFAULT_BRICK_LENGTH: 10000
+
+
+# ===== 天勤量化图表行情参数 =====
+
+# 天勤合约代码示例：SHFE.cu2607、DCE.m2609、CZCE.SR601。
+# 私密账号密码请放 .env：TIANQIN_USERNAME / TIANQIN_PASSWORD。
+TIANQIN_DEFAULT_SYMBOL: SHFE.cu2607
+TIANQIN_SYMBOLS: SHFE.cu2607,DCE.m2609,CZCE.SR601,SHFE.rb2601
 
 
 # ===== Binance 行情 / 产品参数 =====

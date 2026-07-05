@@ -1,6 +1,6 @@
 # 图表模块
 
-图表模块用于查看 Binance USD-M 合约行情、K 线、成交量和指标信号。它是实盘和回测共用信号体系的可视化入口。
+图表模块用于查看行情 K 线、成交量和指标信号。当前图表默认使用天勤量化 TqSdk 数据；实盘和回测入口仍保持 Binance 链路。
 
 ## 入口
 
@@ -22,10 +22,16 @@ http://0.0.0.0:8050
 
 ## 常用命令
 
-指定合约和周期：
+指定天勤合约和周期：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT --duration 300 --length 800
+./myvenv/bin/python web_tq_chart.py --symbol SHFE.cu2607 --duration 300 --length 800
+```
+
+临时切回 Binance 图表：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --provider binance --symbol BTCUSDT --duration 300
 ```
 
 指定监听地址和端口：
@@ -39,6 +45,8 @@ http://0.0.0.0:8050
 图表默认配置放在 `config/defaults.yaml`：
 
 ```yaml
+TQ_CHART_DEFAULT_PROVIDER: tianqin
+TQ_CHART_DEFAULT_SYMBOL: SHFE.cu2607
 TQ_DEFAULT_PROVIDER: binance
 TQ_DEFAULT_SYMBOL: BTCUSDT
 TQ_DEFAULT_DURATION_SECONDS: 300
@@ -47,12 +55,20 @@ TQ_DEFAULT_REFRESH_MS: 200
 TQ_DEFAULT_HOST: 0.0.0.0
 TQ_DEFAULT_PORT: 8050
 TQ_DEFAULT_BAR_MODE: time
+TIANQIN_SYMBOLS: SHFE.cu2607,DCE.m2609,CZCE.SR601,SHFE.rb2601
 ```
 
-命令行参数优先级最高。例如临时看 SOL：
+天勤账号密码放 `.env`：
+
+```env
+TIANQIN_USERNAME=
+TIANQIN_PASSWORD=
+```
+
+命令行参数优先级最高。例如临时看沪铜：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT
+./myvenv/bin/python web_tq_chart.py --symbol SHFE.cu2607
 ```
 
 ## 支持的图表模式
@@ -66,7 +82,7 @@ range  # Range Bar 预留
 renko  # Renko 预留
 ```
 
-Binance 当前主链路建议使用 `time`。
+天勤当前图表链路建议使用 `time`。
 
 ## Web API
 
@@ -93,8 +109,8 @@ curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
 
 1. `web_tq_chart.py` 加载 `config/defaults.yaml` 和 `.env`。
 2. 创建 `MarketDataService`。
-3. `MarketDataService` 创建 Binance 数据源。
-4. 数据源通过 Binance REST 拉取历史 K 线，并通过 WebSocket / SSE 推送更新。
+3. `MarketDataService` 创建天勤数据源。
+4. 数据源通过 `TqApi.get_kline_serial()` 订阅 K 线，并用 `wait_update()` 驱动实时更新。
 5. 服务计算指标。
 6. Flask API 返回前端可直接渲染的 snapshot。
 
@@ -104,7 +120,7 @@ curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
 web_tq_chart.py
 tq_app/web.py
 tq_app/service.py
-tq_app/data_sources/binance.py
+tq_app/data_sources/tianqin.py
 tq_app/indicators/
 custom_indicators.py
 static/app.js
@@ -132,19 +148,19 @@ macd
 
 ## 合约切换
 
-常见 USD-M 永续可以直接用 Binance 合约代码：
+天勤合约代码使用 TqSdk 格式：
 
 ```text
-BTCUSDT
-ETHUSDT
-SOLUSDT
-DOGEUSDT
+SHFE.cu2607
+DCE.m2609
+CZCE.SR601
+SHFE.rb2601
 ```
 
 命令行示例：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol SOLUSDT
+./myvenv/bin/python web_tq_chart.py --symbol DCE.m2609
 ```
 
 ## 故障排查
@@ -159,7 +175,8 @@ DOGEUSDT
 如果图表没有数据：
 
 - 看 `/api/health`。
-- 确认合约代码是 Binance USD-M 合约。
-- 确认 `TQ_DEFAULT_PROVIDER` 是 `binance`。
-- 确认 `BINANCE_DEFAULT_PRODUCT_TYPE` 是 `UM-FUTURES`。
+- 确认已安装 `tqsdk`。
+- 确认 `.env` 已配置 `TIANQIN_USERNAME` / `TIANQIN_PASSWORD`。
+- 确认合约代码是 TqSdk 支持的合约代码。
+- 确认 `TQ_CHART_DEFAULT_PROVIDER` 是 `tianqin`。
 - 网络异常时重启图表进程。

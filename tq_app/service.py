@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict
+import json
 from pathlib import Path
 import threading
 import time
@@ -17,6 +19,11 @@ from tq_app.contracts import (
 from tq_app.data_sources import DataSource, create_data_source, get_available_data_sources
 from tq_app.data_sources.binance import BINANCE_INTERVAL_MAP, load_binance_account_summary
 from tq_app.data_sources.bitget import BITGET_GRANULARITY_MAP, load_bitget_account_summary
+from tq_app.data_sources.tianqin import (
+    TIANQIN_MAX_DURATION_SECONDS,
+    load_tianqin_account_summary,
+    load_tianqin_contract_catalog,
+)
 from tq_app.indicators import build_indicator_registry
 from tq_app.models import IndicatorMeta, IndicatorResult
 
@@ -31,9 +38,13 @@ DEFAULT_BAR_MODES = [
 ]
 DEFAULT_RANGE_TICKS = 10
 DEFAULT_BRICK_LENGTH = 10000
+DATA_SOURCE_IDLE_TTL_SECONDS = 10 * 60
+DATA_SOURCE_MAX_COUNT = 8
+SNAPSHOT_CACHE_MAX_ITEMS = 64
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 BITGET_PROVIDER = "bitget"
 BINANCE_PROVIDER = "binance"
+TIANQIN_PROVIDER = "tianqin"
 
 
 class MarketDataService:
@@ -60,6 +71,9 @@ class MarketDataService:
         self.range_ticks = range_ticks
         self._source_lock = threading.Lock()
         self._data_sources: dict[tuple[str, str, int, str, int, int, int], DataSource] = {}
+        self._data_source_last_used: dict[tuple[str, str, int, str, int, int, int], float] = {}
+        self._snapshot_cache_lock = threading.Lock()
+        self._snapshot_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._contracts_by_provider: dict[str, list[dict[str, Any]]] = {}
         self.indicators = build_indicator_registry(project_root)
 
@@ -78,6 +92,9 @@ class MarketDataService:
         with self._source_lock:
             data_sources = list(self._data_sources.values())
             self._data_sources.clear()
+            self._data_source_last_used.clear()
+        with self._snapshot_cache_lock:
+            self._snapshot_cache.clear()
         for data_source in data_sources:
             data_source.stop()
 
@@ -194,6 +211,22 @@ class MarketDataService:
             effective_data_length,
         )
         bars, source_status = data_source.get_bars_with_status()
+        cache_key = self._snapshot_cache_key(
+            provider=effective_provider,
+            symbol=effective_symbol,
+            duration_seconds=effective_duration,
+            bar_mode=effective_bar_mode,
+            range_ticks=effective_range_ticks,
+            brick_length=effective_brick_length,
+            data_length=effective_data_length,
+            indicator_ids=selected,
+            indicator_params=all_params,
+            source_version=int(source_status.get("version") or 0),
+        )
+        cached_snapshot = self._cached_snapshot(cache_key, source_status)
+        if cached_snapshot is not None:
+            return cached_snapshot
+
         normalized = self._with_chart_time(bars, effective_bar_mode)
 
         results: list[IndicatorResult] = []
@@ -205,7 +238,7 @@ class MarketDataService:
         last_close = float(normalized.iloc[-1]["close"])
         prev_close = float(normalized.iloc[-2]["close"]) if len(normalized) > 1 else last_close
 
-        return {
+        snapshot = {
             "symbol": effective_symbol,
             "symbol_label": self._symbol_label(effective_provider, effective_symbol),
             "provider": effective_provider,
@@ -227,6 +260,8 @@ class MarketDataService:
             "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
             "stream": source_status,
         }
+        self._store_snapshot_cache(cache_key, snapshot)
+        return snapshot
 
     def wait_for_update(
         self,
@@ -257,7 +292,12 @@ class MarketDataService:
         if cached is not None:
             return cached
 
-        if provider == BINANCE_PROVIDER:
+        if provider == TIANQIN_PROVIDER:
+            try:
+                contracts = load_tianqin_contract_catalog(self.project_root)
+            except Exception:
+                contracts = []
+        elif provider == BINANCE_PROVIDER:
             try:
                 contracts = load_binance_contract_catalog(self.project_root)
             except Exception:
@@ -315,7 +355,9 @@ class MarketDataService:
             raise ValueError("Data Length 必须大于 0。")
 
         key = (provider, symbol, duration_seconds, bar_mode, range_ticks, brick_length, data_length)
+        stale_sources: list[DataSource] = []
         with self._source_lock:
+            now = time.monotonic()
             data_source = self._data_sources.get(key)
             if data_source is None:
                 data_source = create_data_source(
@@ -330,7 +372,93 @@ class MarketDataService:
                 )
                 data_source.start()
                 self._data_sources[key] = data_source
-            return data_source
+            self._data_source_last_used[key] = now
+            stale_sources = self._pop_stale_data_sources_locked(now, keep_key=key)
+        for stale_source in stale_sources:
+            stale_source.stop()
+        return data_source
+
+    def _pop_stale_data_sources_locked(
+        self,
+        now: float,
+        *,
+        keep_key: tuple[str, str, int, str, int, int, int],
+    ) -> list[DataSource]:
+        stale_keys = [
+            key
+            for key, last_used in self._data_source_last_used.items()
+            if key != keep_key and now - last_used > DATA_SOURCE_IDLE_TTL_SECONDS
+        ]
+        if len(self._data_sources) - len(stale_keys) > DATA_SOURCE_MAX_COUNT:
+            candidates = sorted(
+                (
+                    (last_used, key)
+                    for key, last_used in self._data_source_last_used.items()
+                    if key != keep_key and key not in stale_keys
+                ),
+                key=lambda item: item[0],
+            )
+            overflow = len(self._data_sources) - len(stale_keys) - DATA_SOURCE_MAX_COUNT
+            stale_keys.extend(key for _last_used, key in candidates[:max(overflow, 0)])
+
+        stale_sources: list[DataSource] = []
+        for stale_key in stale_keys:
+            source = self._data_sources.pop(stale_key, None)
+            self._data_source_last_used.pop(stale_key, None)
+            if source is not None:
+                stale_sources.append(source)
+        if stale_sources:
+            self._clear_snapshot_cache()
+        return stale_sources
+
+    def _snapshot_cache_key(
+        self,
+        *,
+        provider: str,
+        symbol: str,
+        duration_seconds: int,
+        bar_mode: str,
+        range_ticks: int,
+        brick_length: int,
+        data_length: int,
+        indicator_ids: list[str],
+        indicator_params: dict[str, dict[str, Any]],
+        source_version: int,
+    ) -> tuple[Any, ...]:
+        params_signature = json.dumps(indicator_params, ensure_ascii=False, sort_keys=True, default=str)
+        return (
+            provider,
+            symbol,
+            duration_seconds,
+            bar_mode,
+            range_ticks,
+            brick_length,
+            data_length,
+            tuple(indicator_ids),
+            params_signature,
+            source_version,
+        )
+
+    def _cached_snapshot(self, cache_key: tuple[Any, ...], source_status: dict[str, Any]) -> dict[str, Any] | None:
+        with self._snapshot_cache_lock:
+            cached = self._snapshot_cache.get(cache_key)
+            if cached is None:
+                return None
+            self._snapshot_cache.pop(cache_key)
+            self._snapshot_cache[cache_key] = cached
+        snapshot = copy.deepcopy(cached)
+        snapshot["stream"] = dict(source_status)
+        return snapshot
+
+    def _store_snapshot_cache(self, cache_key: tuple[Any, ...], snapshot: dict[str, Any]) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache[cache_key] = copy.deepcopy(snapshot)
+            while len(self._snapshot_cache) > SNAPSHOT_CACHE_MAX_ITEMS:
+                self._snapshot_cache.pop(next(iter(self._snapshot_cache)))
+
+    def _clear_snapshot_cache(self) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache.clear()
 
     def _resolve_provider(self, provider: str | None) -> str:
         candidate = (provider or BINANCE_PROVIDER).strip().lower()
@@ -353,6 +481,11 @@ class MarketDataService:
         return dict(contract)
 
     def _provider_account(self, provider: str) -> dict[str, Any]:
+        if provider == TIANQIN_PROVIDER:
+            try:
+                return load_tianqin_account_summary(self.project_root)
+            except Exception:
+                return {}
         if provider == BINANCE_PROVIDER:
             try:
                 return load_binance_account_summary(self.project_root)
@@ -367,6 +500,8 @@ class MarketDataService:
 
     @staticmethod
     def _provider_hint(provider: str) -> str:
+        if provider == TIANQIN_PROVIDER:
+            return "当前使用天勤量化 TqSdk 行情。后端通过 TqApi.get_kline_serial 订阅 K 线，并通过 wait_update 驱动实时刷新；需要在 .env 配置 TIANQIN_USERNAME / TIANQIN_PASSWORD。"
         if provider == BINANCE_PROVIDER:
             return "当前使用 Binance USD-M Futures 公共行情，K 线口径为官方 MARKET 成交价。浏览器只连接本机后端；后端通过 Binance REST 初始化历史 K 线，并通过 Binance WebSocket /market 更新当前 K 线。"
         if provider == BITGET_PROVIDER:
@@ -378,6 +513,8 @@ class MarketDataService:
 
     @staticmethod
     def _duration_options_for_provider(provider: str) -> list[int]:
+        if provider == TIANQIN_PROVIDER:
+            return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds <= TIANQIN_MAX_DURATION_SECONDS]
         if provider == BINANCE_PROVIDER:
             return [seconds for seconds in DEFAULT_DURATION_OPTIONS if seconds in BINANCE_INTERVAL_MAP]
         if provider == BITGET_PROVIDER:
@@ -386,7 +523,7 @@ class MarketDataService:
 
     @staticmethod
     def _bar_modes_for_provider(provider: str) -> list[dict[str, Any]]:
-        if provider in {BINANCE_PROVIDER, BITGET_PROVIDER}:
+        if provider in {TIANQIN_PROVIDER, BINANCE_PROVIDER, BITGET_PROVIDER}:
             return [item for item in DEFAULT_BAR_MODES if item["id"] == "time"]
         return DEFAULT_BAR_MODES
 

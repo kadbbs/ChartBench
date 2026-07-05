@@ -5,6 +5,7 @@ from typing import Callable
 from .base import DataSource
 from .binance import BinanceDataSource
 from .bitget import BitgetDataSource
+from .tianqin import TianqinDataSource
 
 
 DataSourceFactory = Callable[[str, int, int, int, int, str, int], DataSource]
@@ -34,9 +35,22 @@ def _build_binance(
     return BinanceDataSource(symbol, duration_seconds, data_length, brick_length, refresh_ms, bar_mode, range_ticks)
 
 
+def _build_tianqin(
+    symbol: str,
+    duration_seconds: int,
+    data_length: int,
+    brick_length: int,
+    refresh_ms: int,
+    bar_mode: str,
+    range_ticks: int,
+) -> DataSource:
+    return TianqinDataSource(symbol, duration_seconds, data_length, brick_length, refresh_ms, bar_mode, range_ticks)
+
+
 DATA_SOURCE_FACTORIES: dict[str, DataSourceFactory] = {
     "binance": _build_binance,
     "bitget": _build_bitget,
+    "tianqin": _build_tianqin,
 }
 
 

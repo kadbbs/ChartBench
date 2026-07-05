@@ -142,9 +142,11 @@ def listening_summary(host: str, port: int) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     load_layered_env(runtime_project_root())
-    parser = argparse.ArgumentParser(description="Binance 行情浏览器图表工作台")
-    parser.add_argument("--provider", default=env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER), choices=["binance", "bitget"], help="数据源名称")
-    parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL), help="合约代码，例如 BTCUSDT")
+    chart_default_provider = env_default_str("TQ_CHART_DEFAULT_PROVIDER", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER))
+    chart_default_symbol = env_default_str("TQ_CHART_DEFAULT_SYMBOL", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
+    parser = argparse.ArgumentParser(description="行情浏览器图表工作台")
+    parser.add_argument("--provider", default=chart_default_provider, choices=["tianqin", "binance", "bitget"], help="数据源名称")
+    parser.add_argument("--symbol", default=chart_default_symbol, help="合约代码，例如 SHFE.cu2607 或 BTCUSDT")
     parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS), help="K 线周期，单位秒")
     parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH), help="拉取 K 线数量")
     parser.add_argument("--brick-length", type=int, default=env_default_int("TQ_DEFAULT_BRICK_LENGTH", DEFAULT_BRICK_LENGTH), help="Range Bar / Renko 保留砖块数量")
