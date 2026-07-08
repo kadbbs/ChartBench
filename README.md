@@ -150,7 +150,7 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 
 ## 当前默认交易模型
 
-- 图表默认 `provider=tianqin`，默认合约 `SHFE.cu2607`；仅影响 `web_tq_chart.py`。
+- 图表默认 `provider=tianqin`，默认合约 `KQ.m@SHFE.cu`；天勤下拉内置国内期货主连品种，并在账号可用时追加各品种未到期具体合约，均显示中文简称，仅影响 `web_tq_chart.py`。
 - 实盘/回测支持 `provider=binance` 和 `provider=bitget`，默认 `binance`。
 - Binance 默认交易标的 `BTCUSDT`，产品线 `UM-FUTURES`；Bitget 默认产品线 `USDT-FUTURES`。
 - 实盘真实 profile `live_5u` 使用 `5U` 保证金、`10x`、逐仓，并启用 BTC run_0024 持仓风控出场参数。
@@ -168,6 +168,7 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 K 线接口：TqApi.get_kline_serial(symbol, duration_seconds, data_length)
 刷新机制：TqApi.wait_update()
 账号配置：TIANQIN_USERNAME / TIANQIN_PASSWORD
+默认品种：内置 SHFE/DCE/CZCE/INE/GFEX/CFFEX 主连列表，标签形如“沪铜主连 · KQ.m@SHFE.cu”；账号可用时低频查询并缓存未到期具体合约，标签形如“沪铜 · SHFE.cu2607”
 ```
 
 Binance USD-M Futures 链路：

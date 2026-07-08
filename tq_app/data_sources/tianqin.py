@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -14,6 +18,11 @@ TIANQIN_PROVIDER_NAME = "tianqin"
 TIANQIN_MAX_KLINE_LENGTH = 8000
 TIANQIN_MAX_DURATION_SECONDS = 86400
 TIANQIN_READY_TIMEOUT_SECONDS = 30
+TIANQIN_CONTRACT_CATALOG_TTL_SECONDS = 24 * 60 * 60
+TIANQIN_CONTRACT_CATALOG_FAILURE_TTL_SECONDS = 30 * 60
+TIANQIN_CONTRACT_CATALOG_WAIT_SECONDS = 2.0
+TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS = 45.0
+TIANQIN_CONTRACT_CATALOG_OUTPUT_MARKER = "__TIANQIN_CONTRACT_CATALOG__"
 TIANQIN_NO_PROXY_HOSTS = (
     ".shinnytech.com",
     "shinnytech.com",
@@ -21,21 +30,109 @@ TIANQIN_NO_PROXY_HOSTS = (
     "api.shinnytech.com",
     "files.shinnytech.com",
 )
+TIANQIN_DEFAULT_CONTRACTS: tuple[tuple[str, str], ...] = (
+    ("KQ.m@SHFE.cu", "沪铜"),
+    ("KQ.m@SHFE.al", "沪铝"),
+    ("KQ.m@SHFE.zn", "沪锌"),
+    ("KQ.m@SHFE.pb", "沪铅"),
+    ("KQ.m@SHFE.ni", "沪镍"),
+    ("KQ.m@SHFE.sn", "沪锡"),
+    ("KQ.m@SHFE.ao", "氧化铝"),
+    ("KQ.m@SHFE.au", "沪金"),
+    ("KQ.m@SHFE.ag", "沪银"),
+    ("KQ.m@SHFE.rb", "螺纹"),
+    ("KQ.m@SHFE.hc", "热卷"),
+    ("KQ.m@SHFE.ss", "不锈钢"),
+    ("KQ.m@SHFE.fu", "燃油"),
+    ("KQ.m@SHFE.bu", "沥青"),
+    ("KQ.m@SHFE.ru", "橡胶"),
+    ("KQ.m@SHFE.br", "合成胶"),
+    ("KQ.m@SHFE.sp", "纸浆"),
+    ("KQ.m@SHFE.wr", "线材"),
+    ("KQ.m@DCE.i", "铁矿"),
+    ("KQ.m@DCE.j", "焦炭"),
+    ("KQ.m@DCE.jm", "焦煤"),
+    ("KQ.m@DCE.l", "塑料"),
+    ("KQ.m@DCE.v", "PVC"),
+    ("KQ.m@DCE.pp", "PP"),
+    ("KQ.m@DCE.eg", "乙二醇"),
+    ("KQ.m@DCE.eb", "苯乙烯"),
+    ("KQ.m@DCE.pg", "LPG"),
+    ("KQ.m@DCE.lh", "生猪"),
+    ("KQ.m@DCE.a", "豆一"),
+    ("KQ.m@DCE.b", "豆二"),
+    ("KQ.m@DCE.m", "豆粕"),
+    ("KQ.m@DCE.y", "豆油"),
+    ("KQ.m@DCE.p", "棕榈"),
+    ("KQ.m@DCE.c", "玉米"),
+    ("KQ.m@DCE.cs", "淀粉"),
+    ("KQ.m@DCE.jd", "鸡蛋"),
+    ("KQ.m@DCE.rr", "粳米"),
+    ("KQ.m@DCE.fb", "纤板"),
+    ("KQ.m@DCE.bb", "胶板"),
+    ("KQ.m@DCE.lg", "原木"),
+    ("KQ.m@CZCE.CF", "棉花"),
+    ("KQ.m@CZCE.CY", "棉纱"),
+    ("KQ.m@CZCE.SR", "白糖"),
+    ("KQ.m@CZCE.TA", "PTA"),
+    ("KQ.m@CZCE.OI", "菜油"),
+    ("KQ.m@CZCE.RM", "菜粕"),
+    ("KQ.m@CZCE.MA", "甲醇"),
+    ("KQ.m@CZCE.FG", "玻璃"),
+    ("KQ.m@CZCE.SA", "纯碱"),
+    ("KQ.m@CZCE.UR", "尿素"),
+    ("KQ.m@CZCE.PF", "短纤"),
+    ("KQ.m@CZCE.PK", "花生"),
+    ("KQ.m@CZCE.AP", "苹果"),
+    ("KQ.m@CZCE.CJ", "红枣"),
+    ("KQ.m@CZCE.PX", "PX"),
+    ("KQ.m@CZCE.SH", "烧碱"),
+    ("KQ.m@CZCE.PR", "瓶片"),
+    ("KQ.m@CZCE.SF", "硅铁"),
+    ("KQ.m@CZCE.SM", "锰硅"),
+    ("KQ.m@INE.sc", "原油"),
+    ("KQ.m@INE.lu", "低硫燃油"),
+    ("KQ.m@INE.nr", "20号胶"),
+    ("KQ.m@INE.bc", "国际铜"),
+    ("KQ.m@INE.ec", "集运欧线"),
+    ("KQ.m@GFEX.si", "工业硅"),
+    ("KQ.m@GFEX.lc", "碳酸锂"),
+    ("KQ.m@GFEX.ps", "多晶硅"),
+    ("KQ.m@CFFEX.IF", "沪深300"),
+    ("KQ.m@CFFEX.IH", "上证50"),
+    ("KQ.m@CFFEX.IC", "中证500"),
+    ("KQ.m@CFFEX.IM", "中证1000"),
+    ("KQ.m@CFFEX.T", "10年国债"),
+    ("KQ.m@CFFEX.TF", "5年国债"),
+    ("KQ.m@CFFEX.TS", "2年国债"),
+    ("KQ.m@CFFEX.TL", "30年国债"),
+)
+TIANQIN_DOMESTIC_FUTURE_EXCHANGES = {"SHFE", "DCE", "CZCE", "INE", "GFEX", "CFFEX"}
+_CONTRACT_CATALOG_LOCK = threading.Lock()
+_CONTRACT_CATALOG_CACHE: list[dict[str, Any]] = []
+_CONTRACT_CATALOG_CACHE_AT = 0.0
+_CONTRACT_CATALOG_ERROR: str | None = None
+_CONTRACT_CATALOG_ERROR_AT = 0.0
+_CONTRACT_CATALOG_REFRESH_PROCESS: subprocess.Popen[str] | None = None
+_CONTRACT_CATALOG_REFRESH_STARTED_AT = 0.0
 
 
 def load_tianqin_contract_catalog(project_root: Any = None) -> list[dict[str, Any]]:
-    del project_root
-    symbols = _configured_symbols()
-    return [
-        {
-            "symbol": symbol,
-            "name": symbol,
-            "label": f"{symbol} · TIANQIN",
-            "exchange_id": symbol.split(".", 1)[0].upper() if "." in symbol else "TIANQIN",
-            "product_id": "TQSDK",
-        }
-        for symbol in symbols
-    ]
+    root = Path(project_root) if project_root is not None else Path.cwd()
+    _collect_contract_catalog_process()
+    configured_symbols = _configured_symbols()
+    if configured_symbols is not None:
+        return _sort_tianqin_contracts([_tianqin_contract(symbol) for symbol in configured_symbols])
+
+    base_contracts = [_tianqin_contract(symbol) for symbol in _default_catalog_symbols()]
+    dynamic_contracts = _cached_contract_catalog()
+    refresh_started = _maybe_start_contract_catalog_refresh(root)
+    if refresh_started and not dynamic_contracts:
+        wait_seconds = _contract_catalog_wait_seconds()
+        if wait_seconds > 0:
+            _wait_for_contract_catalog_refresh(wait_seconds)
+            dynamic_contracts = _cached_contract_catalog()
+    return _sort_tianqin_contracts(_merge_contracts(base_contracts, dynamic_contracts))
 
 
 def load_tianqin_account_summary(project_root: Any = None) -> dict[str, Any]:
@@ -46,14 +143,343 @@ def load_tianqin_account_summary(project_root: Any = None) -> dict[str, Any]:
     return {"exchange": "TIANQIN", "configured": True, "username": username}
 
 
-def _configured_symbols() -> list[str]:
-    raw = (
-        os.getenv("TIANQIN_SYMBOLS", "").strip()
-        or os.getenv("TQ_CHART_DEFAULT_SYMBOL", "").strip()
-        or os.getenv("TIANQIN_DEFAULT_SYMBOL", "").strip()
-    )
+def _configured_symbols() -> list[str] | None:
+    raw = os.getenv("TIANQIN_SYMBOLS", "").strip()
+    if not raw:
+        return None
     symbols = [item.strip() for item in raw.split(",") if item.strip()]
-    return symbols or ["SHFE.cu2607"]
+    return list(dict.fromkeys(symbols)) or None
+
+
+def _default_catalog_symbols() -> list[str]:
+    preferred = (
+        os.getenv("TQ_CHART_DEFAULT_SYMBOL", "").strip()
+        or os.getenv("TIANQIN_DEFAULT_SYMBOL", "").strip()
+        or TIANQIN_DEFAULT_CONTRACTS[0][0]
+    )
+    symbols = [preferred, *(symbol for symbol, _short_name in TIANQIN_DEFAULT_CONTRACTS)]
+    return list(dict.fromkeys(symbols)) or [TIANQIN_DEFAULT_CONTRACTS[0][0]]
+
+
+def _tianqin_contract(symbol: str) -> dict[str, Any]:
+    exchange_id, variety_id = _parse_tianqin_symbol(symbol)
+    short_name = TIANQIN_SHORT_NAME_BY_KEY.get((exchange_id, variety_id), symbol)
+    is_main_continuous = symbol.startswith("KQ.m@")
+    product_id = "主连" if is_main_continuous else "期货"
+    display_name = f"{short_name}主连" if is_main_continuous and short_name != symbol else short_name
+    label = f"{display_name} · {symbol}" if short_name != symbol else f"{symbol} · TIANQIN"
+    return {
+        "symbol": symbol,
+        "name": display_name,
+        "label": label,
+        "exchange_id": exchange_id or "TIANQIN",
+        "product_id": product_id,
+        "short_name": short_name,
+        "variety_id": variety_id,
+    }
+
+
+def _parse_tianqin_symbol(symbol: str) -> tuple[str, str]:
+    raw = symbol.strip()
+    if raw.startswith("KQ.m@"):
+        raw = raw.split("@", 1)[1]
+    if "." not in raw:
+        return "TIANQIN", raw.lower()
+    exchange, contract = raw.split(".", 1)
+    variety = "".join(char for char in contract if char.isalpha())
+    return exchange.upper(), variety.lower()
+
+
+def _symbol_lookup_key(symbol: str) -> tuple[str, str]:
+    return _parse_tianqin_symbol(symbol)
+
+
+TIANQIN_SHORT_NAME_BY_KEY = {
+    _symbol_lookup_key(symbol): short_name for symbol, short_name in TIANQIN_DEFAULT_CONTRACTS
+}
+TIANQIN_VARIETY_ORDER_BY_KEY = {
+    _symbol_lookup_key(symbol): index for index, (symbol, _short_name) in enumerate(TIANQIN_DEFAULT_CONTRACTS)
+}
+
+
+def _cached_contract_catalog() -> list[dict[str, Any]]:
+    with _CONTRACT_CATALOG_LOCK:
+        return [dict(item) for item in _CONTRACT_CATALOG_CACHE]
+
+
+def _merge_contracts(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for contract in group:
+            symbol = str(contract.get("symbol") or "").strip()
+            if symbol and symbol not in merged:
+                merged[symbol] = dict(contract)
+    return list(merged.values())
+
+
+def _sort_tianqin_contracts(contracts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(contracts, key=_tianqin_contract_sort_key)
+
+
+def _tianqin_contract_sort_key(contract: dict[str, Any]) -> tuple[Any, ...]:
+    symbol = str(contract.get("symbol") or "")
+    exchange_id, variety_id = _parse_tianqin_symbol(symbol)
+    variety_order = TIANQIN_VARIETY_ORDER_BY_KEY.get((exchange_id, variety_id), 9999)
+    is_main_continuous = 0 if symbol.startswith("KQ.m@") else 1
+    return (
+        variety_order,
+        exchange_id,
+        variety_id,
+        is_main_continuous,
+        _delivery_sort_value(symbol),
+        symbol,
+    )
+
+
+def _delivery_sort_value(symbol: str) -> int:
+    raw = symbol.split(".", 1)[1] if "." in symbol else symbol
+    digits = "".join(char for char in raw if char.isdigit())
+    return int(digits) if digits else -1
+
+
+def _maybe_start_contract_catalog_refresh(project_root: Path) -> bool:
+    global _CONTRACT_CATALOG_ERROR
+    global _CONTRACT_CATALOG_ERROR_AT
+    global _CONTRACT_CATALOG_REFRESH_PROCESS
+    global _CONTRACT_CATALOG_REFRESH_STARTED_AT
+    _collect_contract_catalog_process()
+    if not _env_bool("TIANQIN_INCLUDE_FUTURE_CONTRACTS", default=True):
+        return False
+    username, password = _configured_auth()
+    if not username or not password:
+        return False
+
+    now = time.monotonic()
+    ttl_seconds = _env_float("TIANQIN_CONTRACT_CATALOG_TTL_SECONDS", TIANQIN_CONTRACT_CATALOG_TTL_SECONDS)
+    failure_ttl_seconds = _env_float(
+        "TIANQIN_CONTRACT_CATALOG_FAILURE_TTL_SECONDS",
+        TIANQIN_CONTRACT_CATALOG_FAILURE_TTL_SECONDS,
+    )
+    with _CONTRACT_CATALOG_LOCK:
+        if _CONTRACT_CATALOG_CACHE and now - _CONTRACT_CATALOG_CACHE_AT < ttl_seconds:
+            return False
+        if _CONTRACT_CATALOG_REFRESH_PROCESS is not None:
+            return False
+        if _CONTRACT_CATALOG_ERROR_AT and now - _CONTRACT_CATALOG_ERROR_AT < failure_ttl_seconds:
+            return False
+        command = _contract_catalog_command(project_root)
+        env = os.environ.copy()
+        try:
+            _CONTRACT_CATALOG_REFRESH_PROCESS = subprocess.Popen(
+                command,
+                cwd=str(project_root),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            _CONTRACT_CATALOG_ERROR = f"启动天勤量化合约目录查询失败: {exc}"
+            _CONTRACT_CATALOG_ERROR_AT = now
+            return False
+        _CONTRACT_CATALOG_REFRESH_STARTED_AT = now
+        return True
+
+
+def _contract_catalog_command(project_root: Path) -> list[str]:
+    code = (
+        "from pathlib import Path\n"
+        "import json\n"
+        "from tq_app.config_profiles import load_layered_env\n"
+        "from tq_app.data_sources.tianqin import "
+        "_fetch_tianqin_future_contracts, TIANQIN_CONTRACT_CATALOG_OUTPUT_MARKER\n"
+        f"root = Path({str(project_root)!r})\n"
+        "load_layered_env(root)\n"
+        "contracts = _fetch_tianqin_future_contracts()\n"
+        "symbols = [item['symbol'] for item in contracts]\n"
+        "print(TIANQIN_CONTRACT_CATALOG_OUTPUT_MARKER + json.dumps(symbols, ensure_ascii=False), flush=True)\n"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _wait_for_contract_catalog_refresh(timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        _collect_contract_catalog_process()
+        with _CONTRACT_CATALOG_LOCK:
+            if _CONTRACT_CATALOG_REFRESH_PROCESS is None:
+                return
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+    _collect_contract_catalog_process()
+
+
+def _collect_contract_catalog_process() -> None:
+    global _CONTRACT_CATALOG_REFRESH_PROCESS
+    global _CONTRACT_CATALOG_REFRESH_STARTED_AT
+    with _CONTRACT_CATALOG_LOCK:
+        process = _CONTRACT_CATALOG_REFRESH_PROCESS
+        started_at = _CONTRACT_CATALOG_REFRESH_STARTED_AT
+    if process is None:
+        return
+
+    timeout_seconds = _env_float(
+        "TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS",
+        TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS,
+    )
+    if process.poll() is None:
+        if time.monotonic() - started_at <= timeout_seconds:
+            return
+        try:
+            process.kill()
+        except Exception:
+            pass
+        stdout, stderr = _communicate_contract_catalog_process(process)
+        _finish_contract_catalog_process(
+            process,
+            contracts=None,
+            error=_contract_catalog_error_message(stdout, stderr, process.returncode, timed_out=True),
+        )
+        return
+
+    stdout, stderr = _communicate_contract_catalog_process(process)
+    try:
+        contracts = _parse_contract_catalog_output(stdout) if process.returncode == 0 else []
+        if not contracts:
+            raise RuntimeError(_contract_catalog_error_message(stdout, stderr, process.returncode))
+    except Exception as exc:
+        _finish_contract_catalog_process(process, contracts=None, error=str(exc))
+        return
+    _finish_contract_catalog_process(process, contracts=contracts, error=None)
+
+
+def _communicate_contract_catalog_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        return process.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            return process.communicate(timeout=1)
+        except Exception:
+            return "", ""
+
+
+def _finish_contract_catalog_process(
+    process: subprocess.Popen[str],
+    *,
+    contracts: list[dict[str, Any]] | None,
+    error: str | None,
+) -> None:
+    global _CONTRACT_CATALOG_CACHE
+    global _CONTRACT_CATALOG_CACHE_AT
+    global _CONTRACT_CATALOG_ERROR
+    global _CONTRACT_CATALOG_ERROR_AT
+    global _CONTRACT_CATALOG_REFRESH_PROCESS
+    global _CONTRACT_CATALOG_REFRESH_STARTED_AT
+    with _CONTRACT_CATALOG_LOCK:
+        if _CONTRACT_CATALOG_REFRESH_PROCESS is not process:
+            return
+        if contracts is not None:
+            _CONTRACT_CATALOG_CACHE = contracts
+            _CONTRACT_CATALOG_CACHE_AT = time.monotonic()
+            _CONTRACT_CATALOG_ERROR = None
+            _CONTRACT_CATALOG_ERROR_AT = 0.0
+        elif error:
+            _CONTRACT_CATALOG_ERROR = error
+            _CONTRACT_CATALOG_ERROR_AT = time.monotonic()
+        _CONTRACT_CATALOG_REFRESH_PROCESS = None
+        _CONTRACT_CATALOG_REFRESH_STARTED_AT = 0.0
+
+
+def _parse_contract_catalog_output(stdout: str) -> list[dict[str, Any]]:
+    payload = ""
+    for line in reversed(stdout.splitlines()):
+        if line.startswith(TIANQIN_CONTRACT_CATALOG_OUTPUT_MARKER):
+            payload = line[len(TIANQIN_CONTRACT_CATALOG_OUTPUT_MARKER):]
+            break
+    if not payload:
+        raise RuntimeError("天勤量化未返回未到期期货合约列表。")
+    raw_symbols = json.loads(payload)
+    if not isinstance(raw_symbols, list):
+        raise RuntimeError("天勤量化合约目录返回格式不正确。")
+    contracts: list[dict[str, Any]] = []
+    for raw_symbol in raw_symbols:
+        if isinstance(raw_symbol, dict):
+            symbol = str(raw_symbol.get("symbol") or "").strip()
+        else:
+            symbol = str(raw_symbol or "").strip()
+        if symbol:
+            contracts.append(_tianqin_contract(symbol))
+    if not contracts:
+        raise RuntimeError("天勤量化未返回未到期期货合约列表。")
+    return _sort_tianqin_contracts(_merge_contracts(contracts))
+
+
+def _contract_catalog_error_message(
+    stdout: str,
+    stderr: str,
+    returncode: int | None,
+    *,
+    timed_out: bool = False,
+) -> str:
+    if timed_out:
+        timeout_seconds = _env_float(
+            "TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS",
+            TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS,
+        )
+        return f"天勤量化合约目录查询超过 {timeout_seconds:g} 秒。"
+    detail = (stderr or stdout or "").strip()
+    if detail:
+        return detail[-800:]
+    return f"天勤量化合约目录查询失败，退出码: {returncode}"
+
+
+def _fetch_tianqin_future_contracts() -> list[dict[str, Any]]:
+    api: Any | None = None
+    try:
+        api = _create_api()
+        symbols = [str(symbol).strip() for symbol in api.query_quotes(ins_class="FUTURE", expired=False)]
+        contracts = [
+            _tianqin_contract(symbol)
+            for symbol in symbols
+            if symbol and _is_domestic_future_symbol(symbol)
+        ]
+        return _sort_tianqin_contracts(_merge_contracts(contracts))
+    finally:
+        if api is not None:
+            try:
+                api.close()
+            except Exception:
+                pass
+
+
+def _is_domestic_future_symbol(symbol: str) -> bool:
+    exchange_id, variety_id = _parse_tianqin_symbol(symbol)
+    return exchange_id in TIANQIN_DOMESTIC_FUTURE_EXCHANGES and bool(variety_id)
+
+
+def _contract_catalog_wait_seconds() -> float:
+    return _env_float("TIANQIN_CONTRACT_CATALOG_WAIT_SECONDS", TIANQIN_CONTRACT_CATALOG_WAIT_SECONDS)
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
 
 
 def _configured_auth() -> tuple[str, str]:

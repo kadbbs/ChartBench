@@ -290,7 +290,7 @@ class MarketDataService:
 
     def _load_contracts(self, provider: str) -> list[dict[str, Any]]:
         cached = self._contracts_by_provider.get(provider)
-        if cached is not None:
+        if cached is not None and provider != TIANQIN_PROVIDER:
             return cached
 
         if provider == TIANQIN_PROVIDER:
@@ -326,7 +326,8 @@ class MarketDataService:
             ]
         elif not contracts and fallback_symbol:
             contracts = [self._fallback_contract(provider, fallback_symbol)]
-        self._contracts_by_provider[provider] = contracts
+        if provider != TIANQIN_PROVIDER:
+            self._contracts_by_provider[provider] = contracts
         return contracts
 
     def _symbol_label(self, provider: str, symbol: str) -> str:
@@ -488,7 +489,7 @@ class MarketDataService:
             return (
                 os.getenv("TQ_CHART_DEFAULT_SYMBOL", "").strip()
                 or os.getenv("TIANQIN_DEFAULT_SYMBOL", "").strip()
-                or "SHFE.cu2607"
+                or "KQ.m@SHFE.cu"
             )
         return os.getenv("TQ_DEFAULT_SYMBOL", "").strip().upper() or "BTCUSDT"
 

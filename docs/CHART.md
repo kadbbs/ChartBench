@@ -25,7 +25,7 @@ http://0.0.0.0:8050
 指定天勤合约和周期：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol SHFE.cu2607 --duration 300 --length 800
+./myvenv/bin/python web_tq_chart.py --symbol KQ.m@SHFE.cu --duration 300 --length 800
 ```
 
 临时切到 Binance / Bitget 图表：
@@ -47,7 +47,7 @@ http://0.0.0.0:8050
 
 ```yaml
 TQ_CHART_DEFAULT_PROVIDER: tianqin
-TQ_CHART_DEFAULT_SYMBOL: SHFE.cu2607
+TQ_CHART_DEFAULT_SYMBOL: KQ.m@SHFE.cu
 TQ_DEFAULT_PROVIDER: binance
 TQ_DEFAULT_SYMBOL: BTCUSDT
 TQ_DEFAULT_DURATION_SECONDS: 300
@@ -56,7 +56,12 @@ TQ_DEFAULT_REFRESH_MS: 200
 TQ_DEFAULT_HOST: 0.0.0.0
 TQ_DEFAULT_PORT: 8050
 TQ_DEFAULT_BAR_MODE: time
-TIANQIN_SYMBOLS: SHFE.cu2607,DCE.m2609,CZCE.SR601,SHFE.rb2601
+TIANQIN_SYMBOLS:
+TIANQIN_INCLUDE_FUTURE_CONTRACTS: true
+TIANQIN_CONTRACT_CATALOG_TTL_SECONDS: 86400
+TIANQIN_CONTRACT_CATALOG_FAILURE_TTL_SECONDS: 1800
+TIANQIN_CONTRACT_CATALOG_WAIT_SECONDS: 2
+TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS: 45
 ```
 
 天勤账号密码放 `.env`：
@@ -69,7 +74,7 @@ TIANQIN_PASSWORD=
 命令行参数优先级最高。例如临时看沪铜：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol SHFE.cu2607
+./myvenv/bin/python web_tq_chart.py --symbol KQ.m@SHFE.cu
 ```
 
 ## 支持的图表模式
@@ -149,19 +154,23 @@ macd
 
 ## 合约切换
 
-天勤合约代码使用 TqSdk 格式：
+天勤合约代码使用 TqSdk 格式。默认下拉先内置国内期货主连品种；账号可用时，后端会按低频缓存通过 TqSdk 追加未到期具体期货合约。两类合约都会显示中文简称：
 
 ```text
-SHFE.cu2607
-DCE.m2609
-CZCE.SR601
-SHFE.rb2601
+沪铜主连 · KQ.m@SHFE.cu
+沪铜 · SHFE.cu2607
+豆粕主连 · KQ.m@DCE.m
+豆粕 · DCE.m2609
+白糖主连 · KQ.m@CZCE.SR
+白糖 · CZCE.SR601
 ```
+
+如果要固定显示一小组合约，可以在 `.env` 或 `config/defaults.yaml` 里设置 `TIANQIN_SYMBOLS`，用英文逗号分隔；设置后会关闭默认全市场自动目录，只显示你写入的合约。
 
 命令行示例：
 
 ```bash
-./myvenv/bin/python web_tq_chart.py --symbol DCE.m2609
+./myvenv/bin/python web_tq_chart.py --symbol KQ.m@DCE.m
 ```
 
 ## 故障排查

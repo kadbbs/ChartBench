@@ -2762,7 +2762,7 @@ function isIndicatorEnabled(indicatorId) {
 function buildDefaultTerminalTemplate() {
   return {
     provider: state.config?.provider || "binance",
-    symbol: state.config?.symbol || "SHFE.cu2607",
+    symbol: state.config?.symbol || "KQ.m@SHFE.cu",
     duration_seconds: state.config?.duration_seconds || 60,
     bar_mode: state.config?.bar_mode || "time",
     range_ticks: state.config?.range_ticks || 10,
