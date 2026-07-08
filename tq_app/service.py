@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -310,7 +311,9 @@ class MarketDataService:
         else:
             contracts = []
 
-        if not any(item["symbol"] == self.symbol for item in contracts):
+        fallback_symbol = self._fallback_symbol_for_provider(provider)
+        should_include_runtime_symbol = provider == self.provider and self.symbol and not any(item["symbol"] == self.symbol for item in contracts)
+        if should_include_runtime_symbol:
             contracts = [
                 {
                     "symbol": self.symbol,
@@ -321,6 +324,8 @@ class MarketDataService:
                 },
                 *contracts,
             ]
+        elif not contracts and fallback_symbol:
+            contracts = [self._fallback_contract(provider, fallback_symbol)]
         self._contracts_by_provider[provider] = contracts
         return contracts
 
@@ -469,9 +474,43 @@ class MarketDataService:
 
     def _default_symbol_for_provider(self, provider: str) -> str:
         contracts = self._load_contracts(provider)
+        preferred_symbol = self._fallback_symbol_for_provider(provider)
+        if preferred_symbol and any(item["symbol"] == preferred_symbol for item in contracts):
+            return preferred_symbol
         if contracts:
             return str(contracts[0]["symbol"])
         return self.symbol
+
+    def _fallback_symbol_for_provider(self, provider: str) -> str:
+        if provider == TIANQIN_PROVIDER:
+            if self.provider == TIANQIN_PROVIDER and self.symbol:
+                return self.symbol
+            return (
+                os.getenv("TQ_CHART_DEFAULT_SYMBOL", "").strip()
+                or os.getenv("TIANQIN_DEFAULT_SYMBOL", "").strip()
+                or "SHFE.cu2607"
+            )
+        return os.getenv("TQ_DEFAULT_SYMBOL", "").strip().upper() or "BTCUSDT"
+
+    @staticmethod
+    def _fallback_contract(provider: str, symbol: str) -> dict[str, Any]:
+        exchange_id = {
+            BINANCE_PROVIDER: "BINANCE",
+            BITGET_PROVIDER: "BITGET",
+            TIANQIN_PROVIDER: "TIANQIN",
+        }.get(provider, "")
+        product_id = {
+            BINANCE_PROVIDER: "USD-M",
+            BITGET_PROVIDER: "USDT-FUTURES",
+            TIANQIN_PROVIDER: "TQSDK",
+        }.get(provider, "")
+        return {
+            "symbol": symbol,
+            "name": symbol,
+            "label": format_contract_label(symbol),
+            "exchange_id": exchange_id,
+            "product_id": product_id,
+        }
 
     def _contract_detail(self, provider: str, symbol: str) -> dict[str, Any]:
         contracts = self._load_contracts(provider)

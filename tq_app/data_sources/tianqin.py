@@ -13,6 +13,14 @@ from .base import DataSource
 TIANQIN_PROVIDER_NAME = "tianqin"
 TIANQIN_MAX_KLINE_LENGTH = 8000
 TIANQIN_MAX_DURATION_SECONDS = 86400
+TIANQIN_READY_TIMEOUT_SECONDS = 30
+TIANQIN_NO_PROXY_HOSTS = (
+    ".shinnytech.com",
+    "shinnytech.com",
+    "auth.shinnytech.com",
+    "api.shinnytech.com",
+    "files.shinnytech.com",
+)
 
 
 def load_tianqin_contract_catalog(project_root: Any = None) -> list[dict[str, Any]]:
@@ -72,10 +80,31 @@ def _import_tqsdk() -> tuple[Any, Any]:
 
 def _create_api() -> Any:
     TqApi, TqAuth = _import_tqsdk()
+    _ensure_tianqin_no_proxy()
     username, password = _configured_auth()
     if not username or not password:
         raise RuntimeError("缺少天勤量化账号配置：请在 .env 设置 TIANQIN_USERNAME / TIANQIN_PASSWORD。")
-    return TqApi(auth=TqAuth(username, password))
+    auth = TqAuth(username, password)
+    try:
+        auth.init(mode="real")
+        auth.login()
+    except Exception as exc:
+        raise RuntimeError(f"天勤量化账号鉴权失败或网络不可用: {exc}") from exc
+    auth.login = lambda: None
+    return TqApi(auth=auth, disable_print=True)
+
+
+def _ensure_tianqin_no_proxy() -> None:
+    for env_name in ("NO_PROXY", "no_proxy"):
+        current_items = [
+            item.strip()
+            for item in os.getenv(env_name, "").split(",")
+            if item.strip()
+        ]
+        existing = {item.lower() for item in current_items}
+        missing = [item for item in TIANQIN_NO_PROXY_HOSTS if item.lower() not in existing]
+        if missing:
+            os.environ[env_name] = ",".join([*current_items, *missing])
 
 
 def _wait_update(api: Any, timeout_seconds: float = 1.0) -> bool:
@@ -179,7 +208,7 @@ class TianqinDataSource(DataSource):
 
     def wait_for_update(self, last_version: int | None, timeout: float) -> int:
         self.start()
-        self._ready.wait(timeout=10)
+        self._ready.wait(timeout=TIANQIN_READY_TIMEOUT_SECONDS)
         with self._condition:
             if last_version is None or self._version != last_version:
                 return self._version
@@ -196,12 +225,12 @@ class TianqinDataSource(DataSource):
 
     def get_bars_with_status(self) -> tuple[pd.DataFrame, dict[str, Any]]:
         self.start()
-        self._ready.wait(timeout=10)
+        self._ready.wait(timeout=TIANQIN_READY_TIMEOUT_SECONDS)
         with self._lock:
-            if self._error:
-                raise RuntimeError(self._error)
             if self._bars is not None and not self._bars.empty:
                 return self._bars.copy(), self._status_locked()
+            if self._error:
+                raise RuntimeError(self._error)
             raise RuntimeError("天勤量化数据源尚未就绪，请确认账号、合约代码和网络连接。")
 
     def _status_locked(self) -> dict[str, Any]:

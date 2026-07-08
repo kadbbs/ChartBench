@@ -39,6 +39,7 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
         try:
             return jsonify(service.get_snapshot(**parsed))
         except Exception as exc:
+            app.logger.exception("snapshot request failed")
             return jsonify({"error": str(exc)}), 500
 
     @app.get("/api/health")

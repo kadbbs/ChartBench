@@ -1,6 +1,6 @@
 # 实盘模块
 
-实盘模块负责把图表信号转成观察邮件、dry-run 请求或真实 Binance USD-M 市价开仓。真实交易前必须先跑 `email`、`dry_run_5u` 和 `--preflight`。
+实盘模块负责把图表信号转成观察邮件、dry-run 请求或真实 Binance / Bitget USDT 合约市价开仓。真实交易前必须先跑 `email`、`dry_run_5u` 和 `--preflight`。
 
 ## 入口
 
@@ -45,7 +45,7 @@ dry-run：
 ```text
 off      # 关闭信号执行和邮件
 email    # 只写观察日志和发邮件，不构造下单请求
-dry_run  # 构造 Binance 下单请求并发邮件，但不发送到 Binance
+dry_run  # 构造所选交易所下单请求并发邮件，但不发送到交易所
 live     # 真实下单
 ```
 
@@ -71,6 +71,9 @@ config/defaults.yaml < config/profiles/<profile>.yaml < .env < shell 环境变�
 ```env
 BINANCE_API_KEY=
 BINANCE_API_SECRET=
+BITGET_API_KEY=
+BITGET_API_SECRET=
+BITGET_API_PASSPHRASE=
 RESEND_API_KEY=
 RESEND_FROM_EMAIL=
 LIVE_TRADING_EMAIL_TO=
@@ -81,6 +84,7 @@ LIVE_TRADING_EMAIL_TO=
 `config/profiles/live_5u.yaml` 当前用于真实交易：
 
 ```yaml
+LIVE_TRADING_PROVIDER: binance
 LIVE_TRADING_MODE: live
 LIVE_TRADING_MARGIN_AMOUNT: 5
 LIVE_TRADING_LEVERAGE: 10
@@ -97,31 +101,40 @@ LIVE_TRADING_RISK_EXITS_ENABLED: true
 - 单笔使用 `5U` 保证金。
 - 杠杆 `10x`。
 - 保证金模式逐仓 `isolated`。
-- 使用 Binance Hedge Mode 参数格式。
+- `LIVE_TRADING_PROVIDER` 支持 `binance` / `bitget`；天勤不参与实盘。
+- Binance 使用 Hedge Mode 参数格式；Bitget 使用 USDT-FUTURES 双向持仓参数。
 - 策略层面禁止真实多空同时持有。
 - 合约账户不足目标预留保证金时，从现货账户自动划转。
 - 默认目标预留保证金是 `5 * 1.1 + 0 = 5.5U`。
 - 真实持仓后启用 BTC run_0024 风控出场参数。
 
-## Binance 持仓模式
+## 交易所持仓模式
 
-当前实盘请求使用 Binance Hedge Mode 格式：
+Binance 请求使用 Hedge Mode 格式：
 
 ```text
 开多：side=BUY, positionSide=LONG
 开空：side=SELL, positionSide=SHORT
 ```
 
+Bitget 请求使用双向持仓格式：
+
+```text
+开多：side=buy, tradeSide=open, holdSide=long
+开空：side=sell, tradeSide=open, holdSide=short
+```
+
 注意：
 
-- 需要先在 Binance Futures 后台把 USD-M Futures 切到 Hedge Mode。
+- Binance 需要先在 Futures 后台把 USD-M Futures 切到 Hedge Mode。
+- Bitget 需要先确认 USDT-FUTURES 账号可按双向持仓参数下单。
 - 程序不会在真实信号触发时临时切换 position mode。
-- 这样做是为了匹配 Binance 双向持仓参数，策略上仍然不允许同时持有多空。
+- 这样做是为了匹配交易所双向持仓参数，策略上仍然不允许同时持有多空。
 
 反向信号处理：
 
 1. 发现已有反向仓位。
-2. 先提交 Binance 市价单平掉反向仓位。
+2. 先提交交易所市价单平掉反向仓位。
 3. 确认反向仓位消失。
 4. 再按新方向开仓。
 5. 如果仍检测到反向仓位，拒绝开新仓。
@@ -149,7 +162,7 @@ LIVE_TRADING_RISK_EXITS_ENABLED: true
 5U * 10 / 65000 = 0.000769 BTC
 ```
 
-`--preflight` 会查询 Binance 合约规格，检查最小下单量、价格精度和数量精度。
+`--preflight` 会查询所选交易所的合约规格，检查最小下单量、价格精度和数量精度。
 
 ## 自动划转
 
@@ -212,16 +225,16 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 
 实现方式：
 
-- 开仓成功后会先确认 Binance 已能查到同向持仓，再设置交易所服务器端灾难止损。
-- 交易所端灾难止损使用 Binance `POST /fapi/v1/algoOrder`，`algoType=CONDITIONAL`、`type=STOP_MARKET`，按本策略计算出的数量覆盖。
-- 当保本/移动保护线抬高时，会取消旧的 Binance 条件止损并重新挂更高保护价的条件止损。
-- 本地常驻进程会订阅 Binance 公共 WebSocket ticker，收到 tick 后立即用最新标记价检查已管理仓位风控。
+- 开仓成功后会先确认所选交易所已能查到同向持仓，再设置交易所服务器端灾难止损。
+- Binance 服务器端灾难止损使用 `POST /fapi/v1/algoOrder`；Bitget 使用 `POST /api/v2/mix/order/place-tpsl-order`。
+- 当保本/移动保护线抬高时，会取消旧的交易所条件止损并重新挂更高保护价的条件止损。
+- 本地常驻进程会订阅所选交易所公共 WebSocket ticker，收到 tick 后立即用最新标记价检查已管理仓位风控。
 - 如果 WebSocket ticker 超过 `LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS` 未更新，会回退 REST ticker。
-- 持仓同步仍按 `LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS` 定期查询 Binance，tick 风控不会每个 tick 都查私有持仓接口。
+- 持仓同步仍按 `LIVE_TRADING_POSITION_SYNC_INTERVAL_SECONDS` 定期查询交易所，tick 风控不会每个 tick 都查私有持仓接口。
 - 本地触发风控时优先只平本策略记录的 `managed_size`；如果交易所仓位大小一致，则按该方向仓位数量提交市价平仓单。
 - 如果只平了 `managed_size` 后交易所仍有同方向剩余仓位，剩余仓位会被视为手动/外部仓位，自动排除风控直到该方向仓位清空。
-- 平仓提交后会再次查询 Binance 持仓，确认该方向仓位已关闭或已减少到目标 size，否则不把本地仓位标记为 closed。
-- 本地确认仓位关闭时，会尝试通过 Binance `DELETE /fapi/v1/algoOrder` 清理已知止损计划单。
+- 平仓提交后会再次查询交易所持仓，确认该方向仓位已关闭或已减少到目标 size，否则不把本地仓位标记为 closed。
+- 本地确认仓位关闭时，会尝试清理已知交易所止损计划单。
 - 风控异常邮件有 `LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS` 冷却，当前同一仓位同类异常 `300` 秒最多发一次。
 - 风控状态写入 `logs/live_trading_state.json`，包括入场价、当前点数、最大浮盈、最大浮亏、保护线和启动检查状态。
 - 未知来源的交易所仓位默认不自动接管风控，避免把手动仓位误当成本策略仓位平掉。
@@ -230,8 +243,8 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 重要限制：
 
 - 服务器端只挂灾难止损；启动失败、保本和移动保护仍依赖本地常驻进程。
-- 服务器端止损会尽量随保护线上移，但修改失败时仍会触发本地异常邮件；是否已真正生效以 Binance 返回为准。
-- 本地最大浮盈/浮亏由 Binance WebSocket ticker 推动更新；WebSocket 断线或过期时会自动退回 REST ticker。
+- 服务器端止损会尽量随保护线上移，但修改失败时仍会触发本地异常邮件；是否已真正生效以交易所返回为准。
+- 本地最大浮盈/浮亏由所选交易所 WebSocket ticker 推动更新；WebSocket 断线或过期时会自动退回 REST ticker。
 
 ## 策略决策
 
@@ -276,12 +289,12 @@ confirmed  # UT 和 DKX 同向同时出现
 真实模式一次信号的关键顺序：
 
 1. 同一 `clientOid` 去重。
-2. 同步 Binance 实际持仓到本地账本，并在常驻进程里检查持仓风控。
+2. 同步交易所实际持仓到本地账本，并在常驻进程里检查持仓风控。
 3. 检查本地/交易所同向仓位，有同向则跳过。
 4. 检查反向仓位，有反向则先平仓并确认消失。
 5. 检查合约账户余额，不足则按配置从现货划转。
 6. 构造市价开仓单。
-7. 调用 Binance `POST /fapi/v1/order`。
+7. 调用所选交易所市价下单接口。
 8. 确认同向持仓已出现，并设置交易所端灾难止损。
 9. 写订单日志、状态文件和邮件。
 
@@ -307,10 +320,10 @@ logs/live_trading_orders.jsonl
 logs/live_trading_state.json
 ```
 
-真实模式会定期用 Binance 持仓同步本地账本：
+真实模式会定期用交易所持仓同步本地账本：
 
-- Binance 有仓位、本地没有：新增 exchange 来源 open 记录。
-- 本地有 open、Binance 没仓位：标记 closed。
+- 交易所有仓位、本地没有：新增 exchange 来源 open 记录。
+- 本地有 open、交易所没仓位：标记 closed。
 - 双方都有：更新 size、available、unrealizedPL、marginSize。
 
 ## API 权限
@@ -322,9 +335,9 @@ API Key 至少需要：
 - 钱包划转读写，如果启用自动现货转合约。
 - 现货资产读取/相关权限，用于查询可划转余额。
 
-## Binance 官方接口
+## 交易所接口
 
-当前封装使用：
+Binance 当前封装使用：
 
 - 查询持仓：`GET /fapi/v3/positionRisk`
 - 查询合约账户：`GET /fapi/v3/account`
@@ -337,7 +350,21 @@ API Key 至少需要：
 - 取消交易所端条件止损：`DELETE /fapi/v1/algoOrder`
 - 公共 ticker WebSocket：`wss://fstream.binance.com/market/ws/<stream>`
 
-官方文档：
+Bitget 当前封装使用：
+
+- 查询持仓：`GET /api/v2/mix/position/all-position`
+- 查询合约账户：`GET /api/v2/mix/account/accounts`
+- 查询现货资产：`GET /api/v2/spot/account/assets`
+- 现货转 USDT-FUTURES：`POST /api/v2/spot/wallet/transfer`
+- 预检查设置逐仓：`POST /api/v2/mix/account/set-margin-mode`
+- 预检查设置杠杆：`POST /api/v2/mix/account/set-leverage`
+- 下单：`POST /api/v2/mix/order/place-order`
+- 平仓：`POST /api/v2/mix/order/close-positions`
+- 交易所端条件止损：`POST /api/v2/mix/order/place-tpsl-order`
+- 取消交易所端条件止损：`POST /api/v2/mix/order/cancel-plan-order`
+- 公共 ticker WebSocket：`wss://ws.bitget.com/v2/ws/public`
+
+Binance 官方文档：
 
 - https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
 - https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data
@@ -345,11 +372,18 @@ API Key 至少需要：
 - https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
 - https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams
 
+Bitget 官方文档入口：
+
+- https://www.bitget.com/api-doc/contract/intro
+- https://www.bitget.com/api-doc/contract/market/Get-Candle-Data
+- https://www.bitget.com/api-doc/contract/trade/Place-Order
+- https://www.bitget.com/api-doc/contract/plan/Place-Tpsl-Order
+
 ## 真实运行前检查清单
 
-1. Binance USD-M Futures 后台已切到 Hedge Mode。
+1. Binance USD-M Futures 已切到 Hedge Mode，或 Bitget USDT-FUTURES 已确认双向持仓参数可用。
 2. API Key 权限完整。
-3. `.env` 已填写 `BINANCE_API_KEY` / `BINANCE_API_SECRET`。
+3. `.env` 已填写所选 provider 的 API Key。
 4. `--profile live_5u --show-config` 检查参数正确。
 5. `--profile live_5u --preflight` 返回 ok。
 6. 先跑过 `email` 和 `dry_run_5u`。

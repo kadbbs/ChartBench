@@ -1,6 +1,6 @@
 # 图表模块
 
-图表模块用于查看行情 K 线、成交量和指标信号。当前图表默认使用天勤量化 TqSdk 数据；实盘和回测入口仍保持 Binance 链路。
+图表模块用于查看行情 K 线、成交量和指标信号。当前图表默认使用天勤量化 TqSdk 数据；也可以临时切到 Binance 或 Bitget。天勤目前只用于图表，实盘和回测只支持 Binance / Bitget。
 
 ## 入口
 
@@ -28,10 +28,11 @@ http://0.0.0.0:8050
 ./myvenv/bin/python web_tq_chart.py --symbol SHFE.cu2607 --duration 300 --length 800
 ```
 
-临时切回 Binance 图表：
+临时切到 Binance / Bitget 图表：
 
 ```bash
 ./myvenv/bin/python web_tq_chart.py --provider binance --symbol BTCUSDT --duration 300
+./myvenv/bin/python web_tq_chart.py --provider bitget --symbol BTCUSDT --duration 300
 ```
 
 指定监听地址和端口：
@@ -109,8 +110,8 @@ curl "http://127.0.0.1:8050/api/snapshot?symbol=BTCUSDT&duration_seconds=300"
 
 1. `web_tq_chart.py` 加载 `config/defaults.yaml` 和 `.env`。
 2. 创建 `MarketDataService`。
-3. `MarketDataService` 创建天勤数据源。
-4. 数据源通过 `TqApi.get_kline_serial()` 订阅 K 线，并用 `wait_update()` 驱动实时更新。
+3. `MarketDataService` 按 provider 创建 Tianqin / Binance / Bitget 数据源。
+4. 天勤数据源通过 `TqApi.get_kline_serial()` 订阅 K 线，并用 `wait_update()` 驱动实时更新；Binance / Bitget 使用公共 REST 行情轮询。
 5. 服务计算指标。
 6. Flask API 返回前端可直接渲染的 snapshot。
 

@@ -22,7 +22,7 @@ TQ_DEFAULT_PROVIDER: binance
 TQ_CHART_DEFAULT_PROVIDER: tianqin
 TQ_CHART_DEFAULT_SYMBOL: SHFE.cu2607
 
-# 默认交易合约。实盘/回测默认仍是 Binance USD-M 合约代码。
+# 默认交易合约。实盘/回测默认使用 USDT 合约代码格式里的 BTCUSDT。
 TQ_DEFAULT_SYMBOL: BTCUSDT
 
 # 默认 K 线周期，单位秒。常用：180=3m，300=5m，900=15m，3600=1h。
@@ -54,15 +54,14 @@ TIANQIN_DEFAULT_SYMBOL: SHFE.cu2607
 TIANQIN_SYMBOLS: SHFE.cu2607,DCE.m2609,CZCE.SR601,SHFE.rb2601
 
 
-# ===== Binance 行情 / 产品参数 =====
+# ===== Binance / Bitget 行情和产品参数 =====
 
-# 当前项目默认跑 Binance USD-M 合约。
+# 当前项目默认跑 Binance USD-M 合约；Bitget USDT-FUTURES 也可用于图表/回测/实盘。
 BINANCE_DEFAULT_PRODUCT_TYPE: UM-FUTURES
 BINANCE_KLINE_TYPE: MARKET
 BINANCE_FAPI_BASE: https://fapi.binance.com
 BINANCE_WS_MARKET_BASE: wss://fstream.binance.com/market
 
-# Bitget provider 保留为备用对比链路。
 BITGET_DEFAULT_PRODUCT_TYPE: USDT-FUTURES
 BITGET_PRODUCT_TYPES: USDT-FUTURES
 BITGET_KLINE_TYPE: MARKET
@@ -70,14 +69,17 @@ BITGET_KLINE_TYPE: MARKET
 
 # ===== 实盘账户 / 合约参数 =====
 
-# Binance 产品类型，应与行情产品类型保持一致。
+# 实盘交易所 provider：binance / bitget。天勤仅用于图表模块。
+LIVE_TRADING_PROVIDER: binance
+
+# 产品类型会按 provider 自动修正：Binance 默认 UM-FUTURES，Bitget 默认 USDT-FUTURES。
 LIVE_TRADING_PRODUCT_TYPE: UM-FUTURES
 
 # 保证金币种。
 LIVE_TRADING_MARGIN_COIN: USDT
 
 # 持仓模式：one_way_mode=单向持仓；hedge_mode=双向持仓。
-# 当前实盘按 Binance Hedge Mode 下单：开多 BUY/LONG，开空 SELL/SHORT。
+# Binance 使用 Hedge Mode 参数；Bitget 使用双向持仓 holdSide 参数。
 LIVE_TRADING_POSITION_MODE: hedge_mode
 
 # 保证金模式固定逐仓。当前实盘代码也会强制使用 isolated。
@@ -90,7 +92,7 @@ LIVE_TRADING_MARGIN_AMOUNT: 5
 LIVE_TRADING_LEVERAGE: 10
 
 # 合约账户 USDT 不足时，是否从现货账户自动划转。
-# 真实启用需要 Binance API Key 开启划转权限。
+# 真实启用需要对应交易所 API Key 开启划转权限。
 LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: true
 
 # 自动划转目标比例。1.1 表示合约账户至少保留 margin_amount * 1.1。
@@ -107,7 +109,7 @@ LIVE_TRADING_AUTO_TRANSFER_BUFFER: 0
 # 开仓记录价格来源：mark_price=标记价；bar_close=信号 K 线收盘价。
 LIVE_TRADING_ENTRY_PRICE_SOURCE: mark_price
 
-# 价格小数位和数量小数位，需要按 Binance 合约规格确认。
+# 价格小数位和数量小数位，需要按对应交易所合约规格确认。
 LIVE_TRADING_PRICE_DECIMALS: 1
 LIVE_TRADING_SIZE_DECIMALS: 4
 
@@ -154,7 +156,7 @@ LIVE_TRADING_LOCAL_POSITION_ENABLED: true
 # 观察/邮件模式是否也记录虚拟 open 仓位。
 LIVE_TRADING_LOCAL_POSITION_RECORD_OBSERVATION: true
 
-# 真实模式下是否用 Binance 实际持仓同步本地账本。
+# 真实模式下是否用交易所实际持仓同步本地账本。
 LIVE_TRADING_POSITION_SYNC_ENABLED: true
 
 # 持仓同步间隔，单位秒。
@@ -173,7 +175,7 @@ LIVE_TRADING_RISK_EXITS_ENABLED: false
 # 持仓风控检查间隔，单位秒。真实实盘建议 5-10 秒。
 LIVE_TRADING_RISK_CHECK_INTERVAL_SECONDS: 5
 
-# true=常驻实盘使用 Binance WebSocket ticker 驱动风控价格更新。
+# true=常驻实盘使用交易所 WebSocket ticker 驱动风控价格更新。
 LIVE_TRADING_RISK_WEBSOCKET_TICKER_ENABLED: true
 
 # WebSocket ticker 超过多少秒没更新就视为过期，并回退 REST ticker。
@@ -182,7 +184,7 @@ LIVE_TRADING_RISK_WEBSOCKET_TICKER_STALE_SECONDS: 5
 # 同一仓位风控异常邮件冷却时间，单位秒，避免 API 异常时连续轰炸邮箱。
 LIVE_TRADING_RISK_ERROR_EMAIL_COOLDOWN_SECONDS: 300
 
-# 是否在开仓后立刻设置 Binance 服务器端灾难止损，作为程序断线/宕机时的兜底。
+# 是否在开仓后立刻设置交易所服务器端灾难止损，作为程序断线/宕机时的兜底。
 LIVE_TRADING_EXCHANGE_DISASTER_SL_ENABLED: true
 
 # true=风控平仓优先只平本策略记录的 managed_size，避免手动同向加仓后被整体平掉。

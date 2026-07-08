@@ -1,9 +1,11 @@
 # ChartBench
 
-ChartBench 是一个轻量行情、实盘和回测项目，当前分成两条数据边界：
+ChartBench 是一个轻量行情、实盘和回测项目，当前 provider 边界如下：
 
 - 图表模块：默认使用天勤量化 TqSdk 数据，展示实时 K 线、指标、Web 图表和合约切换。
-- 实盘模块：复用图表信号，执行观察邮件、dry-run 或真实 Binance 市价开仓，并支持持仓后的实盘风控平仓。
+- `binance` / `bitget`：图表、实盘、回测三个模块都支持。
+- `tianqin`：目前只支持图表模块，不参与实盘和回测。
+- 实盘模块：复用图表信号，执行观察邮件、dry-run 或真实交易所市价开仓，并支持持仓后的实盘风控平仓。
 - 回测模块：按 K 线级别复现实盘决策，支持本地 K 线缓存、风控出场、legacy 撮合和参数矩阵。
 
 ## 文档入口
@@ -74,6 +76,9 @@ config/backtest_matrices/*.yaml  # 参数矩阵方案
 ```env
 BINANCE_API_KEY=
 BINANCE_API_SECRET=
+BITGET_API_KEY=
+BITGET_API_SECRET=
+BITGET_API_PASSPHRASE=
 TIANQIN_USERNAME=
 TIANQIN_PASSWORD=
 RESEND_API_KEY=
@@ -91,10 +96,11 @@ LIVE_TRADING_EMAIL_TO=
 ./myvenv/bin/python web_tq_chart.py
 ```
 
-临时看 Binance 图表：
+临时看 Binance / Bitget 图表：
 
 ```bash
 ./myvenv/bin/python web_tq_chart.py --provider binance --symbol BTCUSDT
+./myvenv/bin/python web_tq_chart.py --provider bitget --symbol BTCUSDT
 ```
 
 查看实盘 profile：
@@ -145,9 +151,11 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 ## 当前默认交易模型
 
 - 图表默认 `provider=tianqin`，默认合约 `SHFE.cu2607`；仅影响 `web_tq_chart.py`。
-- 实盘/回测默认 `provider=binance`，交易标的 `BTCUSDT`，产品线 `UM-FUTURES`。
+- 实盘/回测支持 `provider=binance` 和 `provider=bitget`，默认 `binance`。
+- Binance 默认交易标的 `BTCUSDT`，产品线 `UM-FUTURES`；Bitget 默认产品线 `USDT-FUTURES`。
 - 实盘真实 profile `live_5u` 使用 `5U` 保证金、`10x`、逐仓，并启用 BTC run_0024 持仓风控出场参数。
 - Binance 实盘下单使用 Hedge Mode 参数格式：开多 `BUY/LONG`，开空 `SELL/SHORT`；策略层面禁止真实多空同时持有。
+- Bitget 实盘下单使用 USDT-FUTURES 双向持仓参数：开多 `side=buy, tradeSide=open, holdSide=long`，开空 `side=sell, tradeSide=open, holdSide=short`。
 - 回测默认总资金 `20000U`，单笔固定使用 `1000U` 保证金，`10x` 杠杆，即 `10000U` 名义价值。
 - 回测默认手续费 `fee_rate=0.00023`，在 10x 下一次开平仓合计约为保证金 `0.46%`。
 - 回测默认启用持仓风控出场；legacy profile 可关闭。
@@ -162,7 +170,7 @@ K 线接口：TqApi.get_kline_serial(symbol, duration_seconds, data_length)
 账号配置：TIANQIN_USERNAME / TIANQIN_PASSWORD
 ```
 
-实盘和回测主链路使用 Binance USD-M Futures：
+Binance USD-M Futures 链路：
 
 ```text
 REST 基础地址：https://fapi.binance.com
@@ -173,7 +181,16 @@ K 线接口：GET /fapi/v1/klines
 持仓查询：GET /fapi/v3/positionRisk
 ```
 
-Bitget provider 仍保留在代码里，主要用于对比或回退。
+Bitget USDT-FUTURES 链路：
+
+```text
+REST 基础地址：https://api.bitget.com
+WebSocket 行情：wss://ws.bitget.com/v2/ws/public
+K 线接口：GET /api/v2/mix/market/candles
+市价下单：POST /api/v2/mix/order/place-order
+交易所端条件止损：POST /api/v2/mix/order/place-tpsl-order
+持仓查询：GET /api/v2/mix/position/all-position
+```
 
 ## 输出目录
 

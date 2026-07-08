@@ -3557,6 +3557,12 @@ function buildContractOptions(contracts, activeSymbol) {
       els.toolbarSymbol.append(clone);
     }
   });
+  if (!normalizedContracts.some((contract) => contract.symbol === activeSymbol) && normalizedContracts[0]?.symbol) {
+    els.symbolSelect.value = normalizedContracts[0].symbol;
+    if (els.toolbarSymbol) {
+      els.toolbarSymbol.value = normalizedContracts[0].symbol;
+    }
+  }
   syncWatchlistUi();
 }
 

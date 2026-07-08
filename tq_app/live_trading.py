@@ -40,6 +40,7 @@ SIGNAL_TEXT_BY_SIDE = {
 
 @dataclass(slots=True)
 class LiveTradingConfig:
+    provider: str = "binance"
     mode: str = "email"
     enabled: bool = False
     dry_run: bool = True
@@ -115,12 +116,20 @@ class LiveTradingConfig:
         email_enabled = _env_bool("LIVE_TRADING_EMAIL_ENABLED", True)
         if mode == "off":
             email_enabled = False
+        provider = _env_exchange_provider()
+        product_type_default = "USDT-FUTURES" if provider == "bitget" else "UM-FUTURES"
+        product_type = os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BINANCE_DEFAULT_PRODUCT_TYPE", product_type_default)).strip().upper()
+        if provider == "bitget" and product_type == "UM-FUTURES":
+            product_type = os.getenv("BITGET_DEFAULT_PRODUCT_TYPE", "USDT-FUTURES").strip().upper() or "USDT-FUTURES"
+        elif provider == "binance" and product_type == "USDT-FUTURES":
+            product_type = os.getenv("BINANCE_DEFAULT_PRODUCT_TYPE", "UM-FUTURES").strip().upper() or "UM-FUTURES"
         return cls(
+            provider=provider,
             mode=mode,
             enabled=enabled,
             dry_run=dry_run,
             log_only=log_only,
-            product_type=os.getenv("LIVE_TRADING_PRODUCT_TYPE", os.getenv("BINANCE_DEFAULT_PRODUCT_TYPE", "UM-FUTURES")).strip().upper(),
+            product_type=product_type,
             margin_coin=os.getenv("LIVE_TRADING_MARGIN_COIN", "USDT").strip().upper(),
             margin_mode="isolated",
             position_mode=os.getenv("LIVE_TRADING_POSITION_MODE", "hedge_mode").strip().lower(),
@@ -950,8 +959,22 @@ def _public_get_json(base: str, path: str, params: dict[str, Any]) -> Any:
     return payload
 
 
-BitgetFuturesTradeClient = BinanceFuturesTradeClient
-BitgetTickerWebSocket = BinanceTickerWebSocket
+FuturesTradeClient = BitgetFuturesTradeClient | BinanceFuturesTradeClient
+TickerWebSocket = BitgetTickerWebSocket | BinanceTickerWebSocket
+
+
+def create_futures_trade_client(provider: str, project_root: Path) -> FuturesTradeClient:
+    provider_name = _normalize_exchange_provider(provider)
+    if provider_name == "bitget":
+        return BitgetFuturesTradeClient(project_root)
+    return BinanceFuturesTradeClient(project_root)
+
+
+def create_ticker_websocket(*, provider: str, symbol: str, product_type: str, logger: logging.Logger) -> TickerWebSocket:
+    provider_name = _normalize_exchange_provider(provider)
+    if provider_name == "bitget":
+        return BitgetTickerWebSocket(symbol=symbol, product_type=product_type, logger=logger)
+    return BinanceTickerWebSocket(symbol=symbol, product_type=product_type, logger=logger)
 
 
 class LiveTradingEngine:
@@ -960,6 +983,17 @@ class LiveTradingEngine:
         self.config = config or LiveTradingConfig.from_env(project_root)
         self.logger = _build_logger(self.config.log_path)
         self._last_position_sync_warning_at = 0.0
+
+    def _trade_client(self) -> FuturesTradeClient:
+        return create_futures_trade_client(self.config.provider, self.project_root)
+
+    def _exchange_label(self) -> str:
+        return "Bitget" if self.config.provider == "bitget" else "Binance"
+
+    def _position_mode_note(self) -> str:
+        if self.config.provider == "bitget":
+            return "实盘下单前请在 Bitget 后台确认 USDT-FUTURES 已是双向持仓；程序不会在信号触发时临时切换持仓模式。"
+        return "实盘下单前请在 Binance 后台确认 USD-M 已是 Hedge Mode；程序不会在信号触发时临时切换持仓模式。"
 
     def send_startup_email(self, *, symbol: str, duration_seconds: int, continuous: bool) -> None:
         if not self.config.email_enabled or not self.config.email_to:
@@ -1012,7 +1046,7 @@ class LiveTradingEngine:
                 {
                     "configured": self.config.position_mode,
                     "required": "hedge_mode",
-                    "note": "实盘下单前请在 Binance 后台确认 USD-M 已是 Hedge Mode；程序不会在信号触发时临时切换持仓模式。",
+                    "note": self._position_mode_note(),
                 },
             )
             if self.config.position_mode != "hedge_mode":
@@ -1022,8 +1056,8 @@ class LiveTradingEngine:
             if not risk_ok:
                 return PreflightResult(ok=False, checks=checks, error="实盘持仓风控配置不安全，请先修正 LIVE_TRADING_RISK_* 配置。")
 
-            client = BitgetFuturesTradeClient(self.project_root)
-            add_check("api_credentials", True, "Binance API 凭据已加载")
+            client = self._trade_client()
+            add_check("api_credentials", True, f"{self._exchange_label()} API 凭据已加载")
 
             positions_payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
             add_check("private_positions", True, {"code": positions_payload.get("code"), "items": len(positions_payload.get("data") or [])})
@@ -1035,7 +1069,7 @@ class LiveTradingEngine:
                     return PreflightResult(
                         ok=False,
                         checks=checks,
-                        error="当前产品线仍有持仓，Binance 不允许切换逐仓/全仓；请先处理持仓后再运行 --preflight。",
+                        error=f"当前产品线仍有持仓，{self._exchange_label()} 不允许切换逐仓/全仓；请先处理持仓后再运行 --preflight。",
                     )
                 margin_mode_response = client.set_margin_mode(
                     symbol=symbol,
@@ -1091,7 +1125,7 @@ class LiveTradingEngine:
             contract = next((item for item in contracts if str(item.get("symbol") or "").upper() == symbol.upper()), None)
             add_check("contract", contract is not None, self._contract_preflight_detail(contract))
             if contract is None:
-                return PreflightResult(ok=False, checks=checks, error=f"未找到 Binance 合约: {symbol}")
+                return PreflightResult(ok=False, checks=checks, error=f"未找到 {self._exchange_label()} 合约: {symbol}")
 
             precision_ok, precision_detail = self._preflight_precision(size=size, contract=contract)
             add_check("precision", precision_ok, precision_detail)
@@ -1427,7 +1461,7 @@ class LiveTradingEngine:
                 enabled=self.config.enabled,
                 request=request,
                 response={"preflight": asdict(preflight)},
-                error=f"Binance 实盘预检查失败: {preflight.error or 'unknown'}",
+                error=f"{self._exchange_label()} 实盘预检查失败: {preflight.error or 'unknown'}",
             )
             self._log_result(result)
             self._send_email(result)
@@ -1440,7 +1474,7 @@ class LiveTradingEngine:
         exchange_stop_response: dict[str, Any] | None = None
         entry_price: Decimal | None = None
         try:
-            client = BitgetFuturesTradeClient(self.project_root)
+            client = self._trade_client()
             time_allowed, time_reason = self._entry_time_allowed()
             if not time_allowed:
                 result = TradeExecutionResult(
@@ -1563,16 +1597,16 @@ class LiveTradingEngine:
 
         state = self._read_state()
         positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
-        client: BitgetFuturesTradeClient | None = None
+        client: FuturesTradeClient | None = None
         if use_exchange_positions:
-            client = BitgetFuturesTradeClient(self.project_root)
+            client = self._trade_client()
             exchange_positions = self._exchange_open_positions(client)
         else:
             exchange_positions = self._local_risk_managed_positions(positions, tickers=tickers)
         if not exchange_positions:
             return []
         if client is None:
-            client = BitgetFuturesTradeClient(self.project_root)
+            client = self._trade_client()
         now_ms = int(time.time() * 1000)
         changed = False
         results: list[TradeExecutionResult] = []
@@ -1710,7 +1744,7 @@ class LiveTradingEngine:
 
     def _ticker_for_live_risk(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         symbol: str,
         *,
         tickers: dict[str, dict[str, Any]] | None,
@@ -1861,7 +1895,7 @@ class LiveTradingEngine:
 
     def _close_position_for_live_risk(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         exchange_position: dict[str, Any],
         local_position: dict[str, Any],
         risk_state: dict[str, Any],
@@ -1902,7 +1936,7 @@ class LiveTradingEngine:
 
     def _sync_exchange_protective_stop(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         local_position: dict[str, Any],
         exchange_position: dict[str, Any],
         risk_state: dict[str, Any],
@@ -1960,7 +1994,7 @@ class LiveTradingEngine:
 
     def _cancel_known_exchange_stop_if_needed(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         local_position: dict[str, Any],
     ) -> None:
         order_id = str(local_position.get("exchange_stop_order_id") or "").strip()
@@ -2033,7 +2067,7 @@ class LiveTradingEngine:
 
     def _wait_until_exchange_position_closed(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         position: dict[str, Any],
     ) -> bool:
         symbol = str(position.get("symbol") or "").upper()
@@ -2052,7 +2086,7 @@ class LiveTradingEngine:
 
     def _wait_until_exchange_position_reduced(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         position: dict[str, Any],
         close_size: Decimal,
     ) -> bool:
@@ -2101,7 +2135,7 @@ class LiveTradingEngine:
 
     def _opposite_side_position(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
     ) -> dict[str, Any] | None:
         if decision.side not in {"buy", "sell"}:
@@ -2114,7 +2148,7 @@ class LiveTradingEngine:
 
     def _close_opposite_position(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
         position: dict[str, Any],
     ) -> dict[str, Any]:
@@ -2135,7 +2169,7 @@ class LiveTradingEngine:
 
     def _close_opposite_position_if_needed(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
     ) -> dict[str, Any] | None:
         reverse_position = self._opposite_side_position(client, decision)
@@ -2145,7 +2179,7 @@ class LiveTradingEngine:
 
     def _wait_until_opposite_position_closed(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
     ) -> None:
         for attempt in range(1, 4):
@@ -2156,7 +2190,7 @@ class LiveTradingEngine:
                 time.sleep(1)
         raise RuntimeError(f"反向仓位平仓后仍检测到持仓，拒绝继续开仓: {remaining}")
 
-    def _entry_price(self, client: BitgetFuturesTradeClient, decision: TradeDecision) -> Decimal:
+    def _entry_price(self, client: FuturesTradeClient, decision: TradeDecision) -> Decimal:
         if self.config.entry_price_source == "bar_close" and decision.bar_close is not None:
             return _to_decimal(decision.bar_close)
         ticker = client.get_ticker(symbol=decision.symbol, product_type=self.config.product_type)
@@ -2223,7 +2257,7 @@ class LiveTradingEngine:
             raise RuntimeError("LIVE_TRADING_AUTO_TRANSFER_MULTIPLIER 不能小于 1。")
         return margin_amount * multiplier + max(buffer_amount, Decimal("0"))
 
-    def _futures_available(self, client: BitgetFuturesTradeClient) -> Decimal:
+    def _futures_available(self, client: FuturesTradeClient) -> Decimal:
         payload = client.get_futures_accounts(product_type=self.config.product_type)
         accounts = payload.get("data") or []
         for account in accounts:
@@ -2238,7 +2272,7 @@ class LiveTradingEngine:
                     return _to_decimal(value)
         return Decimal("0")
 
-    def _spot_available(self, client: BitgetFuturesTradeClient) -> Decimal:
+    def _spot_available(self, client: FuturesTradeClient) -> Decimal:
         payload = client.get_spot_assets(coin=self.config.margin_coin)
         assets = payload.get("data") or []
         for asset in assets:
@@ -2252,7 +2286,7 @@ class LiveTradingEngine:
                 return _to_decimal(value)
         return Decimal("0")
 
-    def _ensure_futures_margin_available(self, client: BitgetFuturesTradeClient) -> dict[str, Any]:
+    def _ensure_futures_margin_available(self, client: FuturesTradeClient) -> dict[str, Any]:
         margin_amount = _to_decimal(self.config.margin_amount)
         required_available = self._required_futures_available()
         futures_available = self._futures_available(client)
@@ -2308,7 +2342,7 @@ class LiveTradingEngine:
 
     def _same_side_position(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
     ) -> dict[str, Any] | None:
         payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
@@ -2344,7 +2378,7 @@ class LiveTradingEngine:
 
     def _same_side_position_if_available(self, decision: TradeDecision) -> dict[str, Any] | None:
         try:
-            client = BitgetFuturesTradeClient(self.project_root)
+            client = self._trade_client()
             return self._same_side_position(client, decision)
         except Exception as exc:
             self.logger.warning("观察/邮件模式同向仓位检查失败，继续发送信号邮件: %s", exc)
@@ -2357,12 +2391,12 @@ class LiveTradingEngine:
             return {"skipped": True, "reason": "非真实交易模式，保留 only 邮件/观察模式的本地虚拟仓位"}
 
         try:
-            client = BitgetFuturesTradeClient(self.project_root)
+            client = self._trade_client()
             exchange_positions = self._exchange_open_positions(client, symbol=symbol)
         except Exception as exc:
             now = time.monotonic()
             if now - self._last_position_sync_warning_at >= 60:
-                self.logger.warning("Binance 持仓同步失败，本地仓位暂不覆盖: %s", exc)
+                self.logger.warning("%s 持仓同步失败，本地仓位暂不覆盖: %s", self._exchange_label(), exc)
                 self._last_position_sync_warning_at = now
             return {"skipped": True, "reason": str(exc)}
 
@@ -2399,7 +2433,7 @@ class LiveTradingEngine:
                 position["status"] = "closed"
                 position["closed_at"] = now_ms
                 position["close_reason"] = "exchange_sync_no_position"
-                position["sync_source"] = "binance"
+                position["sync_source"] = self.config.provider
                 changed = True
                 closed += 1
                 continue
@@ -2453,7 +2487,7 @@ class LiveTradingEngine:
                     "created_at": exchange_position.get("opened_at") or now_ms,
                     "synced_at": now_ms,
                     "note": (
-                        "由 Binance 实际持仓同步写入；未知来源仓位默认不自动风控，避免误平手动仓位。"
+                        f"由 {self._exchange_label()} 实际持仓同步写入；未知来源仓位默认不自动风控，避免误平手动仓位。"
                         if key not in risk_exclusions
                         else "该方向存在本策略部分平仓后剩余的手动/外部仓位，已排除自动风控直到该方向仓位清空。"
                     ),
@@ -2469,17 +2503,17 @@ class LiveTradingEngine:
             state["last_position_sync"] = {
                 "ts": now_ms,
                 "symbol": scoped_symbol or "*",
-                "source": "binance",
+                "source": self.config.provider,
                 "open_count": len(exchange_positions),
                 "added": added,
                 "updated": updated,
                 "closed": closed,
             }
             self._write_state(state)
-            self.logger.info("Binance 持仓已同步到本地账本: %s", json.dumps(state["last_position_sync"], ensure_ascii=False))
+            self.logger.info("%s 持仓已同步到本地账本: %s", self._exchange_label(), json.dumps(state["last_position_sync"], ensure_ascii=False))
         return {"skipped": False, "open_count": len(exchange_positions), "added": added, "updated": updated, "closed": closed}
 
-    def _exchange_open_positions(self, client: BitgetFuturesTradeClient, *, symbol: str | None = None) -> list[dict[str, Any]]:
+    def _exchange_open_positions(self, client: FuturesTradeClient, *, symbol: str | None = None) -> list[dict[str, Any]]:
         payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
         positions = payload.get("data") or []
         scoped_symbol = symbol.upper() if symbol else None
@@ -2895,7 +2929,7 @@ class LiveTradingEngine:
 
     def _place_exchange_disaster_stop(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
         entry_price: Decimal,
     ) -> dict[str, Any]:
@@ -2937,7 +2971,7 @@ class LiveTradingEngine:
 
     def _wait_until_same_side_position_open(
         self,
-        client: BitgetFuturesTradeClient,
+        client: FuturesTradeClient,
         decision: TradeDecision,
     ) -> None:
         for attempt in range(1, 5):
@@ -3201,6 +3235,30 @@ def _env_live_trading_mode() -> str:
     if mode not in {"off", "email", "dry_run", "live"}:
         raise ValueError("LIVE_TRADING_MODE 只支持 off / email / dry_run / live")
     return mode
+
+
+def _env_exchange_provider() -> str:
+    raw = (
+        os.getenv("LIVE_TRADING_PROVIDER", "").strip()
+        or os.getenv("TQ_DEFAULT_PROVIDER", "").strip()
+        or "binance"
+    )
+    return _normalize_exchange_provider(raw)
+
+
+def _normalize_exchange_provider(provider: str) -> str:
+    value = str(provider or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": "binance",
+        "bn": "binance",
+        "binance-usdm": "binance",
+        "binance-um": "binance",
+        "bitget-usdt": "bitget",
+    }
+    normalized = aliases.get(value, value)
+    if normalized not in {"binance", "bitget"}:
+        raise ValueError("LIVE_TRADING_PROVIDER 只支持 binance / bitget；天勤仅支持图表模块。")
+    return normalized
 
 
 def _mode_flags(mode: str) -> tuple[bool, bool, bool]:

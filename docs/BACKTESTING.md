@@ -1,6 +1,6 @@
 # 回测模块
 
-回测模块用于按 K 线级别复现实盘信号判断、开平仓撮合、手续费、风控出场和报告生成。它不需要 Binance API Key，只使用公共行情接口和本地 K 线缓存。
+回测模块用于按 K 线级别复现实盘信号判断、开平仓撮合、手续费、风控出场和报告生成。它不需要 Binance / Bitget API Key，只使用公共行情接口和本地 K 线缓存。
 
 ## 入口
 
@@ -97,12 +97,12 @@ data_cache/backtest_klines/
 
 ```text
 BINANCE_UM-FUTURES_BTCUSDT_300s_MARKET.csv
-BINANCE_UM-FUTURES_SOLUSDT_300s_MARKET.csv
+BITGET_USDT-FUTURES_BTCUSDT_300s_MARKET.csv
 ```
 
 缓存行为：
 
-- 第一次运行：从 Binance 公共接口拉取并写入缓存。
+- 第一次运行：从所选 provider 的公共接口拉取并写入缓存。
 - 后续运行：如果缓存完整覆盖请求区间，直接读取本地。
 - 如果只缺左侧、右侧或中间缺口，只增量补齐缺失区间。
 - `--no-cache` 可以临时绕过缓存强制在线请求。
@@ -117,9 +117,10 @@ BINANCE_UM-FUTURES_SOLUSDT_300s_MARKET.csv
 
 ```bash
 ./myvenv/bin/python run_backtest.py --provider binance --symbol BTCUSDT --duration 300 --length 1000
+./myvenv/bin/python run_backtest.py --provider bitget --symbol BTCUSDT --duration 300 --length 1000
 ```
 
-当前默认 provider 是 `binance`；`bitget` provider 仍保留用于对比或回退。
+当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `binance`。天勤当前不接入回测。
 
 ## 撮合模型
 
