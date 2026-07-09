@@ -42,6 +42,7 @@ DEFAULT_BRICK_LENGTH = 10000
 DATA_SOURCE_IDLE_TTL_SECONDS = 10 * 60
 DATA_SOURCE_MAX_COUNT = 8
 SNAPSHOT_CACHE_MAX_ITEMS = 64
+SNAPSHOT_DELTA_TAIL_POINTS = 3
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 BITGET_PROVIDER = "bitget"
 BINANCE_PROVIDER = "binance"
@@ -263,6 +264,111 @@ class MarketDataService:
         }
         self._store_snapshot_cache(cache_key, snapshot)
         return snapshot
+
+    def build_snapshot_delta(self, previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
+        if not self._same_snapshot_context(previous, current):
+            return None
+        stream = current.get("stream") if isinstance(current.get("stream"), dict) else {}
+        previous_stream = previous.get("stream") if isinstance(previous.get("stream"), dict) else {}
+        tail_times = self._snapshot_tail_times(current)
+        return {
+            "provider": current.get("provider"),
+            "symbol": current.get("symbol"),
+            "symbol_label": current.get("symbol_label"),
+            "duration_seconds": current.get("duration_seconds"),
+            "bar_mode": current.get("bar_mode"),
+            "range_ticks": current.get("range_ticks"),
+            "brick_length": current.get("brick_length"),
+            "data_length": current.get("data_length"),
+            "refresh_ms": current.get("refresh_ms"),
+            "last_close": current.get("last_close"),
+            "last_color": current.get("last_color"),
+            "last_time": current.get("last_time"),
+            "stream": stream,
+            "base_version": int(previous_stream.get("version") or 0),
+            "version": int(stream.get("version") or 0),
+            "time_labels": {
+                key: value
+                for key, value in (current.get("time_labels") or {}).items()
+                if int(key) in tail_times
+            },
+            "candles": self._tail_points(current.get("candles") or []),
+            "volume": self._tail_points(current.get("volume") or []),
+            "indicators": [
+                self._indicator_delta(indicator, tail_times)
+                for indicator in (current.get("indicators") or [])
+                if isinstance(indicator, dict)
+            ],
+        }
+
+    @staticmethod
+    def _same_snapshot_context(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+        keys = (
+            "provider",
+            "symbol",
+            "duration_seconds",
+            "bar_mode",
+            "range_ticks",
+            "brick_length",
+            "data_length",
+        )
+        return all(previous.get(key) == current.get(key) for key in keys)
+
+    @staticmethod
+    def _tail_points(points: list[dict[str, Any]], count: int = SNAPSHOT_DELTA_TAIL_POINTS) -> list[dict[str, Any]]:
+        if not isinstance(points, list):
+            return []
+        return [dict(point) for point in points[-count:] if isinstance(point, dict)]
+
+    def _snapshot_tail_times(self, snapshot: dict[str, Any]) -> set[int]:
+        return {
+            int(point.get("time") or 0)
+            for point in self._tail_points(snapshot.get("candles") or [])
+            if isinstance(point, dict) and point.get("time") is not None
+        }
+
+    def _indicator_delta(self, indicator: dict[str, Any], tail_times: set[int]) -> dict[str, Any]:
+        return {
+            "id": indicator.get("id"),
+            "name": indicator.get("name"),
+            "pane": indicator.get("pane"),
+            "series": [
+                self._series_delta(series, tail_times)
+                for series in (indicator.get("series") or [])
+                if isinstance(series, dict)
+            ],
+        }
+
+    def _series_delta(self, series: dict[str, Any], tail_times: set[int]) -> dict[str, Any]:
+        return {
+            "id": series.get("id"),
+            "name": series.get("name"),
+            "pane": series.get("pane"),
+            "series_type": series.get("series_type"),
+            "data": self._tail_points(series.get("data") or []),
+            "options": self._delta_options(series.get("options") or {}, tail_times),
+        }
+
+    @staticmethod
+    def _delta_options(options: dict[str, Any], tail_times: set[int]) -> dict[str, Any]:
+        if not isinstance(options, dict):
+            return {}
+        time_filtered_keys = {"markers", "candleMarkers", "barColors"}
+        delta: dict[str, Any] = {}
+        for key, value in options.items():
+            if key not in time_filtered_keys:
+                delta[key] = value
+                continue
+            if not isinstance(value, list):
+                continue
+            filtered = [
+                dict(item)
+                for item in value
+                if isinstance(item, dict) and int(item.get("time") or 0) in tail_times
+            ]
+            if filtered:
+                delta[key] = filtered
+        return delta
 
     def wait_for_update(
         self,

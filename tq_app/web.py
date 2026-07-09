@@ -57,6 +57,7 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
         @stream_with_context
         def generate():
             last_version: int | None = None
+            previous_snapshot: dict[str, Any] | None = None
             try:
                 snapshot = service.get_snapshot(**parsed)
                 stream_meta = snapshot.get("stream") or {}
@@ -79,6 +80,7 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
                         snapshot = service.get_snapshot(**parsed)
                         stream_meta = snapshot.get("stream") or {}
                         last_version = int(stream_meta.get("version") or next_version)
+                previous_snapshot = snapshot
                 yield encode_event("snapshot", snapshot)
             except Exception as exc:
                 yield encode_event("stream-error", {"error": str(exc)})
@@ -102,7 +104,12 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
                     snapshot = service.get_snapshot(**parsed)
                     stream_meta = snapshot.get("stream") or {}
                     last_version = int(stream_meta.get("version") or next_version)
-                    yield encode_event("snapshot", snapshot)
+                    delta = service.build_snapshot_delta(previous_snapshot, snapshot) if previous_snapshot is not None else None
+                    previous_snapshot = snapshot
+                    if delta is None:
+                        yield encode_event("snapshot", snapshot)
+                    else:
+                        yield encode_event("snapshot-delta", delta)
                 except GeneratorExit:
                     break
                 except Exception as exc:

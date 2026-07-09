@@ -30,6 +30,7 @@ const state = {
   wsLastMessageAt: 0,
   wsOpenedAt: 0,
   wsMonitorTimerId: null,
+  streamVersion: null,
   wsActualToSyntheticTime: new Map(),
   wsSyntheticToActualTime: new Map(),
   wsMaxSyntheticTime: null,
@@ -2300,6 +2301,7 @@ function disconnectRealtimeStream() {
   state.wsConnectingSignature = "";
   state.wsLastMessageAt = 0;
   state.wsOpenedAt = 0;
+  state.streamVersion = null;
   resetOrderflowState();
 }
 
@@ -2693,6 +2695,21 @@ function connectRealtimeStream() {
     try {
       state.wsLastMessageAt = Date.now();
       applySnapshot(JSON.parse(event.data));
+    } catch (error) {
+      els.error.textContent = error.message;
+    }
+  });
+
+  socket.addEventListener("snapshot-delta", async (event) => {
+    if (state.wsConnection !== socket || state.wsActiveSignature !== signature) {
+      return;
+    }
+    try {
+      state.wsLastMessageAt = Date.now();
+      const applied = applySnapshotDelta(JSON.parse(event.data));
+      if (!applied) {
+        await refreshSnapshot();
+      }
     } catch (error) {
       els.error.textContent = error.message;
     }
@@ -3808,6 +3825,50 @@ function findSeriesPointAtTime(seriesKey, time) {
   return points.find((point) => point && point.time === time) || null;
 }
 
+function normalizeSeriesTime(time) {
+  const numeric = Number(time);
+  return Number.isFinite(numeric) ? numeric : time;
+}
+
+function mergeSeriesDataByTime(previousData, updates, maxLength) {
+  const merged = Array.isArray(previousData) ? [...previousData] : [];
+  (updates || []).forEach((point) => {
+    if (!point || point.time === undefined || point.time === null) {
+      return;
+    }
+    const nextPoint = { ...point, time: normalizeSeriesTime(point.time) };
+    const nextTime = String(nextPoint.time);
+    const existingIndex = merged.findIndex((item) => String(item?.time) === nextTime);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = nextPoint;
+      return;
+    }
+    const lastTime = Number(merged[merged.length - 1]?.time);
+    const pointTime = Number(nextPoint.time);
+    if (!merged.length || !Number.isFinite(lastTime) || !Number.isFinite(pointTime) || pointTime >= lastTime) {
+      merged.push(nextPoint);
+    } else {
+      merged.push(nextPoint);
+      merged.sort((left, right) => Number(left?.time || 0) - Number(right?.time || 0));
+    }
+  });
+  const limit = Number(maxLength);
+  if (Number.isFinite(limit) && limit > 0 && merged.length > limit) {
+    return merged.slice(merged.length - limit);
+  }
+  return merged;
+}
+
+function updateSeriesFromDelta(seriesKey, series, points, maxLength) {
+  if (!Array.isArray(points) || points.length === 0) {
+    return true;
+  }
+  const previousData = state.seriesDataByKey.get(seriesKey) || [];
+  const nextData = mergeSeriesDataByTime(previousData, points, maxLength);
+  setSeriesData(seriesKey, series, nextData);
+  return true;
+}
+
 function canApplyIncrementalSeriesUpdate(previousData, nextData) {
   if (!Array.isArray(previousData) || !Array.isArray(nextData)) {
     return false;
@@ -4286,6 +4347,184 @@ function formatCrosshairTime(time) {
   return "--";
 }
 
+function deltaContextMatches(delta) {
+  if (!delta || typeof delta !== "object") {
+    return false;
+  }
+  if (
+    delta.provider !== state.activeProvider ||
+    delta.symbol !== state.activeSymbol ||
+    delta.duration_seconds !== state.activeDurationSeconds ||
+    (delta.bar_mode || "time") !== state.activeBarMode ||
+    (delta.range_ticks || state.activeRangeTicks || 10) !== state.activeRangeTicks ||
+    (delta.brick_length || state.activeBrickLength || 10000) !== state.activeBrickLength
+  ) {
+    return false;
+  }
+  const baseVersion = Number(delta.base_version);
+  if (Number.isFinite(baseVersion) && state.streamVersion !== null && baseVersion !== Number(state.streamVersion)) {
+    return false;
+  }
+  return true;
+}
+
+function updateTimeIndexFromDelta(candles, timeLabels, barMode) {
+  Object.entries(timeLabels || {}).forEach(([time, label]) => {
+    state.timeLabels.set(String(time), label);
+  });
+  (candles || []).forEach((candle) => {
+    const syntheticTime = Number(candle?.time);
+    if (!Number.isFinite(syntheticTime)) {
+      return;
+    }
+    const label = timeLabels?.[String(syntheticTime)] || state.timeLabels.get(String(syntheticTime)) || "";
+    const actualTimeMs = (barMode || state.activeBarMode) === "time"
+      ? syntheticTime * 1000
+      : Date.parse(String(label).replace(" ", "T"));
+    if (!Number.isFinite(actualTimeMs)) {
+      return;
+    }
+    state.wsActualToSyntheticTime.set(actualTimeMs, syntheticTime);
+    state.wsSyntheticToActualTime.set(syntheticTime, actualTimeMs);
+    state.wsMaxSyntheticTime = state.wsMaxSyntheticTime === null ? syntheticTime : Math.max(state.wsMaxSyntheticTime, syntheticTime);
+    state.wsMaxActualTimeMs = state.wsMaxActualTimeMs === null ? actualTimeMs : Math.max(state.wsMaxActualTimeMs, actualTimeMs);
+  });
+}
+
+function pruneTimeIndexToVisibleCandles() {
+  const visibleTimes = new Set((state.seriesDataByKey.get("candles") || []).map((item) => String(item.time)));
+  state.timeLabels.forEach((_label, time) => {
+    if (!visibleTimes.has(String(time))) {
+      state.timeLabels.delete(time);
+    }
+  });
+  state.wsSyntheticToActualTime.forEach((actualTimeMs, syntheticTime) => {
+    if (!visibleTimes.has(String(syntheticTime))) {
+      state.wsSyntheticToActualTime.delete(syntheticTime);
+      state.wsActualToSyntheticTime.delete(actualTimeMs);
+    }
+  });
+}
+
+function deltaBarColors(indicators) {
+  const colors = new Map();
+  (indicators || []).forEach((indicator) => {
+    (indicator.series || []).forEach((series) => {
+      (series.options?.barColors || []).forEach((item) => {
+        if (Number.isFinite(Number(item?.time)) && item?.color) {
+          colors.set(Number(item.time), item.color);
+        }
+      });
+    });
+  });
+  return colors;
+}
+
+function applyDeltaCandleColors(candles, indicators) {
+  if (!state.terminalToggles.candle) {
+    return candles || [];
+  }
+  const colors = deltaBarColors(indicators);
+  if (colors.size === 0) {
+    return candles || [];
+  }
+  return (candles || []).map((candle) => {
+    const color = colors.get(Number(candle.time));
+    if (!color) {
+      return candle;
+    }
+    return {
+      ...candle,
+      color,
+      borderColor: color,
+      wickColor: color,
+    };
+  });
+}
+
+function canApplyIndicatorDelta(indicators) {
+  return (indicators || []).every((indicator) =>
+    (indicator.series || []).every((seriesDefinition) => {
+      const key = `indicator:${indicator.id}:${seriesDefinition.id}`;
+      return state.seriesByKey.has(key);
+    })
+  );
+}
+
+function refreshBandPrimitivesFromDelta(indicators) {
+  (indicators || []).forEach((indicator) => {
+    (indicator.series || []).forEach((seriesDefinition) => {
+      if (!seriesDefinition.options?.fillToSeriesId) {
+        return;
+      }
+      syncBandPrimitive(
+        `indicator:${indicator.id}:${seriesDefinition.id}`,
+        `indicator:${indicator.id}:${seriesDefinition.options.fillToSeriesId}`,
+        seriesDefinition.options.fillColor || "rgba(255, 152, 0, 0.16)"
+      );
+    });
+  });
+}
+
+function applySnapshotDelta(delta) {
+  if (!deltaContextMatches(delta)) {
+    return false;
+  }
+  const candleSeries = state.seriesByKey.get("candles");
+  const volumeSeries = state.seriesByKey.get("volume");
+  if (!candleSeries || !volumeSeries || !canApplyIndicatorDelta(delta.indicators || [])) {
+    return false;
+  }
+
+  const deltaVersion = Number(delta.version ?? delta.stream?.version);
+  state.streamVersion = Number.isFinite(deltaVersion) ? deltaVersion : state.streamVersion;
+  state.config.symbol = delta.symbol;
+  state.config.provider = delta.provider;
+  state.config.duration_seconds = delta.duration_seconds;
+  state.config.bar_mode = delta.bar_mode || "time";
+  state.config.range_ticks = delta.range_ticks || state.activeRangeTicks;
+  state.config.brick_length = delta.brick_length || state.activeBrickLength;
+  updateTimeIndexFromDelta(delta.candles || [], delta.time_labels || {}, delta.bar_mode);
+
+  const maxLength = currentRequestedDataLength();
+  updateSeriesFromDelta("candles", candleSeries, applyDeltaCandleColors(delta.candles || [], delta.indicators || []), maxLength);
+  updateSeriesFromDelta("volume", volumeSeries, delta.volume || [], maxLength);
+  pruneTimeIndexToVisibleCandles();
+
+  (delta.indicators || []).forEach((indicator) => {
+    (indicator.series || []).forEach((seriesDefinition) => {
+      const key = `indicator:${indicator.id}:${seriesDefinition.id}`;
+      const series = state.seriesByKey.get(key);
+      if (typeof series?.setDefinitionOptions === "function") {
+        series.setDefinitionOptions(seriesDefinition.options || {});
+      }
+      updateSeriesFromDelta(key, series, seriesDefinition.data || [], maxLength);
+    });
+  });
+  refreshBandPrimitivesFromDelta(delta.indicators || []);
+
+  const lastClose = Number(delta.last_close);
+  if (Number.isFinite(lastClose)) {
+    els.lastPrice.textContent = lastClose.toFixed(2);
+    els.lastPrice.style.color = delta.last_color || "#089981";
+    syncCurrentPriceLine(lastClose, delta.last_color || "#089981");
+  }
+  els.lastUpdate.textContent = delta.last_time || els.lastUpdate.textContent;
+  if (els.metaStatus) {
+    els.metaStatus.textContent = `Realtime ${state.activeProvider} · ${state.activeBarMode} · ${delta.last_time || "--"}`;
+  }
+  syncMarketHeader(
+    delta.symbol_label || delta.symbol,
+    delta.duration_seconds,
+    state.activeBarMode,
+    state.activeRangeTicks
+  );
+  updateOrderflowRendererContexts();
+  updatePaneLabelPositions();
+  renderMicrostructure();
+  return true;
+}
+
 function applySnapshot(snapshot) {
   els.error.textContent = "";
   const nextBarMode = snapshot.bar_mode || "time";
@@ -4310,6 +4549,8 @@ function applySnapshot(snapshot) {
   state.config.bar_mode = nextBarMode;
   state.config.range_ticks = nextRangeTicks;
   state.config.brick_length = nextBrickLength;
+  const snapshotVersion = Number(snapshot.stream?.version);
+  state.streamVersion = Number.isFinite(snapshotVersion) ? snapshotVersion : null;
   state.timeLabels = new Map(Object.entries(snapshot.time_labels || {}));
   rebuildWsTimeIndex(snapshot);
   els.symbolSelect.value = snapshot.symbol;
