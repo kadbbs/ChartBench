@@ -11,7 +11,7 @@
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="eyebrow">Microstructure</div>
+        <div class="eyebrow">Market Chart</div>
         <h1 id="page-title">ChartBench 行情理解面板</h1>
         <div class="brand-subline">
           <span id="symbol-name">--</span>
@@ -100,124 +100,8 @@
         <div class="meta-line">
           <span class="meta-item"><strong id="meta-contract">SHFE.cu2607</strong></span>
           <span class="meta-item">实时行情</span>
-          <span class="meta-item">主图 + Bar 内逐笔合成统计</span>
-          <span class="meta-item" id="meta-status">Realtime microstructure bars</span>
-          <span class="meta-item" id="meta-debug">Trades60=-- / BarHits=-- / Buy=-- / Sell=--</span>
-        </div>
-      </section>
-      <section class="bar-stats-card">
-        <div class="bar-stats-head">
-          <div class="bar-stats-title">当前 K 线真实逐笔订单流</div>
-          <div class="bar-stats-tools">
-            <label class="bar-spacing-control">
-              <span>纵轴间隔</span>
-              <input id="barflow-row-gap" type="range" min="0.75" max="1.6" step="0.05" value="1" />
-              <strong id="barflow-row-gap-value">1.00x</strong>
-            </label>
-            <div id="barflow-badge" class="bar-flow-badge">等待成交</div>
-          </div>
-        </div>
-        <div class="bar-summary-grid">
-          <div class="bar-stat bar-stat-hero">
-            <span>Delta</span>
-            <strong id="barstat-delta">--</strong>
-          </div>
-          <div class="bar-stat bar-stat-state">
-            <div class="bar-state-meta">
-              <span>State</span>
-              <strong id="barflow-state">--</strong>
-            </div>
-            <div class="bar-state-meta">
-              <span>Bias</span>
-              <strong id="barflow-bias">--</strong>
-            </div>
-            <div class="bar-state-meta">
-              <span>DeltaRatio</span>
-              <strong id="barflow-delta-ratio">--</strong>
-            </div>
-          </div>
-        </div>
-        <div class="bar-secondary-grid">
-          <div class="bar-stat bar-stat-cvd">
-            <div class="bar-cvd-head">
-              <span>CVD</span>
-              <strong id="barflow-cvd">--</strong>
-            </div>
-            <svg id="barflow-cvd-sparkline" class="bar-cvd-sparkline" viewBox="0 0 120 28" preserveAspectRatio="none">
-              <polyline id="barflow-cvd-sparkline-line" fill="none" stroke="currentColor" stroke-width="2" points=""></polyline>
-            </svg>
-          </div>
-          <div class="bar-stat">
-            <span>VP POC</span>
-            <strong id="barflow-vp-poc">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>POC Share</span>
-            <strong id="barflow-vp-share">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>HVN</span>
-            <strong id="barflow-vp-hvn">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>LVN</span>
-            <strong id="barflow-vp-lvn">--</strong>
-          </div>
-        </div>
-        <div class="bar-stats-grid bar-stats-grid-compact">
-          <div class="bar-stat">
-            <span>Speed</span>
-            <strong id="barstat-speed">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>Trades</span>
-            <strong id="barflow-trades">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>Volume</span>
-            <strong id="barflow-volume">--</strong>
-          </div>
-          <div class="bar-stat">
-            <span>Eff</span>
-            <strong id="barstat-efficiency">--</strong>
-          </div>
-        </div>
-        <div class="bar-meter-grid">
-          <div class="bar-meter-card">
-            <div class="bar-meter-head">
-              <span>AggBuy</span>
-              <strong id="barflow-buy-ratio">--</strong>
-            </div>
-            <div class="bar-meter-track"><div id="barflow-buy-ratio-fill" class="bar-meter-fill bar-meter-fill-buy"></div></div>
-          </div>
-          <div class="bar-meter-card">
-            <div class="bar-meter-head">
-              <span>AggSell</span>
-              <strong id="barflow-sell-ratio">--</strong>
-            </div>
-            <div class="bar-meter-track"><div id="barflow-sell-ratio-fill" class="bar-meter-fill bar-meter-fill-sell"></div></div>
-          </div>
-          <div class="bar-meter-card">
-            <div class="bar-meter-head">
-              <span>ClosePos</span>
-              <strong id="barstat-close-pos">--</strong>
-            </div>
-            <div class="bar-meter-track"><div id="barstat-close-pos-fill" class="bar-meter-fill bar-meter-fill-neutral"></div></div>
-          </div>
-          <div class="bar-meter-card">
-            <div class="bar-meter-head">
-              <span>HighBuy</span>
-              <strong id="barstat-high-buy">--</strong>
-            </div>
-            <div class="bar-meter-track"><div id="barstat-high-buy-fill" class="bar-meter-fill bar-meter-fill-buy"></div></div>
-          </div>
-          <div class="bar-meter-card">
-            <div class="bar-meter-head">
-              <span>LowSell</span>
-              <strong id="barstat-low-sell">--</strong>
-            </div>
-            <div class="bar-meter-track"><div id="barstat-low-sell-fill" class="bar-meter-fill bar-meter-fill-sell"></div></div>
-          </div>
+          <span class="meta-item">主图 + 技术指标</span>
+          <span class="meta-item" id="meta-status">Realtime market bars</span>
         </div>
       </section>
       <div class="chart-card">

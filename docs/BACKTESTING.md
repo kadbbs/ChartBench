@@ -35,6 +35,8 @@ sol_5m_range_cached
 sol_5m_range_cached_legacy
 ```
 
+这些命名 profile 都显式固定 `provider=bitget`、产品线、K 线口径、信号模式、4h Hull 过滤、指标周期和风控参数，不再继承 `.env` 或全局 provider 默认值。临时命令行参数仍可覆盖 profile。
+
 查看可用配置：
 
 ```bash
@@ -97,7 +99,7 @@ data_cache/backtest_klines/
 
 ```text
 BINANCE_UM-FUTURES_BTCUSDT_300s_MARKET.csv
-BITGET_USDT-FUTURES_BTCUSDT_300s_MARKET.csv
+USDT-FUTURES_BTCUSDT_300s_MARKET.csv
 ```
 
 缓存行为：
@@ -121,6 +123,34 @@ BITGET_USDT-FUTURES_BTCUSDT_300s_MARKET.csv
 ```
 
 当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `binance`。天勤当前不接入回测。
+
+这里的默认值只用于未选择 profile 的临时回测；仓库内置命名 profile 当前固定使用 Bitget，以继续复用既有历史缓存并保持旧报告口径。
+
+## 可复现配置
+
+命名 profile 除行情区间和资金参数外，还应固定以下信号配置：
+
+```yaml
+provider: bitget
+product_type: USDT-FUTURES
+kline_type: MARKET
+signal_strategy: stc_extreme_contrarian
+signal_mode: any
+use_closed_bar: true
+htf_hull_filter_enabled: true
+htf_hull_duration_seconds: 14400
+atr_period: 14
+```
+
+每次回测的 `report.json` 会额外记录：
+
+- profile 名称及原始 profile 值。
+- 最终生效的行情、信号、高周期和风控配置。
+- 各指标实际解析后的默认参数。
+- 实际 K 线起止时间和根数。
+- Git commit、工作区是否有修改、相关策略源码 SHA-256、Python 和 pandas 版本。
+
+`latest_month` 仍是滚动窗口，但报告中的 `resolved_data_window` 会固定记录本次实际数据范围。
 
 ## 撮合模型
 

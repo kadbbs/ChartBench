@@ -8,10 +8,10 @@ from pathlib import Path
 import pandas as pd
 
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting.config import build_backtest_live_config
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
 from tq_app.backtesting.data import fetch_market_candles
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
-from tq_app.live_trading import LiveTradingConfig
 from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str, runtime_project_root
 
 
@@ -90,7 +90,8 @@ def main() -> None:
         return
     if args.no_cache:
         args.cache = False
-    live_config = LiveTradingConfig.from_env(project_root)
+    profile_values = load_backtest_profile(project_root, args.profile)
+    live_config = build_backtest_live_config(project_root, profile_values)
     strategy = build_strategy(args.strategy, project_root, live_config)
     start_time_ms = _parse_time_ms(args.start_time)
     end_time_ms = _parse_time_ms(args.end_time)
@@ -169,6 +170,22 @@ def main() -> None:
         trailing_protect_2_ratio=args.trailing_protect_2_ratio,
         trailing_trigger_3_points=args.trailing_trigger_3_points,
         trailing_protect_3_ratio=args.trailing_protect_3_ratio,
+        run_context={
+            "profile": args.profile or None,
+            "profile_values": profile_values,
+            "market_data": {
+                "provider": args.provider,
+                "symbol": args.symbol.upper(),
+                "product_type": args.product_type,
+                "kline_type": args.kline_type,
+                "duration_seconds": args.duration,
+                "data_length": data_length,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "cache_enabled": args.cache,
+                "cache_dir": str(Path(args.cache_dir)),
+            },
+        },
         output_dir=Path(args.output_dir),
     )
     result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)

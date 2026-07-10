@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import fcntl
 import hashlib
 import hmac
-import asyncio
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -36,6 +39,12 @@ SIGNAL_TEXT_BY_SIDE = {
     "buy": {"Buy", "买"},
     "sell": {"Sell", "卖"},
 }
+
+
+class _StateSnapshot(dict[str, Any]):
+    def __init__(self, values: dict[str, Any], revision: str) -> None:
+        super().__init__(values)
+        self.revision = revision
 
 
 @dataclass(slots=True)
@@ -983,6 +992,7 @@ class LiveTradingEngine:
         self.config = config or LiveTradingConfig.from_env(project_root)
         self.logger = _build_logger(self.config.log_path)
         self._last_position_sync_warning_at = 0.0
+        self._state_io_lock = threading.RLock()
 
     def _trade_client(self) -> FuturesTradeClient:
         return create_futures_trade_client(self.config.provider, self.project_root)
@@ -3112,16 +3122,83 @@ class LiveTradingEngine:
         self._write_state(state)
 
     def _read_state(self) -> dict[str, Any]:
-        if not self.config.state_path.exists():
-            return {}
-        try:
-            return json.loads(self.config.state_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        with self._state_io_lock:
+            with self._state_file_lock(exclusive=False):
+                return self._load_state_locked()
 
     def _write_state(self, state: dict[str, Any]) -> None:
-        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config.state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not isinstance(state, dict):
+            raise TypeError("实盘 state 必须是 JSON object。")
+        payload = (json.dumps(state, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        expected_revision = getattr(state, "revision", None)
+        with self._state_io_lock:
+            with self._state_file_lock(exclusive=True):
+                current_state = self._load_state_locked()
+                if expected_revision is not None and current_state.revision != expected_revision:
+                    raise RuntimeError(
+                        "实盘 state 在本次读写之间已被其他进程修改；为避免覆盖较新的 clientOid、仓位或风控状态，已停止本次写入。"
+                    )
+                self._atomic_write_state_locked(payload)
+                if isinstance(state, _StateSnapshot):
+                    state.revision = self._state_revision(payload)
+
+    @contextmanager
+    def _state_file_lock(self, *, exclusive: bool) -> Iterator[None]:
+        state_path = self.config.state_path
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = state_path.with_name(f"{state_path.name}.lock")
+        with lock_path.open("a+b") as lock_file:
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(lock_file.fileno(), operation)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _load_state_locked(self) -> _StateSnapshot:
+        state_path = self.config.state_path
+        if not state_path.exists():
+            return _StateSnapshot({}, self._state_revision(None))
+        try:
+            payload = state_path.read_bytes()
+            parsed = json.loads(payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"实盘 state 文件损坏或不可读，已停止交易以避免重复下单: {state_path}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"实盘 state 顶层必须是 JSON object，已停止交易: {state_path}")
+        return _StateSnapshot(parsed, self._state_revision(payload))
+
+    def _atomic_write_state_locked(self, payload: bytes) -> None:
+        state_path = self.config.state_path
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temp_name = tempfile.mkstemp(
+            prefix=f".{state_path.name}.",
+            suffix=".tmp",
+            dir=state_path.parent,
+        )
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(file_descriptor, "wb") as temp_file:
+                temp_file.write(payload)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, state_path)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(state_path.parent, directory_flags)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    @staticmethod
+    def _state_revision(payload: bytes | None) -> str:
+        marker = payload if payload is not None else b"<missing-state>"
+        return hashlib.sha256(marker).hexdigest()
 
     def _log_result(self, result: TradeExecutionResult) -> None:
         decision = result.decision
@@ -3497,7 +3574,10 @@ def _is_green_color(color: str) -> bool:
 def _build_logger(log_path: Path) -> logging.Logger:
     logger = logging.getLogger("tq_app.live_trading")
     logger.setLevel(logging.INFO)
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    logger.propagate = False
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)

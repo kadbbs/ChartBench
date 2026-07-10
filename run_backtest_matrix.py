@@ -12,10 +12,10 @@ import pandas as pd
 
 from run_backtest import _parse_time_ms, _resolve_data_length, runtime_project_root
 from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting.config import build_backtest_live_config
 from tq_app.backtesting.data import fetch_market_candles
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
 from tq_app.config_profiles import load_backtest_profile, load_layered_env
-from tq_app.live_trading import LiveTradingConfig
 
 
 MATRIX_DIR = "config/backtest_matrices"
@@ -62,7 +62,7 @@ def main() -> None:
         return
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    live_config = LiveTradingConfig.from_env(project_root)
+    live_config = build_backtest_live_config(project_root, profile)
     symbol = _str(profile, "symbol", "BTCUSDT").upper()
     provider = _str(profile, "provider", "binance")
     product_type = _str(profile, "product_type", "UM-FUTURES")
@@ -130,6 +130,35 @@ def main() -> None:
         atr_period=live_config.atr_period,
         warmup_bars=_int(profile, "warmup_bars", 80),
         risk_exits_enabled=_bool(profile, "risk_exits_enabled", True),
+        startup_check_bars_5m=_int(profile, "startup_check_bars_5m", 24),
+        startup_max_favorable_points=_float(profile, "startup_max_favorable_points", 300.0),
+        startup_current_points=_float(profile, "startup_current_points", -150.0),
+        disaster_stop_points=_float(profile, "disaster_stop_points", -1800.0),
+        breakeven_trigger_points=_float(profile, "breakeven_trigger_points", 800.0),
+        breakeven_stop_points=_float(profile, "breakeven_stop_points", 100.0),
+        trailing_trigger_1_points=_float(profile, "trailing_trigger_1_points", 2000.0),
+        trailing_protect_1_ratio=_float(profile, "trailing_protect_1_ratio", 0.40),
+        trailing_trigger_2_points=_float(profile, "trailing_trigger_2_points", 4000.0),
+        trailing_protect_2_ratio=_float(profile, "trailing_protect_2_ratio", 0.50),
+        trailing_trigger_3_points=_float(profile, "trailing_trigger_3_points", 8000.0),
+        trailing_protect_3_ratio=_float(profile, "trailing_protect_3_ratio", 0.60),
+        run_context={
+            "profile": base_profile,
+            "profile_values": profile,
+            "matrix": args.matrix,
+            "market_data": {
+                "provider": provider,
+                "symbol": symbol,
+                "product_type": product_type,
+                "kline_type": kline_type,
+                "duration_seconds": duration,
+                "data_length": length,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "cache_enabled": cache_enabled,
+                "cache_dir": str(cache_dir),
+            },
+        },
         output_dir=output_dir / "runs",
     )
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
+import platform
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
@@ -10,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from tq_app.backtesting.config import backtest_signal_config_snapshot
 from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
 from tq_app.backtesting.strategies import KlineStrategy
 from tq_app.live_trading import LiveTradingConfig
@@ -50,6 +54,7 @@ class BacktestConfig:
     trailing_protect_2_ratio: float = 0.50
     trailing_trigger_3_points: float = 8000.0
     trailing_protect_3_ratio: float = 0.60
+    run_context: dict[str, Any] = field(default_factory=dict)
     output_dir: Path = Path("backtest_outputs/latest")
 
 
@@ -134,6 +139,10 @@ class BacktestEngine:
             indicator_ids=["merged_dkx_hull_ut", "stc", "macd"],
         )
         full_snapshot = low_builder.build_full(bars)
+        indicator_parameters = {
+            indicator_id: low_builder.registry.get(indicator_id).resolve_params(None)
+            for indicator_id in low_builder.indicator_ids
+        }
 
         htf_snapshot = None
         if htf_bars is not None and not htf_bars.empty and self.live_config.htf_hull_filter_enabled:
@@ -265,6 +274,16 @@ class BacktestEngine:
                 "htf_hull_filter_enabled": self.live_config.htf_hull_filter_enabled,
                 "htf_hull_duration_seconds": self.live_config.htf_hull_duration_seconds,
                 "htf_entry_lock_model": "hull_trend_segment",
+                "signal_config": backtest_signal_config_snapshot(self.live_config),
+                "indicator_parameters": indicator_parameters,
+                "code_version": _code_version(self.project_root),
+                "resolved_data_window": {
+                    "first_bar_time": int(candles[0]["time"]) if candles else None,
+                    "first_bar_time_label": time_labels.get(str(candles[0]["time"]), "") if candles else "",
+                    "last_bar_time": int(candles[-1]["time"]) if candles else None,
+                    "last_bar_time_label": time_labels.get(str(candles[-1]["time"]), "") if candles else "",
+                    "bar_count": len(candles),
+                },
             },
             metrics=metrics,
             trades=trades,
@@ -445,6 +464,55 @@ class BacktestEngine:
 def _pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return (exit_price - entry) * direction * qty
+
+
+def _code_version(project_root: Path) -> dict[str, Any]:
+    commit = ""
+    dirty: bool | None = None
+    try:
+        commit_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        commit = commit_result.stdout.strip()
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        dirty = bool(status_result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    digest = hashlib.sha256()
+    source_paths = [
+        project_root / "custom_indicators.py",
+        project_root / "tq_app" / "live_trading.py",
+        *(sorted((project_root / "tq_app" / "backtesting").glob("*.py"))),
+        *(sorted((project_root / "tq_app" / "indicators").glob("*.py"))),
+    ]
+    for path in source_paths:
+        if not path.is_file():
+            continue
+        digest.update(str(path.relative_to(project_root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return {
+        "schema_version": 1,
+        "git_commit": commit or None,
+        "git_dirty": dirty,
+        "source_sha256": digest.hexdigest(),
+        "python": platform.python_version(),
+        "pandas": pd.__version__,
+    }
 
 
 def _points(side: str, entry: float, exit_price: float) -> float:

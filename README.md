@@ -151,7 +151,7 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 ## 当前默认交易模型
 
 - 图表默认 `provider=tianqin`，默认合约 `KQ.m@SHFE.cu`；天勤下拉内置国内期货主连品种，并在账号可用时追加各品种未到期具体合约，均显示中文简称，仅影响 `web_tq_chart.py`。
-- 实盘/回测支持 `provider=binance` 和 `provider=bitget`，默认 `binance`。
+- 实盘/回测支持 `provider=binance` 和 `provider=bitget`；未指定 profile 的临时运行默认 `binance`，仓库内置回测 profile 为复用既有缓存和历史口径而显式固定 `bitget`。
 - Binance 默认交易标的 `BTCUSDT`，产品线 `UM-FUTURES`；Bitget 默认产品线 `USDT-FUTURES`。
 - 实盘真实 profile `live_5u` 使用 `5U` 保证金、`10x`、逐仓，并启用 BTC run_0024 持仓风控出场参数。
 - Binance 实盘下单使用 Hedge Mode 参数格式：开多 `BUY/LONG`，开空 `SELL/SHORT`；策略层面禁止真实多空同时持有。
