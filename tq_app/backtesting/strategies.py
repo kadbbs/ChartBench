@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -26,7 +26,7 @@ class LiveDecisionStrategy:
     name = "live_decision"
 
     def __init__(self, project_root: Path, config: LiveTradingConfig | None = None) -> None:
-        cfg = config or LiveTradingConfig.from_env(project_root)
+        cfg = replace(config) if config is not None else LiveTradingConfig.from_env(project_root)
         cfg.enabled = False
         cfg.dry_run = True
         cfg.log_only = True

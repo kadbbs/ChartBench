@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import copy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
@@ -43,10 +42,18 @@ DATA_SOURCE_IDLE_TTL_SECONDS = 10 * 60
 DATA_SOURCE_MAX_COUNT = 8
 SNAPSHOT_CACHE_MAX_ITEMS = 64
 SNAPSHOT_DELTA_TAIL_POINTS = 3
+PROVIDER_ACCOUNT_CACHE_TTL_SECONDS = 30.0
+TIANQIN_CONTRACT_CACHE_TTL_SECONDS = 5 * 60.0
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 BITGET_PROVIDER = "bitget"
 BINANCE_PROVIDER = "binance"
 TIANQIN_PROVIDER = "tianqin"
+
+
+@dataclass(slots=True)
+class SnapshotCacheEntry:
+    version: int
+    snapshot: dict[str, Any]
 
 
 class MarketDataService:
@@ -75,8 +82,17 @@ class MarketDataService:
         self._data_sources: dict[tuple[str, str, int, str, int, int, int], DataSource] = {}
         self._data_source_last_used: dict[tuple[str, str, int, str, int, int, int], float] = {}
         self._snapshot_cache_lock = threading.Lock()
-        self._snapshot_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self._snapshot_cache_condition = threading.Condition(self._snapshot_cache_lock)
+        self._snapshot_cache: dict[tuple[Any, ...], SnapshotCacheEntry] = {}
+        self._snapshot_building: set[tuple[Any, ...]] = set()
+        self._metadata_lock = threading.Lock()
+        self._metadata_condition = threading.Condition(self._metadata_lock)
         self._contracts_by_provider: dict[str, list[dict[str, Any]]] = {}
+        self._contract_maps_by_provider: dict[str, dict[str, dict[str, Any]]] = {}
+        self._contract_cache_expires_at: dict[str, float] = {}
+        self._contract_refreshing: set[str] = set()
+        self._provider_account_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._provider_account_refreshing: set[str] = set()
         self.indicators = build_indicator_registry(project_root)
 
     def start(self) -> None:
@@ -212,8 +228,7 @@ class MarketDataService:
             effective_brick_length,
             effective_data_length,
         )
-        bars, source_status = data_source.get_bars_with_status()
-        cache_key = self._snapshot_cache_key(
+        cache_key = self._snapshot_context_key(
             provider=effective_provider,
             symbol=effective_symbol,
             duration_seconds=effective_duration,
@@ -223,47 +238,54 @@ class MarketDataService:
             data_length=effective_data_length,
             indicator_ids=selected,
             indicator_params=all_params,
-            source_version=int(source_status.get("version") or 0),
         )
-        cached_snapshot = self._cached_snapshot(cache_key, source_status)
-        if cached_snapshot is not None:
-            return cached_snapshot
+        while True:
+            bars, source_status = data_source.get_bars_with_status()
+            source_version = int(source_status.get("version") or 0)
+            cached_snapshot = self._cached_snapshot(cache_key, source_version, source_status)
+            if cached_snapshot is not None:
+                return cached_snapshot
+            if not self._claim_snapshot_build(cache_key, source_version):
+                continue
 
-        normalized = self._with_chart_time(bars, effective_bar_mode)
+            try:
+                normalized = self._with_chart_time(bars, effective_bar_mode)
 
-        results: list[IndicatorResult] = []
-        for indicator_id in selected:
-            indicator = self.indicators.get(indicator_id)
-            resolved_params = indicator.resolve_params(all_params.get(indicator_id))
-            results.append(indicator.build(normalized, resolved_params))
+                results: list[IndicatorResult] = []
+                for indicator_id in selected:
+                    indicator = self.indicators.get(indicator_id)
+                    resolved_params = indicator.resolve_params(all_params.get(indicator_id))
+                    results.append(indicator.build(normalized, resolved_params))
 
-        last_close = float(normalized.iloc[-1]["close"])
-        prev_close = float(normalized.iloc[-2]["close"]) if len(normalized) > 1 else last_close
+                last_close = float(normalized.iloc[-1]["close"])
+                prev_close = float(normalized.iloc[-2]["close"]) if len(normalized) > 1 else last_close
 
-        snapshot = {
-            "symbol": effective_symbol,
-            "symbol_label": self._symbol_label(effective_provider, effective_symbol),
-            "provider": effective_provider,
-            "provider_hint": self._provider_hint(effective_provider),
-            "provider_account": self._provider_account(effective_provider),
-            "refresh_ms": self._refresh_interval_ms(effective_provider),
-            "contract_detail": self._contract_detail(effective_provider, effective_symbol),
-            "duration_seconds": effective_duration,
-            "bar_mode": effective_bar_mode,
-            "range_ticks": effective_range_ticks,
-            "brick_length": effective_brick_length,
-            "data_length": effective_data_length,
-            "time_labels": self._serialize_time_labels(normalized),
-            "candles": self._serialize_candles(normalized),
-            "volume": self._serialize_volume(normalized),
-            "indicators": [self._serialize_indicator(item) for item in results],
-            "last_close": last_close,
-            "last_color": TV_UP if last_close >= prev_close else TV_DOWN,
-            "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
-            "stream": source_status,
-        }
-        self._store_snapshot_cache(cache_key, snapshot)
-        return snapshot
+                snapshot = {
+                    "symbol": effective_symbol,
+                    "symbol_label": self._symbol_label(effective_provider, effective_symbol),
+                    "provider": effective_provider,
+                    "provider_hint": self._provider_hint(effective_provider),
+                    "provider_account": self._provider_account(effective_provider),
+                    "refresh_ms": self._refresh_interval_ms(effective_provider),
+                    "contract_detail": self._contract_detail(effective_provider, effective_symbol),
+                    "duration_seconds": effective_duration,
+                    "bar_mode": effective_bar_mode,
+                    "range_ticks": effective_range_ticks,
+                    "brick_length": effective_brick_length,
+                    "data_length": effective_data_length,
+                    "time_labels": self._serialize_time_labels(normalized),
+                    "candles": self._serialize_candles(normalized),
+                    "volume": self._serialize_volume(normalized),
+                    "indicators": [self._serialize_indicator(item) for item in results],
+                    "last_close": last_close,
+                    "last_color": TV_UP if last_close >= prev_close else TV_DOWN,
+                    "last_time": pd.Timestamp(normalized.iloc[-1]["datetime"]).tz_convert(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+                    "stream": dict(source_status),
+                }
+                self._store_snapshot_cache(cache_key, source_version, snapshot)
+                return self._snapshot_for_response(snapshot, source_status)
+            finally:
+                self._release_snapshot_build(cache_key)
 
     def build_snapshot_delta(self, previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
         if not self._same_snapshot_context(previous, current):
@@ -395,50 +417,67 @@ class MarketDataService:
         return data_source.wait_for_update(last_version, timeout)
 
     def _load_contracts(self, provider: str) -> list[dict[str, Any]]:
-        cached = self._contracts_by_provider.get(provider)
-        if cached is not None and provider != TIANQIN_PROVIDER:
-            return cached
+        with self._metadata_condition:
+            cached = self._contracts_by_provider.get(provider)
+            cache_is_current = (
+                provider != TIANQIN_PROVIDER
+                or self._contract_cache_expires_at.get(provider, 0.0) > time.monotonic()
+            )
+            if cached is not None and cache_is_current:
+                return cached
+            if provider in self._contract_refreshing:
+                self._metadata_condition.wait_for(lambda: provider not in self._contract_refreshing)
+                return self._contracts_by_provider.get(provider, [])
+            self._contract_refreshing.add(provider)
 
-        if provider == TIANQIN_PROVIDER:
-            try:
+        contracts: list[dict[str, Any]] = []
+        try:
+            if provider == TIANQIN_PROVIDER:
                 contracts = load_tianqin_contract_catalog(self.project_root)
-            except Exception:
-                contracts = []
-        elif provider == BINANCE_PROVIDER:
-            try:
+            elif provider == BINANCE_PROVIDER:
                 contracts = load_binance_contract_catalog(self.project_root)
-            except Exception:
-                contracts = []
-        elif provider == BITGET_PROVIDER:
-            try:
+            elif provider == BITGET_PROVIDER:
                 contracts = load_bitget_contract_catalog(self.project_root)
-            except Exception:
-                contracts = []
-        else:
+        except Exception:
             contracts = []
 
-        fallback_symbol = self._fallback_symbol_for_provider(provider)
-        should_include_runtime_symbol = provider == self.provider and self.symbol and not any(item["symbol"] == self.symbol for item in contracts)
-        if should_include_runtime_symbol:
-            contracts = [
-                {
-                    "symbol": self.symbol,
-                    "name": self.symbol,
-                    "label": format_contract_label(self.symbol),
-                    "exchange_id": "",
-                    "product_id": "",
-                },
-                *contracts,
-            ]
-        elif not contracts and fallback_symbol:
-            contracts = [self._fallback_contract(provider, fallback_symbol)]
-        if provider != TIANQIN_PROVIDER:
-            self._contracts_by_provider[provider] = contracts
+        try:
+            fallback_symbol = self._fallback_symbol_for_provider(provider)
+            should_include_runtime_symbol = provider == self.provider and self.symbol and not any(item["symbol"] == self.symbol for item in contracts)
+            if should_include_runtime_symbol:
+                contracts = [
+                    {
+                        "symbol": self.symbol,
+                        "name": self.symbol,
+                        "label": format_contract_label(self.symbol),
+                        "exchange_id": "",
+                        "product_id": "",
+                    },
+                    *contracts,
+                ]
+            elif not contracts and fallback_symbol:
+                contracts = [self._fallback_contract(provider, fallback_symbol)]
+            with self._metadata_condition:
+                self._contracts_by_provider[provider] = contracts
+                if provider == TIANQIN_PROVIDER:
+                    self._contract_cache_expires_at[provider] = (
+                        time.monotonic() + TIANQIN_CONTRACT_CACHE_TTL_SECONDS
+                    )
+                self._contract_maps_by_provider[provider] = {
+                    str(item.get("symbol") or ""): item
+                    for item in contracts
+                    if item.get("symbol")
+                }
+        finally:
+            with self._metadata_condition:
+                self._contract_refreshing.discard(provider)
+                self._metadata_condition.notify_all()
         return contracts
 
     def _symbol_label(self, provider: str, symbol: str) -> str:
-        contract_map = {item["symbol"]: item for item in self._load_contracts(provider)}
-        contract = contract_map.get(symbol)
+        self._load_contracts(provider)
+        with self._metadata_lock:
+            contract = self._contract_maps_by_provider.get(provider, {}).get(symbol)
         if contract:
             return str(contract["label"])
         return format_contract_label(symbol)
@@ -523,7 +562,7 @@ class MarketDataService:
             self._clear_snapshot_cache()
         return stale_sources
 
-    def _snapshot_cache_key(
+    def _snapshot_context_key(
         self,
         *,
         provider: str,
@@ -535,7 +574,6 @@ class MarketDataService:
         data_length: int,
         indicator_ids: list[str],
         indicator_params: dict[str, dict[str, Any]],
-        source_version: int,
     ) -> tuple[Any, ...]:
         params_signature = json.dumps(indicator_params, ensure_ascii=False, sort_keys=True, default=str)
         return (
@@ -548,28 +586,59 @@ class MarketDataService:
             data_length,
             tuple(indicator_ids),
             params_signature,
-            source_version,
         )
 
-    def _cached_snapshot(self, cache_key: tuple[Any, ...], source_status: dict[str, Any]) -> dict[str, Any] | None:
-        with self._snapshot_cache_lock:
-            cached = self._snapshot_cache.get(cache_key)
-            if cached is None:
+    def _cached_snapshot(
+        self,
+        cache_key: tuple[Any, ...],
+        source_version: int,
+        source_status: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        with self._snapshot_cache_condition:
+            entry = self._snapshot_cache.get(cache_key)
+            if entry is None or entry.version != source_version:
                 return None
             self._snapshot_cache.pop(cache_key)
-            self._snapshot_cache[cache_key] = cached
-        snapshot = copy.deepcopy(cached)
-        snapshot["stream"] = dict(source_status)
-        return snapshot
+            self._snapshot_cache[cache_key] = entry
+            snapshot = entry.snapshot
+        return self._snapshot_for_response(snapshot, source_status)
 
-    def _store_snapshot_cache(self, cache_key: tuple[Any, ...], snapshot: dict[str, Any]) -> None:
-        with self._snapshot_cache_lock:
-            self._snapshot_cache[cache_key] = copy.deepcopy(snapshot)
+    def _store_snapshot_cache(
+        self,
+        cache_key: tuple[Any, ...],
+        source_version: int,
+        snapshot: dict[str, Any],
+    ) -> None:
+        with self._snapshot_cache_condition:
+            self._snapshot_cache.pop(cache_key, None)
+            self._snapshot_cache[cache_key] = SnapshotCacheEntry(version=source_version, snapshot=snapshot)
             while len(self._snapshot_cache) > SNAPSHOT_CACHE_MAX_ITEMS:
                 self._snapshot_cache.pop(next(iter(self._snapshot_cache)))
 
+    def _claim_snapshot_build(self, cache_key: tuple[Any, ...], source_version: int) -> bool:
+        with self._snapshot_cache_condition:
+            if cache_key in self._snapshot_building:
+                self._snapshot_cache_condition.wait_for(lambda: cache_key not in self._snapshot_building)
+                return False
+            entry = self._snapshot_cache.get(cache_key)
+            if entry is not None and entry.version == source_version:
+                return False
+            self._snapshot_building.add(cache_key)
+            return True
+
+    def _release_snapshot_build(self, cache_key: tuple[Any, ...]) -> None:
+        with self._snapshot_cache_condition:
+            self._snapshot_building.discard(cache_key)
+            self._snapshot_cache_condition.notify_all()
+
+    @staticmethod
+    def _snapshot_for_response(snapshot: dict[str, Any], source_status: dict[str, Any]) -> dict[str, Any]:
+        response = dict(snapshot)
+        response["stream"] = dict(source_status)
+        return response
+
     def _clear_snapshot_cache(self) -> None:
-        with self._snapshot_cache_lock:
+        with self._snapshot_cache_condition:
             self._snapshot_cache.clear()
 
     def _resolve_provider(self, provider: str | None) -> str:
@@ -620,29 +689,44 @@ class MarketDataService:
         }
 
     def _contract_detail(self, provider: str, symbol: str) -> dict[str, Any]:
-        contracts = self._load_contracts(provider)
-        contract = next((item for item in contracts if item["symbol"] == symbol), None)
+        self._load_contracts(provider)
+        with self._metadata_lock:
+            contract = self._contract_maps_by_provider.get(provider, {}).get(symbol)
         if not contract:
             return {}
         return dict(contract)
 
     def _provider_account(self, provider: str) -> dict[str, Any]:
-        if provider == TIANQIN_PROVIDER:
-            try:
-                return load_tianqin_account_summary(self.project_root)
-            except Exception:
-                return {}
-        if provider == BINANCE_PROVIDER:
-            try:
-                return load_binance_account_summary(self.project_root)
-            except Exception:
-                return {}
-        if provider == BITGET_PROVIDER:
-            try:
-                return load_bitget_account_summary(self.project_root)
-            except Exception:
-                return {}
-        return {}
+        now = time.monotonic()
+        with self._metadata_condition:
+            cached = self._provider_account_cache.get(provider)
+            if cached is not None and cached[0] > now:
+                return dict(cached[1])
+            if provider in self._provider_account_refreshing:
+                self._metadata_condition.wait_for(lambda: provider not in self._provider_account_refreshing)
+                cached = self._provider_account_cache.get(provider)
+                return dict(cached[1]) if cached is not None else {}
+            self._provider_account_refreshing.add(provider)
+
+        account: dict[str, Any] = {}
+        try:
+            if provider == TIANQIN_PROVIDER:
+                account = load_tianqin_account_summary(self.project_root)
+            elif provider == BINANCE_PROVIDER:
+                account = load_binance_account_summary(self.project_root)
+            elif provider == BITGET_PROVIDER:
+                account = load_bitget_account_summary(self.project_root)
+        except Exception:
+            account = {}
+        finally:
+            with self._metadata_condition:
+                self._provider_account_cache[provider] = (
+                    time.monotonic() + PROVIDER_ACCOUNT_CACHE_TTL_SECONDS,
+                    dict(account),
+                )
+                self._provider_account_refreshing.discard(provider)
+                self._metadata_condition.notify_all()
+        return dict(account)
 
     @staticmethod
     def _provider_hint(provider: str) -> str:

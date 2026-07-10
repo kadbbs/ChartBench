@@ -19,17 +19,44 @@
 # =============================================================================
 
 symbol: SOLUSDT
+provider: bitget
 duration: 300
 start_time: "2026-03-31 00:00:00"
 end_time: "2026-06-20 00:00:00"
 strategy: live_decision
 product_type: USDT-FUTURES
 kline_type: MARKET
+
+# 固定实盘信号判断参数，避免 defaults.yaml 或 .env 变化后改变回测结果。
+signal_strategy: stc_extreme_contrarian
+signal_mode: any
+use_closed_bar: true
+htf_hull_filter_enabled: true
+htf_hull_duration_seconds: 14400
+atr_period: 14
+stop_atr_multiplier: 2
+tp1_r_multiple: 1
+tp1_size_ratio: 0.5
+tp2_r_multiple: 1.5
+
 initial_equity: 20000
 margin_ratio_per_trade: 0
 fee_rate: 0.00023
 slippage_rate: 0
 warmup_bars: 80
+risk_exits_enabled: true
+startup_check_bars_5m: 24
+startup_max_favorable_points: 300
+startup_current_points: -150
+disaster_stop_points: -1800
+breakeven_trigger_points: 800
+breakeven_stop_points: 100
+trailing_trigger_1_points: 2000
+trailing_protect_1_ratio: 0.4
+trailing_trigger_2_points: 4000
+trailing_protect_2_ratio: 0.5
+trailing_trigger_3_points: 8000
+trailing_protect_3_ratio: 0.6
 output_dir: backtest_outputs/sol_5m_range_cached_46
 
 # 本配置专门用于缓存回测；普通 profile 默认仍走在线接口。
