@@ -16,6 +16,8 @@ const state = {
   primarySeriesKeyByPane: new Map(),
   bandPrimitiveByKey: new Map(),
   currentPriceLine: null,
+  renderedViewportSignature: "",
+  renderedSymbol: "",
   hasFitted: false,
   isSyncingCrosshair: false,
   refreshTimerId: null,
@@ -678,6 +680,14 @@ function syncCurrentPriceLine(price, color) {
     axisLabelVisible: true,
     title: "现价",
   });
+}
+
+function clearCurrentPriceLine() {
+  const candleSeries = state.seriesByKey.get("candles");
+  if (state.currentPriceLine && typeof candleSeries?.removePriceLine === "function") {
+    candleSeries.removePriceLine(state.currentPriceLine);
+  }
+  state.currentPriceLine = null;
 }
 
 function scheduleIndicatorSnapshotSync() {
@@ -1738,6 +1748,28 @@ function focusComputedBars(chart, snapshot) {
   });
 }
 
+function snapshotViewportSignature(snapshot) {
+  return [
+    snapshot.provider || "",
+    snapshot.symbol || "",
+    Number(snapshot.duration_seconds || 0),
+    snapshot.bar_mode || "time",
+    Number(snapshot.range_ticks || 0),
+    Number(snapshot.brick_length || 0),
+  ].join("|");
+}
+
+function resetChartViewport(snapshot) {
+  state.charts.forEach((entry) => {
+    entry.chart.priceScale("right").applyOptions({ autoScale: true });
+  });
+  if (snapshot.indicators.length > 0) {
+    focusComputedBars(state.charts[0].chart, snapshot);
+  } else {
+    focusRecentBars(state.charts[0].chart, snapshot.candles.length);
+  }
+}
+
 function paneHeights(panes) {
   const total = panes.length;
   const hasVolumePane = panes.includes(VOLUME_PANE_ID);
@@ -2174,12 +2206,14 @@ function applySnapshot(snapshot) {
   const nextBarMode = snapshot.bar_mode || "time";
   const nextRangeTicks = snapshot.range_ticks || state.config.range_ticks || 10;
   const nextBrickLength = snapshot.brick_length || state.config.brick_length || 10000;
-  const shouldRefit =
-    snapshot.symbol !== state.activeSymbol ||
-    snapshot.duration_seconds !== state.activeDurationSeconds ||
-    nextBarMode !== state.activeBarMode ||
-    nextRangeTicks !== state.activeRangeTicks ||
-    nextBrickLength !== state.activeBrickLength;
+  const nextViewportSignature = snapshotViewportSignature({
+    ...snapshot,
+    bar_mode: nextBarMode,
+    range_ticks: nextRangeTicks,
+    brick_length: nextBrickLength,
+  });
+  const shouldRefit = nextViewportSignature !== state.renderedViewportSignature;
+  const symbolChanged = Boolean(state.renderedSymbol) && snapshot.symbol !== state.renderedSymbol;
 
   state.activeSymbol = snapshot.symbol;
   state.activeProvider = snapshot.provider || state.config.provider;
@@ -2250,6 +2284,9 @@ function applySnapshot(snapshot) {
   const previousCandleCount = (state.seriesDataByKey.get("candles") || []).length;
   const candleSeries = state.seriesByKey.get("candles");
   const volumeSeries = state.seriesByKey.get("volume");
+  if (symbolChanged) {
+    clearCurrentPriceLine();
+  }
   setSeriesData("candles", candleSeries, displaySnapshot.candles);
   setSeriesData("volume", volumeSeries, displaySnapshot.volume);
   candleSeries?.applyOptions({
@@ -2335,13 +2372,11 @@ function applySnapshot(snapshot) {
     state.hasFitted = false;
   }
   if (!state.hasFitted && state.charts.length > 0) {
-    if (displaySnapshot.indicators.length > 0) {
-      focusComputedBars(state.charts[0].chart, displaySnapshot);
-    } else {
-      focusRecentBars(state.charts[0].chart, displaySnapshot.candles.length);
-    }
+    resetChartViewport(displaySnapshot);
     state.hasFitted = true;
   }
+  state.renderedViewportSignature = nextViewportSignature;
+  state.renderedSymbol = snapshot.symbol;
 
   updatePaneLabelPositions();
 }
@@ -2541,8 +2576,7 @@ async function boot() {
 
   els.symbolSelect.addEventListener("change", async () => {
     try {
-      state.activeSymbol = getRequestedSymbol();
-      state.config.symbol = state.activeSymbol;
+      state.config.symbol = getRequestedSymbol();
       els.error.textContent = "";
       syncRealtimeTransport();
       await refreshSnapshot();
