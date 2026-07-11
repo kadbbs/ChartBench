@@ -15,8 +15,8 @@
 
 # ===== 图表 / 行情默认参数 =====
 
-# 全局默认 provider 仍给实盘/回测使用；图表可以用下面的 TQ_CHART_* 单独覆盖。
-TQ_DEFAULT_PROVIDER: binance
+# 全局默认 provider 给实盘/回测使用；图表继续用下面的 TQ_CHART_* 单独覆盖。
+TQ_DEFAULT_PROVIDER: bitget
 
 # 图表默认使用天勤量化行情，不影响实盘/回测入口。
 TQ_CHART_DEFAULT_PROVIDER: tianqin
@@ -64,7 +64,7 @@ TIANQIN_CONTRACT_CATALOG_PROCESS_TIMEOUT_SECONDS: 45
 
 # ===== Binance / Bitget 行情和产品参数 =====
 
-# 当前项目默认跑 Binance USD-M 合约；Bitget USDT-FUTURES 也可用于图表/回测/实盘。
+# 当前项目实盘/回测默认跑 Bitget USDT-FUTURES；Binance USD-M 仍保留为可选 provider。
 BINANCE_DEFAULT_PRODUCT_TYPE: UM-FUTURES
 BINANCE_KLINE_TYPE: MARKET
 BINANCE_FAPI_BASE: https://fapi.binance.com
@@ -78,10 +78,10 @@ BITGET_KLINE_TYPE: MARKET
 # ===== 实盘账户 / 合约参数 =====
 
 # 实盘交易所 provider：binance / bitget。天勤仅用于图表模块。
-LIVE_TRADING_PROVIDER: binance
+LIVE_TRADING_PROVIDER: bitget
 
 # 产品类型会按 provider 自动修正：Binance 默认 UM-FUTURES，Bitget 默认 USDT-FUTURES。
-LIVE_TRADING_PRODUCT_TYPE: UM-FUTURES
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
 
 # 保证金币种。
 LIVE_TRADING_MARGIN_COIN: USDT
@@ -137,8 +137,8 @@ LIVE_TRADING_ENTRY_TIME_END: 24:00
 # 高周期 Hull 趋势过滤。默认打开。
 LIVE_TRADING_HTF_HULL_FILTER_ENABLED: true
 
-# 高周期周期，单位秒。3600=1h。
-LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 14400
+# 高周期周期，单位秒。3600=1h，14400=4h，86400=1D。
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
 
 # 信号来源模式：
 # any=Buy/买 或 Sell/卖 任一触发

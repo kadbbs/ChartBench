@@ -48,7 +48,7 @@ http://0.0.0.0:8050
 ```yaml
 TQ_CHART_DEFAULT_PROVIDER: tianqin
 TQ_CHART_DEFAULT_SYMBOL: KQ.m@SHFE.cu
-TQ_DEFAULT_PROVIDER: binance
+TQ_DEFAULT_PROVIDER: bitget
 TQ_DEFAULT_SYMBOL: BTCUSDT
 TQ_DEFAULT_DURATION_SECONDS: 300
 TQ_DEFAULT_DATA_LENGTH: 800
@@ -89,6 +89,19 @@ renko  # Renko 预留
 ```
 
 天勤当前图表链路建议使用 `time`。
+
+非时间图模式属于预留能力，当前不放在页面常用控制区；需要验证时通过
+`web_tq_chart.py --bar-mode ...` 启动参数指定。
+
+## 页面操作
+
+左侧常用区只保留数据源、合约和周期三个切换项。星标按钮用于加入或移出
+自选，“全部 / 自选”用于过滤合约下拉；切换过滤结果时，如果当前合约不在
+列表中，图表会自动切到第一个可用合约。
+
+最新价、数据源和实时连接状态集中显示在行情摘要中。合约详情和指标设置
+默认折叠，需要时点击标题展开。图表类型、Range Tick、Brick Length 等预留
+参数不再占用页面空间，但后端参数和命令行能力仍然保留。
 
 ## Web API
 
@@ -147,7 +160,7 @@ macd
 `merged_dkx_hull_ut` 来自 `custom_indicators.py`，会生成：
 
 - UT / DKX 买卖 marker。
-- Hull 红带/绿带。
+- Hull 多趋势绿带/空趋势红带。
 - 策略用于判断 K 线和 Hull 带相对位置。
 
 `stc` 和 `macd` 在 `tq_app/indicators/builtin.py`。

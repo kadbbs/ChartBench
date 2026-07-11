@@ -7,6 +7,12 @@ from tq_app.indicators import Indicator
 from tq_app.models import IndicatorMeta, IndicatorResult, SeriesDefinition
 
 
+HULL_UP_COLOR = "#4caf50"
+HULL_DOWN_COLOR = "#f23645"
+HULL_UP_FILL = "rgba(76, 175, 80, 0.60)"
+HULL_DOWN_FILL = "rgba(242, 54, 69, 0.60)"
+
+
 def _line_point(time_value: int, value: float | None) -> dict[str, float | int]:
     if value is None or pd.isna(value):
         return {"time": int(time_value)}
@@ -139,7 +145,7 @@ class DuoKongLineIndicator(Indicator):
         id="duo_kong_line",
         name="多空线",
         pane="price",
-        description="通达信风格 HULL 多空线，红绿趋势段并标注 多 / 空 信号。",
+        description="通达信风格 HULL 多空线，绿涨红跌趋势段并标注 多 / 空 信号。",
         enabled_by_default=True,
         params=[
             {
@@ -194,7 +200,7 @@ class DuoKongLineIndicator(Indicator):
                 {
                     "time": int(row.time),
                     "position": "belowBar",
-                    "color": "#ff4d4f",
+                    "color": HULL_UP_COLOR,
                     "shape": "circle",
                     "size": 1,
                     "text": "多",
@@ -205,7 +211,7 @@ class DuoKongLineIndicator(Indicator):
                 {
                     "time": int(row.time),
                     "position": "aboveBar",
-                    "color": "#00a86b",
+                    "color": HULL_DOWN_COLOR,
                     "shape": "circle",
                     "size": 1,
                     "text": "空",
@@ -223,9 +229,9 @@ class DuoKongLineIndicator(Indicator):
                     name=f"多空线({length})",
                     pane="price",
                     series_type="line",
-                    data=_colored_line_data(df, "hull", "trend_up", "#e53935", "#00c853"),
+                    data=_colored_line_data(df, "hull", "trend_up", HULL_UP_COLOR, HULL_DOWN_COLOR),
                     options={
-                        "color": "#e53935",
+                        "color": HULL_UP_COLOR,
                         "lineWidth": line_width,
                         "priceLineVisible": False,
                         "lastValueVisible": False,
@@ -401,8 +407,8 @@ class MergedDkxHullUtIndicator(Indicator):
             for row in df.loc[df["ut_sell"], ["time"]].itertuples(index=False)
         )
 
-        hull_up_color = "#f23645" if color_hull else "#ff9800"
-        hull_down_color = "#4caf50" if color_hull else "#ff9800"
+        hull_up_color = HULL_UP_COLOR if color_hull else "#ff9800"
+        hull_down_color = HULL_DOWN_COLOR if color_hull else "#ff9800"
 
         return IndicatorResult(
             id=self.meta.id,
@@ -444,7 +450,7 @@ class MergedDkxHullUtIndicator(Indicator):
                         "priceLineVisible": False,
                         "lastValueVisible": False,
                         "fillToSeriesId": "shull_up",
-                        "fillColor": "rgba(242, 54, 69, 0.60)" if color_hull else "rgba(255, 152, 0, 0.60)",
+                        "fillColor": HULL_UP_FILL if color_hull else "rgba(255, 152, 0, 0.60)",
                     },
                 ),
                 SeriesDefinition(
@@ -467,7 +473,7 @@ class MergedDkxHullUtIndicator(Indicator):
                         "priceLineVisible": False,
                         "lastValueVisible": False,
                         "fillToSeriesId": "shull_down",
-                        "fillColor": "rgba(76, 175, 80, 0.60)" if color_hull else "rgba(255, 152, 0, 0.60)",
+                        "fillColor": HULL_DOWN_FILL if color_hull else "rgba(255, 152, 0, 0.60)",
                     },
                 ),
                 SeriesDefinition(

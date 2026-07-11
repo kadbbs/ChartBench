@@ -84,7 +84,8 @@ LIVE_TRADING_EMAIL_TO=
 `config/profiles/live_5u.yaml` 当前用于真实交易：
 
 ```yaml
-LIVE_TRADING_PROVIDER: binance
+LIVE_TRADING_PROVIDER: bitget
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
 LIVE_TRADING_MODE: live
 LIVE_TRADING_MARGIN_AMOUNT: 5
 LIVE_TRADING_LEVERAGE: 10
@@ -145,6 +146,19 @@ Bitget 请求使用双向持仓格式：
 - 同一个高周期 Hull 同色段内，同方向只允许开一次仓。
 - 只要某个 `symbol + side + 高周期 Hull 同色段` 已经真实开过仓，即使后面手动平仓、风控平仓或同步发现仓位消失，本段也不会再开同向仓位。
 - Hull 高周期颜色切换后，锁 key 变化，才允许同方向再次出现一次新开仓机会。
+
+可选策略 `stc_1d_1h_reentry` 修改了上述最后两条限制：
+
+- 主趋势固定使用已收完的 1D Hull + STC 同色方向，首次开仓规则与 `stc_extreme_contrarian` 一致。
+- 同一 1D Hull 同色段首次开仓并平仓后，新的低周期信号只有在已收完的 1H Hull 与 1H STC 颜色都同向时才能再次开仓。
+- 第 2 次及之后均执行相同的 1H Hull/STC 同向检查；1H STC 只检查颜色，不要求 `<25` 或 `>75`。
+- 已有同方向持仓时仍然禁止加仓，`clientOid` 去重和全部风控规则保持不变。
+
+在实盘 profile 中启用：
+
+```yaml
+LIVE_TRADING_STRATEGY: stc_1d_1h_reentry
+```
 
 ## 下单数量
 
@@ -254,26 +268,28 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 LIVE_TRADING_STRATEGY: stc_extreme_contrarian
 LIVE_TRADING_USE_CLOSED_BAR: true
 LIVE_TRADING_HTF_HULL_FILTER_ENABLED: true
-LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 14400
+LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
 ```
 
 默认使用上一根已收完 K 线，减少未收线重绘。
+高周期同时判断 Hull 方向与 STC 颜色方向，但不检查高周期 STC 数值；
+`STC < 25` / `STC > 75` 的极值条件只用于 5 分钟基础信号。
 
 多单观察：
 
 - 同一根 K 线出现 `Buy` 或 `买`。
 - `STC < 25`。
 - STC 为绿色。
-- 红色 Hull 带整体在开仓 K 线 low 下方。
-- 高周期 Hull / STC 过滤允许顺势开多。
+- 绿色 Hull 多趋势带整体在开仓 K 线 low 下方。
+- 高周期 Hull 为多趋势，且高周期 STC 为绿色；不要求高周期 STC `< 25`。
 
 空单观察：
 
 - 同一根 K 线出现 `Sell` 或 `卖`。
 - `STC > 75`。
 - STC 为红色。
-- 绿色 Hull 带整体在开仓 K 线 high 上方。
-- 高周期 Hull / STC 过滤允许顺势开空。
+- 红色 Hull 空趋势带整体在开仓 K 线 high 上方。
+- 高周期 Hull 为空趋势，且高周期 STC 为红色；不要求高周期 STC `> 75`。
 
 如果不使用 `stc_extreme_contrarian`，会退回 marker 模式：
 

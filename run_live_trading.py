@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from tq_app.config_profiles import available_profiles, effective_config_snapshot, load_layered_env
+from tq_app.domain import SignalConfig, SignalEvaluator, load_custom_strategies
 from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine, create_ticker_websocket
 from tq_app.service import MarketDataService
 from web_tq_chart import (
@@ -130,13 +131,25 @@ def evaluate_snapshot(
         snapshot["higher_timeframe"] = service.get_snapshot(
             provider=args.provider,
             symbol=args.symbol,
-            duration_seconds=engine.config.htf_hull_duration_seconds,
+            duration_seconds=engine.signal_evaluator.primary_htf_duration_seconds,
             bar_mode=args.bar_mode,
             range_ticks=args.range_ticks,
             brick_length=args.brick_length,
             data_length=args.length,
             indicator_ids=["merged_dkx_hull_ut", "stc"],
         )
+        reentry_duration = engine.signal_evaluator.reentry_confirmation_duration_seconds
+        if reentry_duration is not None:
+            snapshot["reentry_higher_timeframe"] = service.get_snapshot(
+                provider=args.provider,
+                symbol=args.symbol,
+                duration_seconds=reentry_duration,
+                bar_mode=args.bar_mode,
+                range_ticks=args.range_ticks,
+                brick_length=args.brick_length,
+                data_length=args.length,
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
+            )
     decision = engine.evaluate_snapshot(snapshot)
     return snapshot, decision
 
@@ -170,12 +183,20 @@ def main() -> None:
         return
 
     if args.show_config:
+        live_config = LiveTradingConfig.from_env(project_root)
+        load_custom_strategies(project_root)
+        evaluator = SignalEvaluator(SignalConfig.from_object(live_config))
         print(
             json.dumps(
                 {
                     "profile": args.profile,
                     "available_profiles": available_profiles(project_root),
                     "effective_config": effective_config_snapshot(CONFIG_SNAPSHOT_KEYS),
+                    "resolved_strategy": {
+                        "name": evaluator.strategy.name,
+                        "primary_htf_duration_seconds": evaluator.primary_htf_duration_seconds,
+                        "reentry_confirmation_duration_seconds": evaluator.reentry_confirmation_duration_seconds,
+                    },
                 },
                 ensure_ascii=False,
                 indent=2,

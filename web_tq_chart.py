@@ -15,7 +15,7 @@ from tq_app.config_profiles import load_layered_env
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
 
-DEFAULT_PROVIDER = "binance"
+DEFAULT_PROVIDER = "bitget"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_DURATION_SECONDS = 180
 DEFAULT_DATA_LENGTH = 800

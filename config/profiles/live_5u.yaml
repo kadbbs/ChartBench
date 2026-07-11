@@ -25,6 +25,11 @@
 # 运行模式：live=真实下单。
 LIVE_TRADING_MODE: live
 
+# 真实实盘固定使用 Bitget USDT-FUTURES，不继承全局或 .env 中的旧 Binance 默认值。
+LIVE_TRADING_PROVIDER: bitget
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
+TQ_DEFAULT_SYMBOL: BTCUSDT
+
 # 单笔保证金金额。真实下单数量 = 5U * 10倍 / 开仓价。
 LIVE_TRADING_MARGIN_AMOUNT: 5
 

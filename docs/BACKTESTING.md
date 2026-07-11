@@ -122,9 +122,9 @@ USDT-FUTURES_BTCUSDT_300s_MARKET.csv
 ./myvenv/bin/python run_backtest.py --provider bitget --symbol BTCUSDT --duration 300 --length 1000
 ```
 
-当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `binance`。天勤当前不接入回测。
+当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `bitget`。天勤当前不接入回测。
 
-这里的默认值只用于未选择 profile 的临时回测；仓库内置命名 profile 当前固定使用 Bitget，以继续复用既有历史缓存并保持旧报告口径。
+未选择 profile 的临时回测和仓库内置命名 profile 当前都默认使用 Bitget，以继续复用既有历史缓存并保持报告口径。
 
 ## 可复现配置
 
@@ -141,6 +141,9 @@ htf_hull_filter_enabled: true
 htf_hull_duration_seconds: 14400
 atr_period: 14
 ```
+
+`htf_hull_duration_seconds` 控制高周期 Hull/STC 方向过滤。高周期 STC
+只检查颜色方向，不检查数值；STC 极值条件只作用于低周期基础信号。
 
 每次回测的 `report.json` 会额外记录：
 
@@ -163,6 +166,19 @@ atr_period: 14
 5. 如果本根 K 线被风控平仓，本根不再重新开仓。
 6. 未触发风控时，出现反向实盘信号则平旧仓并开新仓。
 7. 回测结束时仍未平仓的最后一笔交易会被丢弃，不纳入统计。
+
+验证 1D 主趋势、1H Hull/STC 同向重复开仓策略：
+
+```bash
+./myvenv/bin/python run_backtest.py \
+  --profile btc_5m_range_cached \
+  --strategy stc_1d_1h_reentry
+```
+
+该策略会自动加载 1D 主过滤 K 线和 1H 重入确认 K 线，不使用 profile 中
+原有的 `htf_hull_duration_seconds` 覆盖它的固定周期。首次开仓不要求 1H
+确认；同一 1D Hull 同色段的第 2 次及之后开仓要求已收完的 1H Hull 和
+1H STC 颜色都同向，1H STC 不检查数值极值。
 
 默认风控出场：
 

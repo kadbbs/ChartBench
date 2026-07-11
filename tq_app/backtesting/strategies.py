@@ -4,7 +4,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine
+from tq_app.domain import SignalConfig, SignalEvaluator, load_custom_strategies
+from tq_app.live_trading import LiveTradingConfig
 
 
 @dataclass(slots=True)
@@ -13,40 +14,51 @@ class BacktestSignal:
     reason: str
     htf_lock_key: str | None = None
     htf_context: dict | None = None
+    htf_reentry_allowed: bool = False
+    htf_reentry_context: dict | None = None
 
 
 class KlineStrategy(Protocol):
     name: str
+    signal_strategy_name: str
+    primary_htf_duration_seconds: int
+    reentry_confirmation_duration_seconds: int | None
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
         raise NotImplementedError
 
 
-class LiveDecisionStrategy:
-    name = "live_decision"
-
-    def __init__(self, project_root: Path, config: LiveTradingConfig | None = None) -> None:
-        cfg = replace(config) if config is not None else LiveTradingConfig.from_env(project_root)
-        cfg.enabled = False
-        cfg.dry_run = True
-        cfg.log_only = True
-        cfg.email_enabled = False
-        self.engine = LiveTradingEngine(project_root, cfg)
+class SignalEvaluatorStrategy:
+    def __init__(self, name: str, project_root: Path, config: LiveTradingConfig | None = None) -> None:
+        live_config = replace(config) if config is not None else LiveTradingConfig.from_env(project_root)
+        strategy_name = live_config.strategy if name == "live_decision" else name
+        self.name = name
+        load_custom_strategies(project_root)
+        self.evaluator = SignalEvaluator(replace(SignalConfig.from_object(live_config), strategy=strategy_name))
+        self.signal_strategy_name = self.evaluator.strategy.name
+        self.primary_htf_duration_seconds = self.evaluator.primary_htf_duration_seconds
+        self.reentry_confirmation_duration_seconds = self.evaluator.reentry_confirmation_duration_seconds
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
-        decision = self.engine.evaluate_snapshot(snapshot)
+        decision = self.evaluator.evaluate(snapshot)
         if decision.action != "place_order" or decision.side is None:
-            return BacktestSignal(side=None, reason=decision.reason, htf_context=decision.htf_context)
+            return BacktestSignal(
+                side=None,
+                reason=decision.reason,
+                htf_context=decision.htf_context,
+                htf_reentry_allowed=decision.htf_reentry_allowed,
+                htf_reentry_context=decision.htf_reentry_context,
+            )
         return BacktestSignal(
             side=decision.side,
             reason=decision.reason,
             htf_lock_key=decision.htf_lock_key,
             htf_context=decision.htf_context,
+            htf_reentry_allowed=decision.htf_reentry_allowed,
+            htf_reentry_context=decision.htf_reentry_context,
         )
 
 
 def build_strategy(name: str, project_root: Path, config: LiveTradingConfig | None = None) -> KlineStrategy:
     normalized = name.strip().lower()
-    if normalized in {"live_decision", "stc_extreme_contrarian"}:
-        return LiveDecisionStrategy(project_root, config)
-    raise KeyError(f"未知回测策略: {name}，当前可选: live_decision")
+    return SignalEvaluatorStrategy(normalized, project_root, config)

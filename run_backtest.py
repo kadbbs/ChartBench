@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=int, default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)))
     parser.add_argument("--length", type=int, default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)))
     parser.add_argument("--strategy", default=profile_str("strategy", "live_decision"), help="回测策略名。默认复用当前实盘策略。")
-    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "UM-FUTURES")))
+    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES")))
     parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BINANCE_KLINE_TYPE", "MARKET")))
     parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")
@@ -122,18 +122,40 @@ def main() -> None:
 
     htf_bars = None
     if live_config.htf_hull_filter_enabled:
-        htf_length = max(int(data_length * args.duration / live_config.htf_hull_duration_seconds) + 120, 200)
+        primary_htf_duration = strategy.primary_htf_duration_seconds
+        htf_length = max(int(data_length * args.duration / primary_htf_duration) + 120, 200)
         htf_start_time_ms = None
         if start_time_ms is not None:
-            htf_start_time_ms = max(start_time_ms - 120 * live_config.htf_hull_duration_seconds * 1000, 0)
+            htf_start_time_ms = max(start_time_ms - 120 * primary_htf_duration * 1000, 0)
         htf_bars = fetch_market_candles(
             provider=args.provider,
             project_root=project_root,
             symbol=args.symbol,
             product_type=args.product_type,
-            duration_seconds=live_config.htf_hull_duration_seconds,
+            duration_seconds=primary_htf_duration,
             data_length=htf_length,
             start_time_ms=htf_start_time_ms,
+            end_time_ms=end_time_ms,
+            kline_type=args.kline_type,
+            cache_enabled=args.cache,
+            cache_dir=Path(args.cache_dir),
+        )
+
+    reentry_htf_bars = None
+    reentry_htf_duration = strategy.reentry_confirmation_duration_seconds
+    if live_config.htf_hull_filter_enabled and reentry_htf_duration is not None:
+        reentry_htf_length = max(int(data_length * args.duration / reentry_htf_duration) + 120, 200)
+        reentry_htf_start_time_ms = None
+        if start_time_ms is not None:
+            reentry_htf_start_time_ms = max(start_time_ms - 120 * reentry_htf_duration * 1000, 0)
+        reentry_htf_bars = fetch_market_candles(
+            provider=args.provider,
+            project_root=project_root,
+            symbol=args.symbol,
+            product_type=args.product_type,
+            duration_seconds=reentry_htf_duration,
+            data_length=reentry_htf_length,
+            start_time_ms=reentry_htf_start_time_ms,
             end_time_ms=end_time_ms,
             kline_type=args.kline_type,
             cache_enabled=args.cache,
@@ -188,7 +210,11 @@ def main() -> None:
         },
         output_dir=Path(args.output_dir),
     )
-    result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)
+    result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(
+        bars,
+        htf_bars,
+        reentry_htf_bars,
+    )
     print(json.dumps({"metrics": result.metrics, "output_dir": result.output_dir, "config": result.config}, ensure_ascii=False, default=str, indent=2))
 
 

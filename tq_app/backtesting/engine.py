@@ -7,6 +7,7 @@ import math
 import platform
 import subprocess
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -16,6 +17,8 @@ import pandas as pd
 from tq_app.backtesting.config import backtest_signal_config_snapshot
 from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
 from tq_app.backtesting.strategies import KlineStrategy
+from tq_app.domain import RiskPolicy, RiskPolicyConfig, RiskState
+from tq_app.domain.risk import price_for_points
 from tq_app.live_trading import LiveTradingConfig
 from tq_app.service import DISPLAY_TIMEZONE
 
@@ -126,8 +129,14 @@ class BacktestEngine:
         self.config = config
         self.live_config = live_config
         self.strategy = strategy
+        self.risk_policy = RiskPolicy(RiskPolicyConfig.from_backtest_config(config))
 
-    def run(self, bars: pd.DataFrame, htf_bars: pd.DataFrame | None = None) -> BacktestResult:
+    def run(
+        self,
+        bars: pd.DataFrame,
+        htf_bars: pd.DataFrame | None = None,
+        reentry_htf_bars: pd.DataFrame | None = None,
+    ) -> BacktestResult:
         if len(bars) < self.config.warmup_bars + 3:
             raise RuntimeError("K 线数量不足，无法完成回测。")
 
@@ -150,16 +159,35 @@ class BacktestEngine:
                 project_root=self.project_root,
                 symbol=self.config.symbol,
                 provider=self.config.provider,
-                duration_seconds=self.live_config.htf_hull_duration_seconds,
+                duration_seconds=self.strategy.primary_htf_duration_seconds,
                 indicator_ids=["merged_dkx_hull_ut", "stc"],
             )
             htf_snapshot = htf_builder.build_full(htf_bars)
+
+        reentry_htf_snapshot = None
+        if reentry_htf_bars is not None and not reentry_htf_bars.empty:
+            reentry_duration = self.strategy.reentry_confirmation_duration_seconds
+            if reentry_duration is None:
+                raise RuntimeError("当前策略未声明重复开仓确认周期，却传入了确认周期 K 线。")
+            reentry_htf_builder = SnapshotBuilder(
+                project_root=self.project_root,
+                symbol=self.config.symbol,
+                provider=self.config.provider,
+                duration_seconds=reentry_duration,
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
+            )
+            reentry_htf_snapshot = reentry_htf_builder.build_full(reentry_htf_bars)
 
         candles = full_snapshot["candles"]
         time_labels = full_snapshot.get("time_labels") or {}
         snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
         snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
         htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
+        reentry_htf_slicer = (
+            BacktestSnapshotSlicer(reentry_htf_snapshot, max_bars=snapshot_window_bars)
+            if reentry_htf_snapshot is not None
+            else None
+        )
         equity = float(self.config.initial_equity)
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
@@ -194,10 +222,19 @@ class BacktestEngine:
             snapshot = snapshot_slicer.slice(entry_index + 1)
             if htf_slicer is not None:
                 snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
+            if reentry_htf_slicer is not None:
+                snapshot["reentry_higher_timeframe"] = reentry_htf_slicer.slice_until_time(
+                    int(entry_candle["time"])
+                )
             signal = self.strategy.evaluate(snapshot)
             if signal.side in {"buy", "sell"} and signal.htf_lock_key and signal.htf_lock_key in htf_entry_locks:
-                signal.side = None
-                signal.reason = "同一个高周期 Hull 颜色周期内，同方向已开过仓；即使此前已平仓，本周期也不再重复开同向仓位。"
+                if signal.htf_reentry_allowed:
+                    confirmation = (signal.htf_reentry_context or {}).get("reason") or "1H Hull/STC 同向确认通过"
+                    signal.reason = f"{signal.reason}；同一 1D Hull 阶段重复开仓：{confirmation}"
+                else:
+                    detail = (signal.htf_reentry_context or {}).get("reason")
+                    signal.side = None
+                    signal.reason = detail or "同一个高周期 Hull 颜色周期内，同方向已开过仓；本周期不再重复开同向仓位。"
 
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
                 realized = self._close_remaining(
@@ -265,6 +302,14 @@ class BacktestEngine:
             position = None
 
         metrics = _metrics(trades, equity_curve, self.config.initial_equity)
+        effective_signal_config = backtest_signal_config_snapshot(self.live_config)
+        effective_signal_config.update(
+            {
+                "strategy": self.strategy.signal_strategy_name,
+                "htf_hull_duration_seconds": self.strategy.primary_htf_duration_seconds,
+                "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+            }
+        )
         result = BacktestResult(
             config={
                 **asdict(self.config),
@@ -272,9 +317,14 @@ class BacktestEngine:
                 "strategy": self.strategy.name,
                 "execution_model": "live_reverse_signal",
                 "htf_hull_filter_enabled": self.live_config.htf_hull_filter_enabled,
-                "htf_hull_duration_seconds": self.live_config.htf_hull_duration_seconds,
-                "htf_entry_lock_model": "hull_trend_segment",
-                "signal_config": backtest_signal_config_snapshot(self.live_config),
+                "htf_hull_duration_seconds": self.strategy.primary_htf_duration_seconds,
+                "htf_entry_lock_model": (
+                    "1d_hull_stc_segment_with_1h_hull_stc_reentry"
+                    if self.strategy.reentry_confirmation_duration_seconds
+                    else "hull_trend_segment"
+                ),
+                "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+                "signal_config": effective_signal_config,
                 "indicator_parameters": indicator_parameters,
                 "code_version": _code_version(self.project_root),
                 "resolved_data_window": {
@@ -339,39 +389,51 @@ class BacktestEngine:
 
     def _risk_exit(self, position: Position, candle: dict[str, Any], candle_index: int) -> RiskExit | None:
         trade = position.trade
-        entry_price = trade.entry_price
-        side = trade.side
-        position.max_favorable_points = max(position.max_favorable_points, _candle_favorable_points(side, entry_price, candle))
-        position.max_adverse_points = min(position.max_adverse_points, _candle_adverse_points(side, entry_price, candle))
-
-        if position.max_adverse_points <= self.config.disaster_stop_points:
-            return RiskExit(
-                reason="disaster_hard_stop",
-                price=_price_for_points(side, entry_price, self.config.disaster_stop_points),
-                marker_text="CLOSE DISASTER",
-            )
-
-        protection_points = _protection_points(position.max_favorable_points, self.config)
-        if protection_points is not None:
-            position.protected_stop_points = max(position.protected_stop_points or protection_points, protection_points)
-            if _candle_touches_points(candle, side, entry_price, position.protected_stop_points):
-                reason = "breakeven_protection" if position.protected_stop_points <= self.config.breakeven_stop_points else "trailing_protection"
-                return RiskExit(
-                    reason=reason,
-                    price=_price_for_points(side, entry_price, position.protected_stop_points),
-                    marker_text="CLOSE PROTECT",
-                )
-
-        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds, self.config.startup_check_bars_5m):
-            close_points = _points(side, entry_price, float(candle["close"]))
-            if position.max_favorable_points < self.config.startup_max_favorable_points and close_points < self.config.startup_current_points:
-                return RiskExit(
-                    reason="startup_failure_stop",
-                    price=float(candle["close"]),
-                    marker_text="CLOSE STARTUP",
-                )
-
-        return None
+        evaluation = self.risk_policy.evaluate_bar(
+            RiskState(
+                max_favorable_points=Decimal(str(position.max_favorable_points)),
+                max_adverse_points=Decimal(str(position.max_adverse_points)),
+                protected_stop_points=(
+                    Decimal(str(position.protected_stop_points))
+                    if position.protected_stop_points is not None
+                    else None
+                ),
+            ),
+            side=trade.side,
+            entry_price=trade.entry_price,
+            high=candle["high"],
+            low=candle["low"],
+            close=candle["close"],
+            bars_since_entry=candle_index - position.entry_index,
+        )
+        position.max_favorable_points = float(evaluation.state.max_favorable_points)
+        position.max_adverse_points = float(evaluation.state.max_adverse_points)
+        position.protected_stop_points = (
+            float(evaluation.state.protected_stop_points)
+            if evaluation.state.protected_stop_points is not None
+            else None
+        )
+        if evaluation.trigger is None or evaluation.exit_points is None:
+            return None
+        reason_by_trigger = {
+            "disaster": "disaster_hard_stop",
+            "protected": (
+                "breakeven_protection"
+                if evaluation.protection_kind == "breakeven"
+                else "trailing_protection"
+            ),
+            "startup": "startup_failure_stop",
+        }
+        marker_by_trigger = {
+            "disaster": "CLOSE DISASTER",
+            "protected": "CLOSE PROTECT",
+            "startup": "CLOSE STARTUP",
+        }
+        return RiskExit(
+            reason=reason_by_trigger[evaluation.trigger],
+            price=float(price_for_points(trade.side, trade.entry_price, evaluation.exit_points)),
+            marker_text=marker_by_trigger[evaluation.trigger],
+        )
 
     def _close_partial(
         self,
@@ -494,8 +556,10 @@ def _code_version(project_root: Path) -> dict[str, Any]:
     digest = hashlib.sha256()
     source_paths = [
         project_root / "custom_indicators.py",
+        project_root / "custom_strategies.py",
         project_root / "tq_app" / "live_trading.py",
         *(sorted((project_root / "tq_app" / "backtesting").glob("*.py"))),
+        *(sorted((project_root / "tq_app" / "domain").glob("*.py"))),
         *(sorted((project_root / "tq_app" / "indicators").glob("*.py"))),
     ]
     for path in source_paths:
@@ -506,7 +570,7 @@ def _code_version(project_root: Path) -> dict[str, Any]:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "git_commit": commit or None,
         "git_dirty": dirty,
         "source_sha256": digest.hexdigest(),
@@ -518,47 +582,6 @@ def _code_version(project_root: Path) -> dict[str, Any]:
 def _points(side: str, entry: float, exit_price: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return (exit_price - entry) * direction
-
-
-def _price_for_points(side: str, entry: float, points: float) -> float:
-    direction = 1.0 if side == "buy" else -1.0
-    return entry + points * direction
-
-
-def _candle_favorable_points(side: str, entry: float, candle: dict[str, Any]) -> float:
-    if side == "buy":
-        return float(candle["high"]) - entry
-    return entry - float(candle["low"])
-
-
-def _candle_adverse_points(side: str, entry: float, candle: dict[str, Any]) -> float:
-    if side == "buy":
-        return float(candle["low"]) - entry
-    return entry - float(candle["high"])
-
-
-def _candle_touches_points(candle: dict[str, Any], side: str, entry: float, points: float) -> bool:
-    if side == "buy":
-        return float(candle["low"]) <= _price_for_points(side, entry, points)
-    return float(candle["high"]) >= _price_for_points(side, entry, points)
-
-
-def _protection_points(max_favorable_points: float, config: BacktestConfig) -> float | None:
-    if max_favorable_points >= config.trailing_trigger_3_points:
-        return max_favorable_points * config.trailing_protect_3_ratio
-    if max_favorable_points >= config.trailing_trigger_2_points:
-        return max_favorable_points * config.trailing_protect_2_ratio
-    if max_favorable_points >= config.trailing_trigger_1_points:
-        return max_favorable_points * config.trailing_protect_1_ratio
-    if max_favorable_points >= config.breakeven_trigger_points:
-        return config.breakeven_stop_points
-    return None
-
-
-def _startup_check_bars(duration_seconds: int, check_bars_5m: int) -> int:
-    if duration_seconds <= 0:
-        return max(int(check_bars_5m), 1)
-    return max(1, round((max(int(check_bars_5m), 1) * 300) / duration_seconds))
 
 
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:
@@ -689,10 +712,17 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
     ]
     if result.config.get("htf_hull_filter_enabled"):
-        assumptions.append(
-            f"高周期 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
-            "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
-        )
+        if result.config.get("htf_reentry_confirmation_duration_seconds"):
+            assumptions.append(
+                f"主 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
+                f"同一主周期 Hull 同色段首次开仓后，后续开仓需要 "
+                f"{result.config.get('htf_reentry_confirmation_duration_seconds')} 秒 Hull 同向确认。"
+            )
+        else:
+            assumptions.append(
+                f"高周期 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
+                "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
+            )
     if risk_exits_enabled:
         assumptions.extend(
             [

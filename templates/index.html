@@ -27,39 +27,35 @@
             <select id="provider-select"></select>
           </label>
           <label class="control-field">
-            <span>Symbol</span>
-            <div class="symbol-mode-bar">
-              <button id="watchlist-tab-favorites" class="symbol-mode-btn" type="button">自选</button>
-              <button id="watchlist-tab-all" class="symbol-mode-btn is-active" type="button">全部</button>
-              <button id="watchlist-add-current" class="symbol-mode-action" type="button">加入</button>
-              <button id="watchlist-remove-current" class="symbol-mode-action" type="button">移除</button>
+            <div class="control-label-row">
+              <span>Symbol</span>
+              <span class="symbol-actions">
+                <button id="watchlist-tab-all" class="symbol-mode-btn is-active" type="button">全部</button>
+                <button id="watchlist-tab-favorites" class="symbol-mode-btn" type="button">自选</button>
+                <button id="watchlist-toggle-current" class="watchlist-star" type="button" aria-label="加入自选" title="加入自选">☆</button>
+              </span>
             </div>
             <select id="symbol-select"></select>
-          </label>
-          <label class="control-field">
-            <span>Chart Type</span>
-            <select id="bar-mode-select"></select>
           </label>
           <label class="control-field">
             <span>Timeframe</span>
             <select id="duration-select"></select>
           </label>
-          <label class="control-field">
-            <span id="bar-size-label">Price Tick</span>
-            <input id="range-ticks-input" type="number" min="1" step="1" />
-          </label>
-          <label class="control-field">
-            <span id="history-size-label">Bars</span>
-            <input id="brick-length-input" type="number" min="100" step="100" />
-          </label>
         </div>
-        <div class="field"><span>Provider</span><strong id="provider-name">--</strong></div>
-        <div class="field"><span>Last</span><strong id="last-price">--</strong></div>
-        <div class="field"><span>Update</span><strong id="last-update">--</strong></div>
-        <div class="field"><span>Cursor</span><strong id="cursor-time">--</strong></div>
-        <div id="provider-hint" class="subhint">--</div>
-        <div id="contract-detail-card" class="detail-card">
-          <div class="detail-card-title">Contract Detail</div>
+        <div class="market-quote">
+          <div>
+            <span class="quote-label">Last</span>
+            <strong id="last-price" class="quote-price">--</strong>
+          </div>
+          <div class="quote-status">
+            <span class="status-line"><i id="stream-status-dot" class="status-dot"></i><strong id="provider-name">--</strong></span>
+            <span id="last-update">--</span>
+            <span id="stream-status">等待行情</span>
+          </div>
+        </div>
+        <details id="contract-detail-card" class="detail-card">
+          <summary id="contract-summary">合约详情</summary>
+          <div id="provider-hint" class="subhint">--</div>
           <div class="detail-grid">
             <div class="detail-item">
               <span>Exchange</span>
@@ -86,24 +82,15 @@
               <strong id="detail-volume-multiple">--</strong>
             </div>
           </div>
-        </div>
+        </details>
       </div>
-      <div class="panel">
-        <div class="panel-label">Studies</div>
+      <details class="panel studies-panel">
+        <summary>指标设置</summary>
         <form id="indicator-form" class="indicator-list"></form>
-        <div class="hint">当前只保留 ATR Bands、MACD、STC 和多空线。</div>
-      </div>
+      </details>
       <div id="error-message" class="error"></div>
     </aside>
     <main class="main">
-      <section class="page-header">
-        <div class="meta-line">
-          <span class="meta-item"><strong id="meta-contract">SHFE.cu2607</strong></span>
-          <span class="meta-item">实时行情</span>
-          <span class="meta-item">主图 + 技术指标</span>
-          <span class="meta-item" id="meta-status">Realtime market bars</span>
-        </div>
-      </section>
       <div class="chart-card">
         <div id="chart-stack" class="chart-stack"></div>
       </div>
