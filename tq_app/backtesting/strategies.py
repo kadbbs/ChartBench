@@ -14,10 +14,15 @@ class BacktestSignal:
     reason: str
     htf_lock_key: str | None = None
     htf_context: dict | None = None
+    htf_reentry_allowed: bool = False
+    htf_reentry_context: dict | None = None
 
 
 class KlineStrategy(Protocol):
     name: str
+    signal_strategy_name: str
+    primary_htf_duration_seconds: int
+    reentry_confirmation_duration_seconds: int | None
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
         raise NotImplementedError
@@ -30,16 +35,27 @@ class SignalEvaluatorStrategy:
         self.name = name
         load_custom_strategies(project_root)
         self.evaluator = SignalEvaluator(replace(SignalConfig.from_object(live_config), strategy=strategy_name))
+        self.signal_strategy_name = self.evaluator.strategy.name
+        self.primary_htf_duration_seconds = self.evaluator.primary_htf_duration_seconds
+        self.reentry_confirmation_duration_seconds = self.evaluator.reentry_confirmation_duration_seconds
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
         decision = self.evaluator.evaluate(snapshot)
         if decision.action != "place_order" or decision.side is None:
-            return BacktestSignal(side=None, reason=decision.reason, htf_context=decision.htf_context)
+            return BacktestSignal(
+                side=None,
+                reason=decision.reason,
+                htf_context=decision.htf_context,
+                htf_reentry_allowed=decision.htf_reentry_allowed,
+                htf_reentry_context=decision.htf_reentry_context,
+            )
         return BacktestSignal(
             side=decision.side,
             reason=decision.reason,
             htf_lock_key=decision.htf_lock_key,
             htf_context=decision.htf_context,
+            htf_reentry_allowed=decision.htf_reentry_allowed,
+            htf_reentry_context=decision.htf_reentry_context,
         )
 
 

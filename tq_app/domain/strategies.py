@@ -121,6 +121,14 @@ class StcExtremeContrarianStrategy:
         )
 
 
+class StcExtremeContrarian1d1hReentryStrategy(StcExtremeContrarianStrategy):
+    """Base STC strategy with 1D filtering and 1H Hull/STC-confirmed re-entry."""
+
+    name = "stc_extreme_contrarian_1d_1h_reentry"
+    primary_htf_duration_seconds = 86400
+    reentry_confirmation_duration_seconds = 3600
+
+
 def hull_position_allows_side(
     side: str,
     indicator_values: dict[str, float],
@@ -209,6 +217,11 @@ def _normalize_strategy_name(name: str) -> str:
 _REGISTRY = StrategyRegistry()
 _REGISTRY.register("marker_signal", MarkerSignalStrategy, aliases=("default", "live_decision"))
 _REGISTRY.register("stc_extreme_contrarian", StcExtremeContrarianStrategy)
+_REGISTRY.register(
+    "stc_extreme_contrarian_1d_1h_reentry",
+    StcExtremeContrarian1d1hReentryStrategy,
+    aliases=("stc_1d_1h_reentry",),
+)
 _CUSTOM_LOAD_LOCK = threading.Lock()
 _LOADED_CUSTOM_PATHS: set[Path] = set()
 

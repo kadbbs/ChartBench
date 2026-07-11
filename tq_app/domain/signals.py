@@ -53,6 +53,14 @@ class SignalEvaluator:
         self.config = config
         self.registry = registry or get_strategy_registry()
         self.strategy = self.registry.create(config.strategy)
+        self.primary_htf_duration_seconds = int(
+            getattr(self.strategy, "primary_htf_duration_seconds", 0)
+            or config.htf_hull_duration_seconds
+        )
+        reentry_duration = int(
+            getattr(self.strategy, "reentry_confirmation_duration_seconds", 0) or 0
+        )
+        self.reentry_confirmation_duration_seconds = reentry_duration or None
 
     def evaluate(self, snapshot: dict[str, Any]) -> TradeDecision:
         candles = snapshot.get("candles") or []
@@ -84,6 +92,8 @@ class SignalEvaluator:
         reason = strategy_result.reason
         htf_lock_key: str | None = None
         htf_context: dict[str, Any] = {}
+        htf_reentry_allowed = False
+        htf_reentry_context: dict[str, Any] = {}
         if side is not None:
             htf_ok, htf_reason, htf_context = self._higher_timeframe_hull_allows_side(
                 side, snapshot.get("higher_timeframe"), symbol=symbol
@@ -94,6 +104,11 @@ class SignalEvaluator:
             else:
                 htf_lock_key = str(htf_context.get("lock_key") or "") or None
                 reason = f"{reason}；{htf_reason}"
+                if self.reentry_confirmation_duration_seconds is not None:
+                    htf_reentry_allowed, htf_reentry_context = self._reentry_hull_allows_side(
+                        side,
+                        snapshot.get("reentry_higher_timeframe"),
+                    )
         decision_values = {
             "action": "place_order" if side is not None else "skip",
             "symbol": symbol,
@@ -110,6 +125,8 @@ class SignalEvaluator:
             "bar_close": bar_close,
             "bar_time_label": bar_time_label(snapshot, bar_time),
             "atr_value": atr_at(snapshot, bar_time, self.config.atr_period),
+            "htf_reentry_allowed": htf_reentry_allowed,
+            "htf_reentry_context": htf_reentry_context,
         }
         if side is None:
             return TradeDecision(**decision_values)
@@ -127,14 +144,19 @@ class SignalEvaluator:
         *,
         symbol: str,
     ) -> tuple[bool, str, dict[str, Any]]:
-        configured_label = duration_label(self.config.htf_hull_duration_seconds)
+        configured_label = duration_label(self.primary_htf_duration_seconds)
         if not self.config.htf_hull_filter_enabled:
             return True, f"{configured_label} Hull 趋势过滤未启用。", {}
         if not isinstance(htf_snapshot, dict):
             return False, f"缺少高周期 Hull 快照，无法确认 {configured_label} 趋势，禁止开仓。", {}
 
+        duration = int(htf_snapshot.get("duration_seconds") or self.primary_htf_duration_seconds)
+        if duration != self.primary_htf_duration_seconds:
+            return False, (
+                f"高周期 Hull 快照周期错误：策略需要 {configured_label}，"
+                f"实际为 {duration_label(duration)}，禁止开仓。"
+            ), {}
         trend, detail = self._higher_timeframe_hull_trend(htf_snapshot)
-        duration = int(htf_snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds)
         label = detail.get("bar_time_label") or detail.get("bar_time") or "-"
         context = {
             "symbol": symbol.upper(),
@@ -159,7 +181,56 @@ class SignalEvaluator:
             return True, f"{duration_text} Hull 为绿色空趋势，允许顺势开空；{duration_text}={label}", context
         return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}", context
 
+    def _reentry_hull_allows_side(
+        self,
+        side: str,
+        htf_snapshot: Any,
+    ) -> tuple[bool, dict[str, Any]]:
+        duration = int(self.reentry_confirmation_duration_seconds or 0)
+        context: dict[str, Any] = {
+            "required_duration_seconds": duration,
+            "required_side": side,
+            "allowed": False,
+        }
+        if not isinstance(htf_snapshot, dict):
+            context["reason"] = f"缺少 {duration_label(duration)} Hull 快照"
+            return False, context
+        actual_duration = int(htf_snapshot.get("duration_seconds") or 0)
+        context["duration_seconds"] = actual_duration
+        if actual_duration != duration:
+            context["reason"] = (
+                f"重复开仓确认周期错误：需要 {duration_label(duration)}，"
+                f"实际为 {duration_label(actual_duration)}"
+            )
+            return False, context
+        trend, detail = self._higher_timeframe_hull_trend(htf_snapshot)
+        failure_reason = str(detail.get("reason") or "")
+        context.update(detail)
+        context["trend"] = trend
+        context["allowed"] = trend == side
+        if trend == side:
+            context["reason"] = f"{duration_label(duration)} Hull/STC 与 {side} 同向，允许重复开仓"
+            return True, context
+        context["reason"] = failure_reason or (
+            f"{duration_label(duration)} Hull/STC 未与 {side} 同向，禁止在同一 1D Hull 阶段重复开仓"
+        )
+        return False, context
+
     def _higher_timeframe_hull_trend(self, snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        hull_trend, detail = self._higher_timeframe_hull_direction(snapshot)
+        if hull_trend is None:
+            return None, detail
+        stc_color = str(detail.get("stc_color") or "")
+        stc_trend = "buy" if is_green_color(stc_color) else "sell" if is_red_color(stc_color) else None
+        detail["stc_trend"] = stc_trend
+        if stc_trend != hull_trend:
+            text = duration_label(int(snapshot.get("duration_seconds") or self.primary_htf_duration_seconds))
+            direction_text = "红色上升" if hull_trend == "buy" else "绿色下降"
+            detail["reason"] = f"{text} Hull 为{direction_text}趋势，但 {text} STC 不是同向色"
+            return None, detail
+        return hull_trend, detail
+
+    def _higher_timeframe_hull_direction(self, snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         candles = snapshot.get("candles") or []
         if not candles:
             return None, {"reason": "高周期快照没有 K 线"}
@@ -170,28 +241,18 @@ class SignalEvaluator:
         red_band = hull_band_values(values, "buy")
         green_band = hull_band_values(values, "sell")
         stc_color = colors.get("stc.stc", "")
-        stc_trend = "buy" if is_green_color(stc_color) else "sell" if is_red_color(stc_color) else None
         detail = {
             "bar_time": bar_time,
             "bar_time_label": bar_time_label(snapshot, bar_time),
             "red_band": red_band,
             "green_band": green_band,
             "stc_color": stc_color,
-            "stc_trend": stc_trend,
         }
         if red_band and not green_band:
             self._attach_hull_trend_start(snapshot, candles, actual_index, "buy", detail)
-            if stc_trend != "buy":
-                text = duration_label(int(snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
-                detail["reason"] = f"{text} Hull 为红色上升趋势，但 {text} STC 不是上升色"
-                return None, detail
             return "buy", detail
         if green_band and not red_band:
             self._attach_hull_trend_start(snapshot, candles, actual_index, "sell", detail)
-            if stc_trend != "sell":
-                text = duration_label(int(snapshot.get("duration_seconds") or self.config.htf_hull_duration_seconds))
-                detail["reason"] = f"{text} Hull 为绿色下降趋势，但 {text} STC 不是下降色"
-                return None, detail
             return "sell", detail
         detail["reason"] = "红带/绿带状态为空或同时存在"
         return None, detail

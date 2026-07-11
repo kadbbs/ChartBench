@@ -24,3 +24,5 @@ class TradeDecision:
     client_oid: str | None = None
     htf_lock_key: str | None = None
     htf_context: dict[str, Any] = field(default_factory=dict)
+    htf_reentry_allowed: bool = False
+    htf_reentry_context: dict[str, Any] = field(default_factory=dict)

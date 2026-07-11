@@ -141,6 +141,12 @@ dry-run：
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached
 ```
 
+回测 1D 主趋势、1H Hull/STC 同向重复开仓策略：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached --strategy stc_1d_1h_reentry
+```
+
 legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓：
 
 ```bash

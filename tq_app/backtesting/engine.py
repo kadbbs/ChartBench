@@ -131,7 +131,12 @@ class BacktestEngine:
         self.strategy = strategy
         self.risk_policy = RiskPolicy(RiskPolicyConfig.from_backtest_config(config))
 
-    def run(self, bars: pd.DataFrame, htf_bars: pd.DataFrame | None = None) -> BacktestResult:
+    def run(
+        self,
+        bars: pd.DataFrame,
+        htf_bars: pd.DataFrame | None = None,
+        reentry_htf_bars: pd.DataFrame | None = None,
+    ) -> BacktestResult:
         if len(bars) < self.config.warmup_bars + 3:
             raise RuntimeError("K 线数量不足，无法完成回测。")
 
@@ -154,16 +159,35 @@ class BacktestEngine:
                 project_root=self.project_root,
                 symbol=self.config.symbol,
                 provider=self.config.provider,
-                duration_seconds=self.live_config.htf_hull_duration_seconds,
+                duration_seconds=self.strategy.primary_htf_duration_seconds,
                 indicator_ids=["merged_dkx_hull_ut", "stc"],
             )
             htf_snapshot = htf_builder.build_full(htf_bars)
+
+        reentry_htf_snapshot = None
+        if reentry_htf_bars is not None and not reentry_htf_bars.empty:
+            reentry_duration = self.strategy.reentry_confirmation_duration_seconds
+            if reentry_duration is None:
+                raise RuntimeError("当前策略未声明重复开仓确认周期，却传入了确认周期 K 线。")
+            reentry_htf_builder = SnapshotBuilder(
+                project_root=self.project_root,
+                symbol=self.config.symbol,
+                provider=self.config.provider,
+                duration_seconds=reentry_duration,
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
+            )
+            reentry_htf_snapshot = reentry_htf_builder.build_full(reentry_htf_bars)
 
         candles = full_snapshot["candles"]
         time_labels = full_snapshot.get("time_labels") or {}
         snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
         snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
         htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
+        reentry_htf_slicer = (
+            BacktestSnapshotSlicer(reentry_htf_snapshot, max_bars=snapshot_window_bars)
+            if reentry_htf_snapshot is not None
+            else None
+        )
         equity = float(self.config.initial_equity)
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
@@ -198,10 +222,19 @@ class BacktestEngine:
             snapshot = snapshot_slicer.slice(entry_index + 1)
             if htf_slicer is not None:
                 snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
+            if reentry_htf_slicer is not None:
+                snapshot["reentry_higher_timeframe"] = reentry_htf_slicer.slice_until_time(
+                    int(entry_candle["time"])
+                )
             signal = self.strategy.evaluate(snapshot)
             if signal.side in {"buy", "sell"} and signal.htf_lock_key and signal.htf_lock_key in htf_entry_locks:
-                signal.side = None
-                signal.reason = "同一个高周期 Hull 颜色周期内，同方向已开过仓；即使此前已平仓，本周期也不再重复开同向仓位。"
+                if signal.htf_reentry_allowed:
+                    confirmation = (signal.htf_reentry_context or {}).get("reason") or "1H Hull/STC 同向确认通过"
+                    signal.reason = f"{signal.reason}；同一 1D Hull 阶段重复开仓：{confirmation}"
+                else:
+                    detail = (signal.htf_reentry_context or {}).get("reason")
+                    signal.side = None
+                    signal.reason = detail or "同一个高周期 Hull 颜色周期内，同方向已开过仓；本周期不再重复开同向仓位。"
 
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
                 realized = self._close_remaining(
@@ -269,6 +302,14 @@ class BacktestEngine:
             position = None
 
         metrics = _metrics(trades, equity_curve, self.config.initial_equity)
+        effective_signal_config = backtest_signal_config_snapshot(self.live_config)
+        effective_signal_config.update(
+            {
+                "strategy": self.strategy.signal_strategy_name,
+                "htf_hull_duration_seconds": self.strategy.primary_htf_duration_seconds,
+                "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+            }
+        )
         result = BacktestResult(
             config={
                 **asdict(self.config),
@@ -276,9 +317,14 @@ class BacktestEngine:
                 "strategy": self.strategy.name,
                 "execution_model": "live_reverse_signal",
                 "htf_hull_filter_enabled": self.live_config.htf_hull_filter_enabled,
-                "htf_hull_duration_seconds": self.live_config.htf_hull_duration_seconds,
-                "htf_entry_lock_model": "hull_trend_segment",
-                "signal_config": backtest_signal_config_snapshot(self.live_config),
+                "htf_hull_duration_seconds": self.strategy.primary_htf_duration_seconds,
+                "htf_entry_lock_model": (
+                    "1d_hull_stc_segment_with_1h_hull_stc_reentry"
+                    if self.strategy.reentry_confirmation_duration_seconds
+                    else "hull_trend_segment"
+                ),
+                "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+                "signal_config": effective_signal_config,
                 "indicator_parameters": indicator_parameters,
                 "code_version": _code_version(self.project_root),
                 "resolved_data_window": {
@@ -510,8 +556,10 @@ def _code_version(project_root: Path) -> dict[str, Any]:
     digest = hashlib.sha256()
     source_paths = [
         project_root / "custom_indicators.py",
+        project_root / "custom_strategies.py",
         project_root / "tq_app" / "live_trading.py",
         *(sorted((project_root / "tq_app" / "backtesting").glob("*.py"))),
+        *(sorted((project_root / "tq_app" / "domain").glob("*.py"))),
         *(sorted((project_root / "tq_app" / "indicators").glob("*.py"))),
     ]
     for path in source_paths:
@@ -522,7 +570,7 @@ def _code_version(project_root: Path) -> dict[str, Any]:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "git_commit": commit or None,
         "git_dirty": dirty,
         "source_sha256": digest.hexdigest(),
@@ -664,10 +712,17 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
         "出现反向实盘信号时，回测在同一根入场 K 线 open 平旧仓并开新仓。",
     ]
     if result.config.get("htf_hull_filter_enabled"):
-        assumptions.append(
-            f"高周期 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
-            "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
-        )
+        if result.config.get("htf_reentry_confirmation_duration_seconds"):
+            assumptions.append(
+                f"主 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
+                f"同一主周期 Hull 同色段首次开仓后，后续开仓需要 "
+                f"{result.config.get('htf_reentry_confirmation_duration_seconds')} 秒 Hull 同向确认。"
+            )
+        else:
+            assumptions.append(
+                f"高周期 Hull 过滤周期为 {result.config.get('htf_hull_duration_seconds')} 秒；"
+                "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
+            )
     if risk_exits_enabled:
         assumptions.extend(
             [

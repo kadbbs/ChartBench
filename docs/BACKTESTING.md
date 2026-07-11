@@ -142,6 +142,9 @@ htf_hull_duration_seconds: 14400
 atr_period: 14
 ```
 
+`htf_hull_duration_seconds` 控制高周期 Hull/STC 方向过滤。高周期 STC
+只检查颜色方向，不检查数值；STC 极值条件只作用于低周期基础信号。
+
 每次回测的 `report.json` 会额外记录：
 
 - profile 名称及原始 profile 值。
@@ -163,6 +166,19 @@ atr_period: 14
 5. 如果本根 K 线被风控平仓，本根不再重新开仓。
 6. 未触发风控时，出现反向实盘信号则平旧仓并开新仓。
 7. 回测结束时仍未平仓的最后一笔交易会被丢弃，不纳入统计。
+
+验证 1D 主趋势、1H Hull/STC 同向重复开仓策略：
+
+```bash
+./myvenv/bin/python run_backtest.py \
+  --profile btc_5m_range_cached \
+  --strategy stc_1d_1h_reentry
+```
+
+该策略会自动加载 1D 主过滤 K 线和 1H 重入确认 K 线，不使用 profile 中
+原有的 `htf_hull_duration_seconds` 覆盖它的固定周期。首次开仓不要求 1H
+确认；同一 1D Hull 同色段的第 2 次及之后开仓要求已收完的 1H Hull 和
+1H STC 颜色都同向，1H STC 不检查数值极值。
 
 默认风控出场：
 

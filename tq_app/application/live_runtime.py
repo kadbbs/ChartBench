@@ -1290,21 +1290,27 @@ class LiveTradingEngine:
             return result
         locked_entry = self._htf_entry_lock(decision)
         if locked_entry is not None:
-            result = TradeExecutionResult(
-                decision=decision,
-                dry_run=True,
-                enabled=self.config.enabled,
-                response={
-                    "htfEntryLocked": True,
-                    "message": "同一个高周期过滤阶段内，同方向已开过仓；即使此前已平仓，本阶段也不再重复开同向仓位。",
-                    "lock": locked_entry,
-                    "htfContext": decision.htf_context,
-                },
-            )
-            self._record_execution(result)
-            self._log_result(result)
-            self._send_email(result)
-            return result
+            if decision.htf_reentry_allowed:
+                confirmation = decision.htf_reentry_context.get("reason") or "1H Hull/STC 同向确认通过"
+                decision.reason = f"{decision.reason}；同一 1D Hull 阶段重复开仓：{confirmation}"
+            else:
+                detail = decision.htf_reentry_context.get("reason")
+                result = TradeExecutionResult(
+                    decision=decision,
+                    dry_run=True,
+                    enabled=self.config.enabled,
+                    response={
+                        "htfEntryLocked": True,
+                        "message": detail or "同一个高周期过滤阶段内，同方向已开过仓；即使此前已平仓，本阶段也不再重复开同向仓位。",
+                        "lock": locked_entry,
+                        "htfContext": decision.htf_context,
+                        "htfReentryContext": decision.htf_reentry_context,
+                    },
+                )
+                self._record_execution(result)
+                self._log_result(result)
+                self._send_email(result)
+                return result
         self.sync_local_positions_with_exchange(symbol=decision.symbol)
         local_position = self._local_same_side_position(decision)
         if local_position is not None and not self._is_real_trading_mode():
@@ -2606,16 +2612,27 @@ class LiveTradingEngine:
         locks = state.get("htf_entry_locks")
         if not isinstance(locks, dict):
             locks = {}
+        previous = locks.get(decision.htf_lock_key)
+        previous = previous if isinstance(previous, dict) else {}
+        previous_entry_count = int(previous.get("entry_count") or (1 if previous else 0))
+        entry_count = previous_entry_count + 1
         locks[decision.htf_lock_key] = {
             "key": decision.htf_lock_key,
             "symbol": decision.symbol,
             "side": decision.side,
             "clientOid": decision.client_oid,
-            "created_at": int(time.time() * 1000),
+            "created_at": previous.get("created_at") or int(time.time() * 1000),
+            "last_entry_at": int(time.time() * 1000),
+            "entry_count": entry_count,
             "bar_time": decision.bar_time,
             "bar_time_label": decision.bar_time_label,
             "htf_context": decision.htf_context,
-            "note": "同一个高周期过滤阶段内，同方向只允许开一次仓；平仓后本锁仍保留到高周期 key 变化。",
+            "htf_reentry_context": decision.htf_reentry_context,
+            "note": (
+                "同一 1D Hull 阶段允许在 1H Hull/STC 同向确认后重复开仓。"
+                if entry_count > 1 and decision.htf_reentry_allowed
+                else "同一个高周期过滤阶段内，同方向只允许开一次仓；平仓后本锁仍保留到高周期 key 变化。"
+            ),
         }
         state["htf_entry_locks"] = dict(list(locks.items())[-1000:])
         self._write_state(state)

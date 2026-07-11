@@ -34,6 +34,19 @@ Select it with `LIVE_TRADING_STRATEGY: my_strategy` in a live profile or
 `signal_strategy: my_strategy` in a backtest profile. Both modes use the same
 `SignalEvaluator`.
 
+### Built-in 1D/1H re-entry strategy
+
+`stc_1d_1h_reentry` inherits the signal conditions of
+`stc_extreme_contrarian`. It fixes the primary Hull/STC trend filter at 1D.
+The first entry in a 1D Hull trend segment follows the normal rule; after that
+entry is closed, another low-timeframe signal may enter in the same direction
+only when the last closed 1H Hull band and 1H STC color point in that direction.
+The 1D and 1H STC checks follow `d9461a4`: color alignment only, with no numeric
+threshold.
+
+The full canonical name is `stc_extreme_contrarian_1d_1h_reentry`; the shorter
+`stc_1d_1h_reentry` alias is intended for profiles and commands.
+
 ## Shared risk policy
 
 `tq_app.domain.RiskPolicy` owns disaster-stop, breakeven, trailing-protection,
