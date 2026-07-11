@@ -642,7 +642,9 @@ class MarketDataService:
             self._snapshot_cache.clear()
 
     def _resolve_provider(self, provider: str | None) -> str:
-        candidate = (provider or BINANCE_PROVIDER).strip().lower()
+        runtime_default = getattr(self, "provider", BINANCE_PROVIDER)
+        requested = str(provider or "").strip().lower()
+        candidate = requested or str(runtime_default).strip().lower()
         available = set(get_available_data_sources())
         if candidate not in available:
             raise ValueError(f"未知数据源: {candidate}，当前支持: {', '.join(sorted(available))}")

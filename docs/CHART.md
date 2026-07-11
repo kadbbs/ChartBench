@@ -35,6 +35,10 @@ http://0.0.0.0:8050
 ./myvenv/bin/python web_tq_chart.py --provider bitget --symbol BTCUSDT --duration 300
 ```
 
+页面首次加载和浏览器刷新时会继承命令行启动的 provider 与对应默认合约；
+例如用 `--provider tianqin` 启动时，页面 Provider 必须显示 `tianqin`。
+页面下拉仍可在本次会话中显式切换到 Binance 或 Bitget。
+
 指定监听地址和端口：
 
 ```bash
