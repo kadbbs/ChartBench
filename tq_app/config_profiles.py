@@ -11,6 +11,7 @@ CONFIG_DIR = "config"
 DEFAULTS_FILE = "defaults.yaml"
 PROFILES_DIR = "profiles"
 BACKTESTS_DIR = "backtests"
+BACKTEST_MATRICES_DIR = "backtest_matrices"
 SENSITIVE_KEY_PARTS = ("API_KEY", "API_SECRET", "PASSPHRASE", "TOKEN", "PASSWORD")
 
 
@@ -76,6 +77,17 @@ def available_backtest_profiles(project_root: Path) -> list[str]:
     if not profiles_root.exists():
         return []
     return sorted(path.stem for path in profiles_root.glob("*.yaml") if path.is_file())
+
+
+def available_backtest_matrices(project_root: Path) -> list[str]:
+    profiles_root = project_root / CONFIG_DIR / BACKTEST_MATRICES_DIR
+    if not profiles_root.exists():
+        return []
+    return sorted(path.stem for path in profiles_root.glob("*.yaml") if path.is_file())
+
+
+def read_flat_config(path: Path) -> dict[str, str]:
+    return _read_flat_yaml(path)
 
 
 def load_backtest_profile(project_root: Path, profile: str | None) -> dict[str, str]:

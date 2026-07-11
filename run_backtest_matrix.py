@@ -8,14 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
-from run_backtest import _parse_time_ms, _resolve_data_length, runtime_project_root
-from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting import BacktestConfig, BacktestEngine, BacktestMarketRequest, build_strategy, prepare_backtest_market
 from tq_app.backtesting.config import build_backtest_live_config
-from tq_app.backtesting.data import fetch_market_candles
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
+from tq_app.backtesting.runtime import parse_time_ms as _parse_time_ms, resolve_data_length as _resolve_data_length
 from tq_app.config_profiles import load_backtest_profile, load_layered_env
+from tq_app.runtime import runtime_project_root
 
 
 MATRIX_DIR = "config/backtest_matrices"
@@ -40,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a parameter matrix for backtest risk controls.")
     parser.add_argument("--matrix", required=True, help="矩阵配置名称，对应 config/backtest_matrices/<name>.yaml")
     parser.add_argument("--top", type=int, default=20, help="命令行输出前 N 个结果。")
-    parser.add_argument("--dry-run", action="store_true", help="只解析矩阵并输出组合，不实际执行回测。")
+    parser.add_argument("--plan", "--dry-run", dest="plan", action="store_true", help="只解析矩阵并输出组合；--dry-run 为兼容别名。")
     return parser.parse_args()
 
 
@@ -57,7 +55,7 @@ def main() -> None:
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
     combinations = _matrix_combinations(matrix)
-    if args.dry_run:
+    if args.plan:
         print(json.dumps({"matrix": args.matrix, "base_profile": base_profile, "runs": len(combinations), "combinations": combinations}, ensure_ascii=False, indent=2))
         return
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,38 +77,25 @@ def main() -> None:
     cache_enabled = _bool(profile, "cache_enabled", False)
     cache_dir = Path(_str(profile, "cache_dir", "data_cache/backtest_klines"))
 
-    bars = fetch_market_candles(
-        provider=provider,
+    strategy_name = _str(profile, "strategy", "live_decision")
+    data_strategy = build_strategy(strategy_name, project_root, live_config)
+    prepared = prepare_backtest_market(
         project_root=project_root,
-        symbol=symbol,
-        product_type=product_type,
-        duration_seconds=duration,
-        data_length=length,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-        kline_type=kline_type,
-        cache_enabled=cache_enabled,
-        cache_dir=cache_dir,
-    )
-    htf_bars = None
-    if live_config.htf_hull_filter_enabled:
-        htf_length = max(int(length * duration / live_config.htf_hull_duration_seconds) + 120, 200)
-        htf_start_time_ms = None
-        if start_time_ms is not None:
-            htf_start_time_ms = max(start_time_ms - 120 * live_config.htf_hull_duration_seconds * 1000, 0)
-        htf_bars = fetch_market_candles(
+        request=BacktestMarketRequest(
             provider=provider,
-            project_root=project_root,
             symbol=symbol,
             product_type=product_type,
-            duration_seconds=live_config.htf_hull_duration_seconds,
-            data_length=htf_length,
-            start_time_ms=htf_start_time_ms,
+            duration_seconds=duration,
+            data_length=length,
+            start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
             kline_type=kline_type,
             cache_enabled=cache_enabled,
             cache_dir=cache_dir,
-        )
+        ),
+        live_config=live_config,
+        strategy=data_strategy,
+    )
 
     base_config = BacktestConfig(
         symbol=symbol,
@@ -166,8 +151,12 @@ def main() -> None:
     for index, params in enumerate(combinations, start=1):
         run_dir = output_dir / "runs" / f"run_{index:04d}"
         config = replace(base_config, output_dir=run_dir, **params)
-        strategy = build_strategy(_str(profile, "strategy", "live_decision"), project_root, live_config)
-        result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(bars, htf_bars)
+        strategy = build_strategy(strategy_name, project_root, live_config)
+        result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(
+            prepared.bars,
+            prepared.htf_bars,
+            prepared.reentry_htf_bars,
+        )
         rows.append(_summary_row(index, params, result.metrics, run_dir))
 
     ranked = sorted(rows, key=_rank_key, reverse=True)

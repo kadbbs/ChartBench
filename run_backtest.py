@@ -5,14 +5,15 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-import pandas as pd
-
-from tq_app.backtesting import BacktestConfig, BacktestEngine, build_strategy
+from tq_app.backtesting import BacktestConfig, BacktestEngine, BacktestMarketRequest, build_strategy, prepare_backtest_market
 from tq_app.backtesting.config import build_backtest_live_config
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
-from tq_app.backtesting.data import fetch_market_candles
+from tq_app.backtesting.runtime import parse_time_ms as _parse_time_ms, resolve_data_length as _resolve_data_length
+from tq_app.cli.arguments import add_market_arguments
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
-from web_tq_chart import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str, runtime_project_root
+from tq_app.configuration.defaults import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str
+from tq_app.domain import get_strategy_catalog
+from tq_app.runtime import runtime_project_root
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,10 +48,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run K-line level backtest with pluggable strategies.")
     parser.add_argument("--profile", default=early_args.profile, help="回测配置档案名称，对应 config/backtests/<name>.yaml")
     parser.add_argument("--list-profiles", action="store_true", help="列出可用回测配置档案后退出。")
-    parser.add_argument("--provider", default=profile_str("provider", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)), choices=["binance", "bitget"])
-    parser.add_argument("--symbol", default=profile_str("symbol", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL)))
-    parser.add_argument("--duration", type=int, default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)))
-    parser.add_argument("--length", type=int, default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)))
+    parser.add_argument("--list-strategies", action="store_true", help="列出已注册策略及别名后退出，不加载回测行情。")
+    add_market_arguments(
+        parser,
+        provider_default=profile_str("provider", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)),
+        provider_choices=["binance", "bitget"],
+        symbol_default=profile_str("symbol", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL)),
+        duration_default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)),
+        data_length_default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)),
+    )
     parser.add_argument("--strategy", default=profile_str("strategy", "live_decision"), help="回测策略名。默认复用当前实盘策略。")
     parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES")))
     parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BINANCE_KLINE_TYPE", "MARKET")))
@@ -76,8 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trailing-trigger-3-points", type=float, default=profile_float("trailing_trigger_3_points", 8000.0))
     parser.add_argument("--trailing-protect-3-ratio", type=float, default=profile_float("trailing_protect_3_ratio", 0.60))
     parser.add_argument("--output-dir", default=profile_str("output_dir", "backtest_outputs/latest"))
-    parser.add_argument("--cache", action="store_true", default=profile_bool("cache_enabled", False), help="启用回测 K 线本地缓存；默认关闭，不影响在线回测。")
-    parser.add_argument("--no-cache", action="store_true", help="即使配置文件开启缓存，也强制使用在线 K 线。")
+    parser.add_argument("--cache", action=argparse.BooleanOptionalAction, default=profile_bool("cache_enabled", False), help="启用或禁用回测 K 线缓存。")
     parser.add_argument("--cache-dir", default=profile_str("cache_dir", "data_cache/backtest_klines"), help="回测 K 线缓存目录。")
     return parser.parse_args()
 
@@ -88,8 +93,9 @@ def main() -> None:
     if args.list_profiles:
         print(json.dumps({"profiles": available_backtest_profiles(project_root)}, ensure_ascii=False, indent=2))
         return
-    if args.no_cache:
-        args.cache = False
+    if args.list_strategies:
+        print(json.dumps({"strategies": get_strategy_catalog(project_root)}, ensure_ascii=False, indent=2))
+        return
     profile_values = load_backtest_profile(project_root, args.profile)
     live_config = build_backtest_live_config(project_root, profile_values)
     strategy = build_strategy(args.strategy, project_root, live_config)
@@ -106,61 +112,23 @@ def main() -> None:
         end_time_ms=end_time_ms,
     )
 
-    bars = fetch_market_candles(
-        provider=args.provider,
+    prepared = prepare_backtest_market(
         project_root=project_root,
-        symbol=args.symbol,
-        product_type=args.product_type,
-        duration_seconds=args.duration,
-        data_length=data_length,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-        kline_type=args.kline_type,
-        cache_enabled=args.cache,
-        cache_dir=Path(args.cache_dir),
+        request=BacktestMarketRequest(
+            provider=args.provider,
+            symbol=args.symbol,
+            product_type=args.product_type,
+            duration_seconds=args.duration,
+            data_length=data_length,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            kline_type=args.kline_type,
+            cache_enabled=args.cache,
+            cache_dir=Path(args.cache_dir),
+        ),
+        live_config=live_config,
+        strategy=strategy,
     )
-
-    htf_bars = None
-    if live_config.htf_hull_filter_enabled:
-        primary_htf_duration = strategy.primary_htf_duration_seconds
-        htf_length = max(int(data_length * args.duration / primary_htf_duration) + 120, 200)
-        htf_start_time_ms = None
-        if start_time_ms is not None:
-            htf_start_time_ms = max(start_time_ms - 120 * primary_htf_duration * 1000, 0)
-        htf_bars = fetch_market_candles(
-            provider=args.provider,
-            project_root=project_root,
-            symbol=args.symbol,
-            product_type=args.product_type,
-            duration_seconds=primary_htf_duration,
-            data_length=htf_length,
-            start_time_ms=htf_start_time_ms,
-            end_time_ms=end_time_ms,
-            kline_type=args.kline_type,
-            cache_enabled=args.cache,
-            cache_dir=Path(args.cache_dir),
-        )
-
-    reentry_htf_bars = None
-    reentry_htf_duration = strategy.reentry_confirmation_duration_seconds
-    if live_config.htf_hull_filter_enabled and reentry_htf_duration is not None:
-        reentry_htf_length = max(int(data_length * args.duration / reentry_htf_duration) + 120, 200)
-        reentry_htf_start_time_ms = None
-        if start_time_ms is not None:
-            reentry_htf_start_time_ms = max(start_time_ms - 120 * reentry_htf_duration * 1000, 0)
-        reentry_htf_bars = fetch_market_candles(
-            provider=args.provider,
-            project_root=project_root,
-            symbol=args.symbol,
-            product_type=args.product_type,
-            duration_seconds=reentry_htf_duration,
-            data_length=reentry_htf_length,
-            start_time_ms=reentry_htf_start_time_ms,
-            end_time_ms=end_time_ms,
-            kline_type=args.kline_type,
-            cache_enabled=args.cache,
-            cache_dir=Path(args.cache_dir),
-        )
 
     config = BacktestConfig(
         symbol=args.symbol.upper(),
@@ -211,42 +179,15 @@ def main() -> None:
         output_dir=Path(args.output_dir),
     )
     result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(
-        bars,
-        htf_bars,
-        reentry_htf_bars,
+        prepared.bars,
+        prepared.htf_bars,
+        prepared.reentry_htf_bars,
     )
     print(json.dumps({"metrics": result.metrics, "output_dir": result.output_dir, "config": result.config}, ensure_ascii=False, default=str, indent=2))
 
 
 def _parse_end_time_ms(raw: str) -> int | None:
     return _parse_time_ms(raw)
-
-
-def _parse_time_ms(raw: str) -> int | None:
-    text = raw.strip()
-    if not text:
-        return None
-    if text.isdigit():
-        value = int(text)
-        return value if value > 10_000_000_000 else value * 1000
-    timestamp = pd.Timestamp(text)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize("Asia/Shanghai")
-    return int(timestamp.tz_convert("UTC").timestamp() * 1000)
-
-
-def _resolve_data_length(
-    *,
-    requested_length: int,
-    duration_seconds: int,
-    start_time_ms: int | None,
-    end_time_ms: int | None,
-) -> int:
-    if start_time_ms is None or end_time_ms is None:
-        return requested_length
-    duration_ms = max(int(duration_seconds), 1) * 1000
-    bars = int((end_time_ms - start_time_ms) // duration_ms) + 1
-    return max(bars, 1)
 
 
 if __name__ == "__main__":

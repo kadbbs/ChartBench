@@ -1,53 +1,32 @@
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 import socket
 import threading
-import sys
 import webbrowser
-from pathlib import Path
 
 from werkzeug.serving import BaseWSGIServer, ThreadedWSGIServer, make_server
 
 from tq_app.config_profiles import load_layered_env
+from tq_app.cli.arguments import add_market_arguments
+from tq_app.configuration.defaults import (
+    DEFAULT_BAR_MODE,
+    DEFAULT_BRICK_LENGTH,
+    DEFAULT_DATA_LENGTH,
+    DEFAULT_DURATION_SECONDS,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_PROVIDER,
+    DEFAULT_RANGE_TICKS,
+    DEFAULT_REFRESH_MS,
+    DEFAULT_SYMBOL,
+    env_default_int,
+    env_default_str,
+)
+from tq_app.runtime import runtime_project_root
 from tq_app.service import MarketDataService
 from tq_app.web import create_app
-
-DEFAULT_PROVIDER = "bitget"
-DEFAULT_SYMBOL = "BTCUSDT"
-DEFAULT_DURATION_SECONDS = 180
-DEFAULT_DATA_LENGTH = 800
-DEFAULT_REFRESH_MS = 200
-DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8050
-DEFAULT_BAR_MODE = "time"
-DEFAULT_RANGE_TICKS = 10
-DEFAULT_BRICK_LENGTH = 10000
-
-
-def env_default_str(name: str, fallback: str) -> str:
-    return os.getenv(name, "").strip() or fallback
-
-
-def env_default_int(name: str, fallback: int) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return fallback
-    try:
-        return int(raw)
-    except ValueError:
-        return fallback
-
-
-def runtime_project_root() -> Path:
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            return Path(meipass)
-    return Path(__file__).resolve().parent
-
 
 class ServerThread(threading.Thread):
     def __init__(self, app, host: str, port: int) -> None:
@@ -145,10 +124,14 @@ def parse_args() -> argparse.Namespace:
     chart_default_provider = env_default_str("TQ_CHART_DEFAULT_PROVIDER", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER))
     chart_default_symbol = env_default_str("TQ_CHART_DEFAULT_SYMBOL", env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
     parser = argparse.ArgumentParser(description="行情浏览器图表工作台")
-    parser.add_argument("--provider", default=chart_default_provider, choices=["tianqin", "binance", "bitget"], help="数据源名称")
-    parser.add_argument("--symbol", default=chart_default_symbol, help="合约代码，例如 SHFE.cu2607 或 BTCUSDT")
-    parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS), help="K 线周期，单位秒")
-    parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH), help="拉取 K 线数量")
+    add_market_arguments(
+        parser,
+        provider_default=chart_default_provider,
+        provider_choices=["tianqin", "binance", "bitget"],
+        symbol_default=chart_default_symbol,
+        duration_default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS),
+        data_length_default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH),
+    )
     parser.add_argument("--brick-length", type=int, default=env_default_int("TQ_DEFAULT_BRICK_LENGTH", DEFAULT_BRICK_LENGTH), help="Range Bar / Renko 保留砖块数量")
     parser.add_argument("--refresh-ms", type=int, default=env_default_int("TQ_DEFAULT_REFRESH_MS", DEFAULT_REFRESH_MS), help="刷新间隔，单位毫秒")
     parser.add_argument(

@@ -252,14 +252,16 @@ fee_rate: 0.00023
 先检查组合数：
 
 ```bash
-./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix --dry-run
-./myvenv/bin/python run_backtest_matrix.py --matrix sol_risk_matrix --dry-run
+./myvenv/bin/python chartbench.py backtest matrix --matrix btc_risk_matrix --plan
+./myvenv/bin/python chartbench.py backtest matrix --matrix sol_risk_matrix --plan
 ```
+
+旧入口的 `--dry-run` 继续作为 `--plan` 的兼容别名。
 
 正式运行：
 
 ```bash
-./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix
+./myvenv/bin/python chartbench.py backtest matrix --matrix btc_risk_matrix
 ```
 
 输出：

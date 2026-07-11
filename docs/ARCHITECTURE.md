@@ -6,6 +6,9 @@ The project is organized as a modular monolith:
 - `tq_app/application/` coordinates live-trading workflows.
 - `tq_app/adapters/` contains persistence and other infrastructure adapters.
 - `tq_app/live_trading.py` is a compatibility facade for existing imports.
+- `tq_app/cli/` provides the unified command router and shared argument groups.
+- `tq_app/configuration/` owns shared defaults plus read-only config inspection and validation.
+- `tq_app/backtesting/runtime.py` prepares low, primary-HTF, and re-entry-HTF market data for both single and matrix backtests.
 
 ## Registering a strategy
 
@@ -46,6 +49,15 @@ threshold.
 
 The full canonical name is `stc_extreme_contrarian_1d_1h_reentry`; the shorter
 `stc_1d_1h_reentry` alias is intended for profiles and commands.
+
+List all registered built-in and custom strategies without starting market data:
+
+```bash
+./myvenv/bin/python run_live_trading.py --list-strategies
+./myvenv/bin/python run_backtest.py --list-strategies
+```
+
+The JSON output groups aliases under their canonical strategy name.
 
 ## Shared risk policy
 

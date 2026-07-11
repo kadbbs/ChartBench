@@ -9,10 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from tq_app.config_profiles import available_profiles, effective_config_snapshot, load_layered_env
-from tq_app.domain import SignalConfig, SignalEvaluator, load_custom_strategies
-from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine, create_ticker_websocket
-from tq_app.service import MarketDataService
-from web_tq_chart import (
+from tq_app.cli.arguments import add_market_arguments
+from tq_app.configuration.defaults import (
     DEFAULT_BAR_MODE,
     DEFAULT_BRICK_LENGTH,
     DEFAULT_DATA_LENGTH,
@@ -23,8 +21,11 @@ from web_tq_chart import (
     DEFAULT_SYMBOL,
     env_default_int,
     env_default_str,
-    runtime_project_root,
 )
+from tq_app.domain import SignalConfig, SignalEvaluator, get_strategy_catalog, load_custom_strategies
+from tq_app.live_trading import LiveTradingConfig, LiveTradingEngine, create_ticker_websocket
+from tq_app.service import MarketDataService
+from tq_app.runtime import runtime_project_root
 
 
 CONFIG_SNAPSHOT_KEYS = [
@@ -92,12 +93,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one Binance/Bitget live-trading decision from computed chart signals.")
     parser.add_argument("--profile", default=early_args.profile, help="运行配置档案名称，对应 config/profiles/<name>.yaml")
     parser.add_argument("--list-profiles", action="store_true", help="列出可用配置档案后退出。")
+    parser.add_argument("--list-strategies", action="store_true", help="列出已注册策略及别名后退出，不连接行情或交易所。")
     parser.add_argument("--show-config", action="store_true", help="打印最终生效的非密钥配置后退出。")
     parser.add_argument("--mode", choices=["off", "email", "dry_run", "live"], default=early_args.mode, help="临时覆盖 LIVE_TRADING_MODE。")
-    parser.add_argument("--provider", default=env_default_str("LIVE_TRADING_PROVIDER", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)), choices=["binance", "bitget"])
-    parser.add_argument("--symbol", default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL))
-    parser.add_argument("--duration", type=int, default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS))
-    parser.add_argument("--length", type=int, default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH))
+    add_market_arguments(
+        parser,
+        provider_default=env_default_str("LIVE_TRADING_PROVIDER", env_default_str("TQ_DEFAULT_PROVIDER", DEFAULT_PROVIDER)),
+        provider_choices=["binance", "bitget"],
+        symbol_default=env_default_str("TQ_DEFAULT_SYMBOL", DEFAULT_SYMBOL),
+        duration_default=env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS),
+        data_length_default=env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH),
+    )
     parser.add_argument("--bar-mode", default=env_default_str("TQ_DEFAULT_BAR_MODE", DEFAULT_BAR_MODE), choices=["time"])
     parser.add_argument("--range-ticks", type=int, default=env_default_int("TQ_DEFAULT_RANGE_TICKS", DEFAULT_RANGE_TICKS))
     parser.add_argument("--brick-length", type=int, default=env_default_int("TQ_DEFAULT_BRICK_LENGTH", DEFAULT_BRICK_LENGTH))
@@ -180,6 +186,10 @@ def main() -> None:
 
     if args.list_profiles:
         print(json.dumps({"profiles": available_profiles(project_root)}, ensure_ascii=False, indent=2))
+        return
+
+    if args.list_strategies:
+        print(json.dumps({"strategies": get_strategy_catalog(project_root)}, ensure_ascii=False, indent=2))
         return
 
     if args.show_config:

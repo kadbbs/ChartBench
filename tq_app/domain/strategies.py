@@ -42,6 +42,7 @@ StrategyFactory = Callable[[], SignalStrategy]
 class StrategyRegistry:
     def __init__(self) -> None:
         self._factories: dict[str, StrategyFactory] = {}
+        self._canonical_by_name: dict[str, str] = {}
 
     def register(self, name: str, factory: StrategyFactory, *, aliases: tuple[str, ...] = ()) -> None:
         normalized_names = [_normalize_strategy_name(raw_name) for raw_name in (name, *aliases)]
@@ -52,6 +53,7 @@ class StrategyRegistry:
                 raise ValueError(f"策略已注册: {normalized}")
         for normalized in normalized_names:
             self._factories[normalized] = factory
+            self._canonical_by_name[normalized] = normalized_names[0]
 
     def create(self, name: str) -> SignalStrategy:
         normalized = _normalize_strategy_name(name)
@@ -64,6 +66,20 @@ class StrategyRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._factories)
+
+    def catalog(self) -> list[dict[str, object]]:
+        canonical_names = sorted(set(self._canonical_by_name.values()))
+        return [
+            {
+                "name": canonical,
+                "aliases": sorted(
+                    name
+                    for name, target in self._canonical_by_name.items()
+                    if target == canonical and name != canonical
+                ),
+            }
+            for canonical in canonical_names
+        ]
 
 
 class MarkerSignalStrategy:
@@ -228,6 +244,12 @@ _LOADED_CUSTOM_PATHS: set[Path] = set()
 
 def get_strategy_registry() -> StrategyRegistry:
     return _REGISTRY
+
+
+def get_strategy_catalog(project_root: Path | None = None) -> list[dict[str, object]]:
+    if project_root is not None:
+        load_custom_strategies(project_root)
+    return _REGISTRY.catalog()
 
 
 def register_strategy(name: str, factory: StrategyFactory, *, aliases: tuple[str, ...] = ()) -> None:

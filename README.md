@@ -17,6 +17,7 @@ docs/CHART.md          # 图表展示和行情服务
 docs/LIVE_TRADING.md   # 实盘/观察/dry-run/预检查
 docs/BACKTESTING.md    # 回测、缓存、legacy 模型、参数矩阵
 docs/ARCHITECTURE.md   # 领域核心、共享风控和自定义策略注册
+docs/CLI.md            # 统一命令行、参数规范和配置检查
 ```
 
 快速阅读建议：
@@ -30,6 +31,7 @@ docs/ARCHITECTURE.md   # 领域核心、共享风控和自定义策略注册
 
 ```text
 .
+├── chartbench.py                    # 推荐的统一命令入口
 ├── web_tq_chart.py                 # 图表 Web 服务入口
 ├── run_live_trading.py             # 实盘/观察模式入口
 ├── run_backtest.py                 # 单次回测入口
@@ -51,6 +53,8 @@ docs/ARCHITECTURE.md   # 领域核心、共享风控和自定义策略注册
     ├── domain/                     # 纯信号、Strategy 注册和共享风控
     ├── application/                # 实盘应用编排
     ├── adapters/                   # 状态持久化等基础设施适配器
+    ├── cli/                        # 统一命令路由和公共参数
+    ├── configuration/              # 公共默认值、配置展示与校验
     ├── notifications.py            # 邮件发送
     ├── backtesting/                # 回测引擎和策略注册
     ├── data_sources/               # Tianqin/Binance/Bitget 行情接口适配
@@ -96,6 +100,17 @@ LIVE_TRADING_EMAIL_TO=
 
 ## 常用命令
 
+推荐统一入口：
+
+```bash
+./myvenv/bin/python chartbench.py --help
+./myvenv/bin/python chartbench.py chart run
+./myvenv/bin/python chartbench.py live run --profile email
+./myvenv/bin/python chartbench.py backtest run --profile btc_5m_range_cached
+```
+
+完整说明见 [docs/CLI.md](docs/CLI.md)。以下旧入口继续兼容。
+
 启动图表。默认 provider 是 `tianqin`，默认合约来自 `TQ_CHART_DEFAULT_SYMBOL`：
 
 ```bash
@@ -114,6 +129,13 @@ LIVE_TRADING_EMAIL_TO=
 ```bash
 ./myvenv/bin/python run_live_trading.py --list-profiles
 ./myvenv/bin/python run_live_trading.py --profile live_5u --show-config
+```
+
+查看当前已注册策略（包括 `custom_strategies.py`）：
+
+```bash
+./myvenv/bin/python run_live_trading.py --list-strategies
+./myvenv/bin/python run_backtest.py --list-strategies
 ```
 
 观察模式：
@@ -159,6 +181,8 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix --dry-run
 ./myvenv/bin/python run_backtest_matrix.py --matrix btc_risk_matrix
 ```
+
+旧 `--dry-run` 等价于统一命令中的 `--plan`。
 
 ## 当前默认交易模型
 
