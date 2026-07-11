@@ -38,7 +38,7 @@ def fetch_market_candles(
     cache_enabled: bool = False,
     cache_dir: Path | None = None,
 ) -> pd.DataFrame:
-    provider_name = (provider or "binance").strip().lower()
+    provider_name = (provider or "bitget").strip().lower()
     if provider_name == "binance":
         return fetch_binance_candles(
             project_root=project_root,

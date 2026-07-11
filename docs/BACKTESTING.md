@@ -122,9 +122,9 @@ USDT-FUTURES_BTCUSDT_300s_MARKET.csv
 ./myvenv/bin/python run_backtest.py --provider bitget --symbol BTCUSDT --duration 300 --length 1000
 ```
 
-当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `binance`。天勤当前不接入回测。
+当前回测支持 `provider=binance` 和 `provider=bitget`，默认 provider 是 `bitget`。天勤当前不接入回测。
 
-这里的默认值只用于未选择 profile 的临时回测；仓库内置命名 profile 当前固定使用 Bitget，以继续复用既有历史缓存并保持旧报告口径。
+未选择 profile 的临时回测和仓库内置命名 profile 当前都默认使用 Bitget，以继续复用既有历史缓存并保持报告口径。
 
 ## 可复现配置
 

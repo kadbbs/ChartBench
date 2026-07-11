@@ -38,14 +38,6 @@ const state = {
   wsMaxSyntheticTime: null,
   wsMaxActualTimeMs: null,
   indicatorSyncTimerId: null,
-  terminalToggles: {
-    text: true,
-    candle: true,
-    oi: true,
-    nl: true,
-    ns: true,
-    vwap: true,
-  },
   runtimeIndicators: [],
   watchlistMode: "all",
   watchlistSymbols: [],
@@ -58,13 +50,10 @@ const PRICE_RANGE_TOP_PADDING = 0.1;
 const PRICE_RANGE_BOTTOM_PADDING = 0.14;
 const PRICE_RANGE_BOTTOM_PADDING_WITH_VOLUME_PANE = 0.02;
 const RIGHT_PRICE_SCALE_MIN_WIDTH = 72;
-const RENKO_DEFAULT_TICKS = 5;
-const RANGE_DEFAULT_TICKS = 10;
 const VOLUME_PANE_ID = "__volume__";
 const WS_RECONNECT_MS = 2000;
 const INDICATOR_SYNC_MS = 1200;
 const WS_STALE_MS = 20000;
-const TERMINAL_TEMPLATE_STORAGE_KEY = "qh_terminal_template_v1";
 const WATCHLIST_STORAGE_KEY = "qh_symbol_watchlist_v1";
 
 function paneLabelConfig(paneId) {
@@ -340,18 +329,14 @@ const els = {
   symbolSelect: document.getElementById("symbol-select"),
   watchlistTabFavorites: document.getElementById("watchlist-tab-favorites"),
   watchlistTabAll: document.getElementById("watchlist-tab-all"),
-  watchlistAddCurrent: document.getElementById("watchlist-add-current"),
-  watchlistRemoveCurrent: document.getElementById("watchlist-remove-current"),
-  barModeSelect: document.getElementById("bar-mode-select"),
+  watchlistToggleCurrent: document.getElementById("watchlist-toggle-current"),
   durationSelect: document.getElementById("duration-select"),
-  barSizeLabel: document.getElementById("bar-size-label"),
-  rangeTicksInput: document.getElementById("range-ticks-input"),
-  historySizeLabel: document.getElementById("history-size-label"),
-  brickLengthInput: document.getElementById("brick-length-input"),
   lastPrice: document.getElementById("last-price"),
   lastUpdate: document.getElementById("last-update"),
-  cursorTime: document.getElementById("cursor-time"),
+  streamStatus: document.getElementById("stream-status"),
+  streamStatusDot: document.getElementById("stream-status-dot"),
   contractDetailCard: document.getElementById("contract-detail-card"),
+  contractSummary: document.getElementById("contract-summary"),
   detailFirstTick: document.getElementById("detail-first-tick"),
   detailLastTick: document.getElementById("detail-last-tick"),
   detailTickCount: document.getElementById("detail-tick-count"),
@@ -360,22 +345,6 @@ const els = {
   detailVolumeMultiple: document.getElementById("detail-volume-multiple"),
   indicatorForm: document.getElementById("indicator-form"),
   chartStack: document.getElementById("chart-stack"),
-  toolbarProvider: document.getElementById("toolbar-provider"),
-  toolbarSymbol: document.getElementById("toolbar-symbol"),
-  toolbarDuration: document.getElementById("toolbar-duration"),
-  toolbarBarMode: document.getElementById("toolbar-bar-mode"),
-  toolbarRangeTicks: document.getElementById("toolbar-range-ticks"),
-  toolbarBrickLength: document.getElementById("toolbar-brick-length"),
-  toggleText: document.getElementById("toggle-text"),
-  toggleCandle: document.getElementById("toggle-candle"),
-  toggleOi: document.getElementById("toggle-oi"),
-  toggleNl: document.getElementById("toggle-nl"),
-  toggleNs: document.getElementById("toggle-ns"),
-  toggleVwap: document.getElementById("toggle-vwap"),
-  saveTemplate: document.getElementById("toolbar-save-template"),
-  resetTemplate: document.getElementById("toolbar-reset-template"),
-  metaContract: document.getElementById("meta-contract"),
-  metaStatus: document.getElementById("meta-status"),
   error: document.getElementById("error-message"),
 };
 
@@ -463,6 +432,13 @@ async function fetchJson(url) {
     throw new Error(payload.error || "请求失败");
   }
   return payload;
+}
+
+function setStreamStatus(text, active = false) {
+  if (els.streamStatus) {
+    els.streamStatus.textContent = text;
+  }
+  els.streamStatusDot?.classList.toggle("is-active", active);
 }
 
 function shouldUseBrowserPush(provider = getRequestedProvider(), barMode = getRequestedBarMode()) {
@@ -590,6 +566,7 @@ function disconnectRealtimeStream() {
   state.wsLastMessageAt = 0;
   state.wsOpenedAt = 0;
   state.streamVersion = null;
+  setStreamStatus("连接已断开", false);
 }
 
 function scheduleRealtimeReconnect(signature) {
@@ -778,6 +755,7 @@ function connectRealtimeStream() {
   }
 
   disconnectRealtimeStream();
+  setStreamStatus("正在连接", false);
   const params = buildSnapshotParams();
   const socket = new EventSource(`/api/stream?${params.toString()}`);
   state.wsConnection = socket;
@@ -792,9 +770,7 @@ function connectRealtimeStream() {
     state.wsConnectingSignature = "";
     state.wsOpenedAt = Date.now();
     els.error.textContent = "";
-    if (els.metaStatus) {
-      els.metaStatus.textContent = `Backend ${provider} stream connected`;
-    }
+    setStreamStatus(`${provider} 实时`, true);
     startRealtimeMonitor();
   };
 
@@ -841,11 +817,13 @@ function connectRealtimeStream() {
     } catch {
       els.error.textContent = "后端行情流异常。";
     }
+    setStreamStatus("行情异常", false);
   });
 
   socket.onerror = () => {
     if (state.wsConnection === socket) {
       els.error.textContent = "后端行情流连接异常，浏览器将自动重连。";
+      setStreamStatus("正在重连", false);
     }
   };
 }
@@ -886,41 +864,6 @@ function isIndicatorEnabled(indicatorId) {
   );
 }
 
-function buildDefaultTerminalTemplate() {
-  return {
-    provider: state.config?.provider || "binance",
-    symbol: state.config?.symbol || "KQ.m@SHFE.cu",
-    duration_seconds: state.config?.duration_seconds || 60,
-    bar_mode: state.config?.bar_mode || "time",
-    range_ticks: state.config?.range_ticks || 10,
-    brick_length: state.config?.brick_length || 10000,
-    toggles: {
-      text: true,
-      candle: true,
-      oi: true,
-      nl: true,
-      ns: true,
-      vwap: true,
-    },
-  };
-}
-
-function buildCurrentTerminalTemplate() {
-  return {
-    provider: getRequestedProvider(),
-    symbol: getRequestedSymbol(),
-    duration_seconds: getRequestedDuration(),
-    bar_mode: getRequestedBarMode(),
-    range_ticks: getRequestedRangeTicks(),
-    brick_length: getRequestedBrickLength(),
-    toggles: { ...state.terminalToggles },
-  };
-}
-
-function persistTerminalTemplate(template) {
-  window.localStorage.setItem(TERMINAL_TEMPLATE_STORAGE_KEY, JSON.stringify(template));
-}
-
 function loadWatchlistSymbols() {
   const raw = window.localStorage.getItem(WATCHLIST_STORAGE_KEY);
   if (!raw) {
@@ -944,62 +887,22 @@ function syncWatchlistUi() {
   els.watchlistTabAll?.classList.toggle("is-active", state.watchlistMode === "all");
   const current = getRequestedSymbol();
   const inWatchlist = state.watchlistSymbols.includes(current);
-  if (els.watchlistAddCurrent) {
-    els.watchlistAddCurrent.disabled = inWatchlist;
-  }
-  if (els.watchlistRemoveCurrent) {
-    els.watchlistRemoveCurrent.disabled = !inWatchlist;
-  }
-}
-
-function loadSavedTerminalTemplate() {
-  const raw = window.localStorage.getItem(TERMINAL_TEMPLATE_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
+  if (els.watchlistToggleCurrent) {
+    els.watchlistToggleCurrent.textContent = inWatchlist ? "★" : "☆";
+    els.watchlistToggleCurrent.classList.toggle("is-active", inWatchlist);
+    const label = inWatchlist ? "移出自选" : "加入自选";
+    els.watchlistToggleCurrent.setAttribute("aria-label", label);
+    els.watchlistToggleCurrent.title = label;
   }
 }
 
-function syncToolbarToggles() {
-  if (els.toggleText) els.toggleText.checked = Boolean(state.terminalToggles.text);
-  if (els.toggleCandle) els.toggleCandle.checked = Boolean(state.terminalToggles.candle);
-  if (els.toggleOi) els.toggleOi.checked = Boolean(state.terminalToggles.oi);
-  if (els.toggleNl) els.toggleNl.checked = Boolean(state.terminalToggles.nl);
-  if (els.toggleNs) els.toggleNs.checked = Boolean(state.terminalToggles.ns);
-  if (els.toggleVwap) els.toggleVwap.checked = Boolean(state.terminalToggles.vwap);
-}
-
-async function applyTerminalTemplate(template) {
-  const nextTemplate = template || buildDefaultTerminalTemplate();
-  const availableProviders = new Set(state.config?.providers || [state.config?.provider].filter(Boolean));
-  const nextProvider = availableProviders.has(String(nextTemplate.provider || ""))
-    ? String(nextTemplate.provider)
-    : state.config.provider;
-  state.terminalToggles = {
-    ...state.terminalToggles,
-    ...(nextTemplate.toggles || {}),
-  };
-  syncToolbarToggles();
-
-  if (els.toolbarProvider) els.toolbarProvider.value = nextProvider;
-  if (els.providerSelect) els.providerSelect.value = nextProvider;
-  if (els.toolbarSymbol) els.toolbarSymbol.value = String(nextTemplate.symbol || state.config.symbol);
-  if (els.symbolSelect) els.symbolSelect.value = String(nextTemplate.symbol || state.config.symbol);
-  if (els.toolbarDuration) els.toolbarDuration.value = String(nextTemplate.duration_seconds || state.config.duration_seconds);
-  if (els.durationSelect) els.durationSelect.value = String(nextTemplate.duration_seconds || state.config.duration_seconds);
-  if (els.toolbarBarMode) els.toolbarBarMode.value = String(nextTemplate.bar_mode || state.config.bar_mode);
-  if (els.barModeSelect) els.barModeSelect.value = String(nextTemplate.bar_mode || state.config.bar_mode);
-  if (els.toolbarRangeTicks) els.toolbarRangeTicks.value = String(nextTemplate.range_ticks || state.config.range_ticks || 10);
-  if (els.rangeTicksInput) els.rangeTicksInput.value = String(nextTemplate.range_ticks || state.config.range_ticks || 10);
-  if (els.toolbarBrickLength) els.toolbarBrickLength.value = String(nextTemplate.brick_length || state.config.brick_length || 10000);
-  if (els.brickLengthInput) els.brickLengthInput.value = String(nextTemplate.brick_length || state.config.brick_length || 10000);
-
-  syncBarModeControls(getRequestedBarMode());
-  await refreshConfig(getRequestedProvider());
+async function refreshSelectedSymbolIfChanged() {
+  const selectedSymbol = getRequestedSymbol();
+  if (!selectedSymbol || selectedSymbol === state.activeSymbol) {
+    return;
+  }
+  state.config.symbol = selectedSymbol;
+  syncRealtimeTransport();
   await refreshSnapshot();
 }
 
@@ -1082,14 +985,11 @@ function formatBarModeLabel(barMode, durationSeconds, rangeTicks) {
 }
 
 function syncMarketHeader(symbolLabel, durationSeconds, barMode, rangeTicks) {
-  const [primaryLabel, secondaryLabel] = String(symbolLabel || "").split("·").map((item) => item.trim());
+  const [primaryLabel] = String(symbolLabel || "").split("·").map((item) => item.trim());
   const mainLabel = primaryLabel || symbolLabel;
   els.title.textContent = `${mainLabel} 图表工作台`;
   els.symbol.textContent = mainLabel;
   els.duration.textContent = formatBarModeLabel(barMode, durationSeconds, rangeTicks);
-  if (els.metaContract) {
-    els.metaContract.textContent = secondaryLabel ? `${mainLabel} · ${secondaryLabel}` : mainLabel;
-  }
 }
 
 function formatDetailValue(value, fallback = "--") {
@@ -1126,6 +1026,14 @@ function renderProviderMeta(payload) {
   const hasContractDetail = Object.keys(detail).length > 0;
 
   els.contractDetailCard.hidden = !hasContractDetail;
+  if (els.contractSummary) {
+    const summaryParts = [
+      detail.exchange_id,
+      detail.product_id,
+      detail.price_tick ? `Tick ${formatNumberValue(detail.price_tick, 4)}` : "",
+    ].filter(Boolean);
+    els.contractSummary.textContent = summaryParts.join(" · ") || "合约详情";
+  }
   els.detailFirstTick.textContent = formatDetailValue(detail.exchange_id);
   els.detailLastTick.textContent = formatDetailValue(detail.product_id);
   els.detailTickCount.textContent = formatDetailValue(detail.name);
@@ -1136,63 +1044,28 @@ function renderProviderMeta(payload) {
 
 function buildDurationOptions(options, activeValue) {
   els.durationSelect.innerHTML = "";
-  if (els.toolbarDuration) {
-    els.toolbarDuration.innerHTML = "";
-  }
   options.forEach((seconds) => {
     const option = document.createElement("option");
     option.value = String(seconds);
     option.textContent = formatDurationLabel(seconds);
     option.selected = seconds === activeValue;
     els.durationSelect.append(option);
-    if (els.toolbarDuration) {
-      const clone = option.cloneNode(true);
-      els.toolbarDuration.append(clone);
-    }
   });
 }
 
 function buildProviderOptions(options, activeValue) {
   els.providerSelect.innerHTML = "";
-  if (els.toolbarProvider) {
-    els.toolbarProvider.innerHTML = "";
-  }
   options.forEach((providerId) => {
     const option = document.createElement("option");
     option.value = providerId;
     option.textContent = providerId;
     option.selected = providerId === activeValue;
     els.providerSelect.append(option);
-    if (els.toolbarProvider) {
-      const clone = option.cloneNode(true);
-      els.toolbarProvider.append(clone);
-    }
-  });
-}
-
-function buildBarModeOptions(options, activeValue) {
-  els.barModeSelect.innerHTML = "";
-  if (els.toolbarBarMode) {
-    els.toolbarBarMode.innerHTML = "";
-  }
-  options.forEach((mode) => {
-    const option = document.createElement("option");
-    option.value = mode.id;
-    option.textContent = mode.label;
-    option.selected = mode.id === activeValue;
-    els.barModeSelect.append(option);
-    if (els.toolbarBarMode) {
-      const clone = option.cloneNode(true);
-      els.toolbarBarMode.append(clone);
-    }
   });
 }
 
 function buildContractOptions(contracts, activeSymbol) {
   els.symbolSelect.innerHTML = "";
-  if (els.toolbarSymbol) {
-    els.toolbarSymbol.innerHTML = "";
-  }
   let normalizedContracts = contracts.length
     ? contracts
     : [{ symbol: activeSymbol, label: activeSymbol }];
@@ -1206,9 +1079,6 @@ function buildContractOptions(contracts, activeSymbol) {
     option.disabled = true;
     option.selected = true;
     els.symbolSelect.append(option);
-    if (els.toolbarSymbol) {
-      els.toolbarSymbol.append(option.cloneNode(true));
-    }
     syncWatchlistUi();
     return;
   }
@@ -1218,16 +1088,9 @@ function buildContractOptions(contracts, activeSymbol) {
     option.textContent = contract.label;
     option.selected = contract.symbol === activeSymbol;
     els.symbolSelect.append(option);
-    if (els.toolbarSymbol) {
-      const clone = option.cloneNode(true);
-      els.toolbarSymbol.append(clone);
-    }
   });
   if (!normalizedContracts.some((contract) => contract.symbol === activeSymbol) && normalizedContracts[0]?.symbol) {
     els.symbolSelect.value = normalizedContracts[0].symbol;
-    if (els.toolbarSymbol) {
-      els.toolbarSymbol.value = normalizedContracts[0].symbol;
-    }
   }
   syncWatchlistUi();
 }
@@ -1245,49 +1108,17 @@ function getRequestedDuration() {
 }
 
 function getRequestedBarMode() {
-  return els.barModeSelect.value || state.config.bar_mode || "time";
+  return state.config.bar_mode || state.activeBarMode || "time";
 }
 
 function getRequestedRangeTicks() {
-  const value = Number(els.rangeTicksInput.value || state.config.range_ticks || 10);
+  const value = Number(state.config.range_ticks || state.activeRangeTicks || 10);
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 10;
 }
 
 function getRequestedBrickLength() {
-  const value = Number(els.brickLengthInput.value || state.config.brick_length || 10000);
+  const value = Number(state.config.brick_length || state.activeBrickLength || 10000);
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 10000;
-}
-
-function defaultTicksForBarMode(barMode) {
-  if (barMode === "renko") {
-    return RENKO_DEFAULT_TICKS;
-  }
-  if (barMode === "range") {
-    return RANGE_DEFAULT_TICKS;
-  }
-  return state.config?.range_ticks || RANGE_DEFAULT_TICKS;
-}
-
-function syncBarModeControls(barMode) {
-  const usesDuration = barMode === "time";
-  const usesTicks = barMode === "range" || barMode === "renko";
-  const usesHistoryLength = barMode === "tick" || barMode === "range" || barMode === "renko";
-  els.durationSelect.disabled = !usesDuration;
-  els.rangeTicksInput.disabled = !usesTicks;
-  els.brickLengthInput.disabled = !usesHistoryLength;
-  if (barMode === "renko") {
-    els.barSizeLabel.textContent = "Renko Tick";
-    els.historySizeLabel.textContent = "砖图根数";
-  } else if (barMode === "range") {
-    els.barSizeLabel.textContent = "Range Tick";
-    els.historySizeLabel.textContent = "砖图根数";
-  } else if (barMode === "tick") {
-    els.barSizeLabel.textContent = "价格 Tick";
-    els.historySizeLabel.textContent = "Tick 根数";
-  } else {
-    els.barSizeLabel.textContent = "价格 Tick";
-    els.historySizeLabel.textContent = "显示根数";
-  }
 }
 
 function sanitizePricePaneIndicators(snapshot) {
@@ -1332,7 +1163,7 @@ function sanitizePricePaneIndicators(snapshot) {
 }
 
 function applyIndicatorBarColors(snapshot) {
-  if (!state.terminalToggles.candle || !Array.isArray(snapshot.candles) || snapshot.candles.length === 0) {
+  if (!Array.isArray(snapshot.candles) || snapshot.candles.length === 0) {
     return snapshot;
   }
   const colorByTime = new Map();
@@ -1645,7 +1476,6 @@ function syncCrosshair(sourcePaneId, param) {
 
   const time = param?.time;
   if (time === undefined) {
-    els.cursorTime.textContent = "--";
     state.isSyncingCrosshair = true;
     state.charts.forEach((entry) => {
       entry.chart.clearCrosshairPosition();
@@ -1654,7 +1484,6 @@ function syncCrosshair(sourcePaneId, param) {
     return;
   }
 
-  els.cursorTime.textContent = formatCrosshairTime(time);
   state.isSyncingCrosshair = true;
   state.charts.forEach((entry) => {
     if (entry.paneId === sourcePaneId) {
@@ -1999,32 +1828,6 @@ function indicatorPaneId(indicator) {
   return indicator.pane === "price" ? "price" : indicator.id;
 }
 
-function formatCrosshairTime(time) {
-  const resolved = resolveDisplayTime(time);
-  if (resolved) {
-    return resolved;
-  }
-  if (state.activeBarMode === "time") {
-    return "--";
-  }
-  if (typeof time === "number") {
-    if (Math.abs(time) < 1e9) {
-      return new Date(time * 1000 * 1000).toLocaleString("zh-CN", {
-        hour12: false,
-      });
-    }
-    return new Date(time * 1000).toLocaleString("zh-CN", {
-      hour12: false,
-    });
-  }
-  if (time && typeof time === "object" && "year" in time) {
-    const month = String(time.month).padStart(2, "0");
-    const day = String(time.day).padStart(2, "0");
-    return `${time.year}-${month}-${day}`;
-  }
-  return "--";
-}
-
 function deltaContextMatches(delta) {
   if (!delta || typeof delta !== "object") {
     return false;
@@ -2099,9 +1902,6 @@ function deltaBarColors(indicators) {
 }
 
 function applyDeltaCandleColors(candles, indicators) {
-  if (!state.terminalToggles.candle) {
-    return candles || [];
-  }
   const colors = deltaBarColors(indicators);
   if (colors.size === 0) {
     return candles || [];
@@ -2188,9 +1988,7 @@ function applySnapshotDelta(delta) {
     syncCurrentPriceLine(lastClose, delta.last_color || "#089981");
   }
   els.lastUpdate.textContent = delta.last_time || els.lastUpdate.textContent;
-  if (els.metaStatus) {
-    els.metaStatus.textContent = `Realtime ${state.activeProvider} · ${state.activeBarMode} · ${delta.last_time || "--"}`;
-  }
+  setStreamStatus(`${state.activeProvider} 实时`, true);
   syncMarketHeader(
     delta.symbol_label || delta.symbol,
     delta.duration_seconds,
@@ -2233,29 +2031,7 @@ function applySnapshot(snapshot) {
   rebuildWsTimeIndex(snapshot);
   els.symbolSelect.value = snapshot.symbol;
   els.providerSelect.value = state.activeProvider;
-  els.barModeSelect.value = state.activeBarMode;
   els.durationSelect.value = String(snapshot.duration_seconds);
-  if (els.toolbarProvider) {
-    els.toolbarProvider.value = state.activeProvider;
-  }
-  if (els.toolbarSymbol) {
-    els.toolbarSymbol.value = snapshot.symbol;
-  }
-  if (els.toolbarDuration) {
-    els.toolbarDuration.value = String(snapshot.duration_seconds);
-  }
-  if (els.toolbarBarMode) {
-    els.toolbarBarMode.value = state.activeBarMode;
-  }
-  els.rangeTicksInput.value = String(state.activeRangeTicks);
-  els.brickLengthInput.value = String(state.activeBrickLength);
-  if (els.toolbarRangeTicks) {
-    els.toolbarRangeTicks.value = String(state.activeRangeTicks);
-  }
-  if (els.toolbarBrickLength) {
-    els.toolbarBrickLength.value = String(state.activeBrickLength);
-  }
-  syncBarModeControls(state.activeBarMode);
   syncMarketHeader(
     snapshot.symbol_label || snapshot.symbol,
     snapshot.duration_seconds,
@@ -2266,9 +2042,7 @@ function applySnapshot(snapshot) {
   els.lastPrice.textContent = snapshot.last_close.toFixed(2);
   els.lastPrice.style.color = snapshot.last_color;
   els.lastUpdate.textContent = snapshot.last_time;
-  if (els.metaStatus) {
-    els.metaStatus.textContent = `Realtime ${state.activeProvider} · ${state.activeBarMode} · ${snapshot.last_time}`;
-  }
+  setStreamStatus(`${state.activeProvider} 实时`, true);
 
   const sanitizedSnapshot = sanitizePricePaneIndicators(snapshot);
   const trimmedSnapshot = trimSnapshotForDisplay(sanitizedSnapshot);
@@ -2290,10 +2064,10 @@ function applySnapshot(snapshot) {
   setSeriesData("candles", candleSeries, displaySnapshot.candles);
   setSeriesData("volume", volumeSeries, displaySnapshot.volume);
   candleSeries?.applyOptions({
-    upColor: state.terminalToggles.candle ? "#6eff77" : "rgba(0,0,0,0)",
-    downColor: state.terminalToggles.candle ? "#ff335f" : "rgba(0,0,0,0)",
-    wickUpColor: state.terminalToggles.candle ? "#6eff77" : "rgba(0,0,0,0)",
-    wickDownColor: state.terminalToggles.candle ? "#ff335f" : "rgba(0,0,0,0)",
+    upColor: "#6eff77",
+    downColor: "#ff335f",
+    wickUpColor: "#6eff77",
+    wickDownColor: "#ff335f",
   });
   const activeBandPrimaryKeys = new Set();
   const candleMarkers = [];
@@ -2459,14 +2233,10 @@ async function refreshConfig(provider) {
   state.config.range_ticks = nextConfig.range_ticks || 10;
   buildProviderOptions(nextConfig.providers || [], nextConfig.provider);
   buildContractOptions(nextConfig.contracts || [], nextConfig.symbol);
-  buildBarModeOptions(nextConfig.bar_modes || [{ id: "time", label: "时间 K 线" }], state.activeBarMode);
   buildDurationOptions(nextConfig.duration_options || [nextConfig.duration_seconds], nextConfig.duration_seconds);
   els.providerSelect.value = nextConfig.provider;
   els.symbolSelect.value = nextConfig.symbol;
-  els.barModeSelect.value = state.activeBarMode;
   els.durationSelect.value = String(nextConfig.duration_seconds);
-  els.rangeTicksInput.value = String(state.activeRangeTicks);
-  els.brickLengthInput.value = String(state.activeBrickLength);
   syncMarketHeader(
     nextConfig.symbol_label || nextConfig.symbol,
     nextConfig.duration_seconds,
@@ -2533,30 +2303,7 @@ async function boot() {
   els.provider.textContent = state.config.provider;
   buildProviderOptions(state.config.providers || [state.config.provider], state.config.provider);
   buildContractOptions(state.config.contracts || [], state.config.symbol);
-  buildBarModeOptions(state.config.bar_modes || [{ id: "time", label: "时间 K 线" }], state.activeBarMode);
   buildDurationOptions(state.config.duration_options || [state.config.duration_seconds], state.config.duration_seconds);
-  if (els.toolbarProvider) {
-    els.toolbarProvider.value = state.config.provider;
-  }
-  if (els.toolbarSymbol) {
-    els.toolbarSymbol.value = state.config.symbol;
-  }
-  if (els.toolbarDuration) {
-    els.toolbarDuration.value = String(state.config.duration_seconds);
-  }
-  if (els.toolbarBarMode) {
-    els.toolbarBarMode.value = state.activeBarMode;
-  }
-  els.rangeTicksInput.value = String(state.activeRangeTicks);
-  els.brickLengthInput.value = String(state.activeBrickLength);
-  if (els.toolbarRangeTicks) {
-    els.toolbarRangeTicks.value = String(state.activeRangeTicks);
-  }
-  if (els.toolbarBrickLength) {
-    els.toolbarBrickLength.value = String(state.activeBrickLength);
-  }
-  syncToolbarToggles();
-  syncBarModeControls(state.activeBarMode);
   syncMarketHeader(
     state.config.symbol_label || state.config.symbol,
     state.config.duration_seconds,
@@ -2565,14 +2312,7 @@ async function boot() {
   );
   renderProviderMeta(state.config);
   rebuildWsTimeIndex({ candles: [], time_labels: {} });
-  const savedTemplate = loadSavedTerminalTemplate();
-  if (savedTemplate) {
-    try {
-      await applyTerminalTemplate(savedTemplate);
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  }
+  window.localStorage.removeItem("qh_terminal_template_v1");
 
   els.symbolSelect.addEventListener("change", async () => {
     try {
@@ -2585,33 +2325,44 @@ async function boot() {
     }
   });
   els.watchlistTabFavorites?.addEventListener("click", async () => {
-    state.watchlistMode = "favorites";
-    buildContractOptions(state.config.contracts || [], state.activeSymbol);
+    try {
+      state.watchlistMode = "favorites";
+      buildContractOptions(state.config.contracts || [], state.activeSymbol);
+      await refreshSelectedSymbolIfChanged();
+    } catch (error) {
+      els.error.textContent = error.message;
+    }
   });
   els.watchlistTabAll?.addEventListener("click", async () => {
-    state.watchlistMode = "all";
-    buildContractOptions(state.config.contracts || [], state.activeSymbol);
+    try {
+      state.watchlistMode = "all";
+      buildContractOptions(state.config.contracts || [], state.activeSymbol);
+      await refreshSelectedSymbolIfChanged();
+    } catch (error) {
+      els.error.textContent = error.message;
+    }
   });
-  els.watchlistAddCurrent?.addEventListener("click", () => {
+  els.watchlistToggleCurrent?.addEventListener("click", async () => {
     const current = getRequestedSymbol();
     if (!current) {
       return;
     }
-    persistWatchlistSymbols([...state.watchlistSymbols, current]);
-    syncWatchlistUi();
-  });
-  els.watchlistRemoveCurrent?.addEventListener("click", async () => {
-    const current = getRequestedSymbol();
-    persistWatchlistSymbols(state.watchlistSymbols.filter((item) => item !== current));
-    if (state.watchlistMode === "favorites") {
+    const isFavorite = state.watchlistSymbols.includes(current);
+    persistWatchlistSymbols(
+      isFavorite
+        ? state.watchlistSymbols.filter((item) => item !== current)
+        : [...state.watchlistSymbols, current]
+    );
+    if (isFavorite && state.watchlistMode === "favorites") {
       buildContractOptions(state.config.contracts || [], state.activeSymbol);
+      try {
+        await refreshSelectedSymbolIfChanged();
+      } catch (error) {
+        els.error.textContent = error.message;
+      }
     } else {
       syncWatchlistUi();
     }
-  });
-  els.toolbarSymbol?.addEventListener("change", async () => {
-    els.symbolSelect.value = els.toolbarSymbol.value;
-    els.symbolSelect.dispatchEvent(new Event("change"));
   });
   els.providerSelect.addEventListener("change", async () => {
     const nextProvider = getRequestedProvider();
@@ -2625,29 +2376,7 @@ async function boot() {
       await refreshConfig(nextProvider);
       els.lastPrice.textContent = "--";
       els.lastUpdate.textContent = "--";
-      els.cursorTime.textContent = "--";
-      await refreshSnapshot();
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
-  els.toolbarProvider?.addEventListener("change", async () => {
-    els.providerSelect.value = els.toolbarProvider.value;
-    els.providerSelect.dispatchEvent(new Event("change"));
-  });
-  els.barModeSelect.addEventListener("change", async () => {
-    const nextBarMode = getRequestedBarMode();
-    const previousBarMode = state.activeBarMode;
-    if ((nextBarMode === "renko" || nextBarMode === "range") && previousBarMode !== nextBarMode) {
-      const previousDefault = defaultTicksForBarMode(previousBarMode);
-      const currentTicks = getRequestedRangeTicks();
-      if (currentTicks === previousDefault || !els.rangeTicksInput.value) {
-        els.rangeTicksInput.value = String(defaultTicksForBarMode(nextBarMode));
-      }
-    }
-    syncBarModeControls(nextBarMode);
-    try {
-      syncRealtimeTransport();
+      setStreamStatus("正在切换", false);
       await refreshSnapshot();
     } catch (error) {
       els.error.textContent = error.message;
@@ -2661,78 +2390,8 @@ async function boot() {
       els.error.textContent = error.message;
     }
   });
-  els.toolbarDuration?.addEventListener("change", async () => {
-    els.durationSelect.value = els.toolbarDuration.value;
-    els.durationSelect.dispatchEvent(new Event("change"));
-  });
-  els.toolbarBarMode?.addEventListener("change", async () => {
-    els.barModeSelect.value = els.toolbarBarMode.value;
-    els.barModeSelect.dispatchEvent(new Event("change"));
-  });
-  els.toolbarRangeTicks?.addEventListener("change", async () => {
-    els.rangeTicksInput.value = els.toolbarRangeTicks.value;
-    els.rangeTicksInput.dispatchEvent(new Event("change"));
-  });
-  els.toolbarBrickLength?.addEventListener("change", async () => {
-    els.brickLengthInput.value = els.toolbarBrickLength.value;
-    els.brickLengthInput.dispatchEvent(new Event("change"));
-  });
-  [
-    ["text", els.toggleText],
-    ["candle", els.toggleCandle],
-    ["oi", els.toggleOi],
-    ["nl", els.toggleNl],
-    ["ns", els.toggleNs],
-    ["vwap", els.toggleVwap],
-  ].forEach(([key, element]) => {
-    element?.addEventListener("change", async () => {
-      state.terminalToggles[key] = element.checked;
-      try {
-        await refreshSnapshot();
-      } catch (error) {
-        els.error.textContent = error.message;
-      }
-    });
-  });
-  els.saveTemplate?.addEventListener("click", () => {
-    persistTerminalTemplate(buildCurrentTerminalTemplate());
-    if (els.metaStatus) {
-      els.metaStatus.textContent = "Template saved locally";
-    }
-  });
-  els.resetTemplate?.addEventListener("click", async () => {
-    try {
-      const defaults = buildDefaultTerminalTemplate();
-      persistTerminalTemplate(defaults);
-      await applyTerminalTemplate(defaults);
-      if (els.metaStatus) {
-        els.metaStatus.textContent = "Default template restored";
-      }
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
-  els.rangeTicksInput.addEventListener("change", async () => {
-    try {
-      await refreshSnapshot();
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
-  els.brickLengthInput.addEventListener("change", async () => {
-    try {
-      await refreshSnapshot();
-    } catch (error) {
-      els.error.textContent = error.message;
-    }
-  });
   buildIndicatorSelector(state.config.indicators, state.config.default_indicator_ids);
   rebuildCharts();
-  window.addEventListener("keydown", async (event) => {
-    if (event.target && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) {
-      return;
-    }
-  });
   if (shouldUseBrowserPush()) {
     syncRealtimeTransport();
   } else {

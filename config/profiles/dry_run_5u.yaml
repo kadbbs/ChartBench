@@ -19,6 +19,11 @@
 # 运行模式：dry_run=构造请求但不发送到 Bitget。
 LIVE_TRADING_MODE: dry_run
 
+# Dry-run 与真实实盘使用同一 Bitget 产品线。
+LIVE_TRADING_PROVIDER: bitget
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
+TQ_DEFAULT_SYMBOL: BTCUSDT
+
 # 单笔保证金金额。真实下单数量 = 5U * 10倍 / 开仓价。
 LIVE_TRADING_MARGIN_AMOUNT: 5
 

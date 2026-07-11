@@ -64,8 +64,8 @@ def main() -> None:
 
     live_config = build_backtest_live_config(project_root, profile)
     symbol = _str(profile, "symbol", "BTCUSDT").upper()
-    provider = _str(profile, "provider", "binance")
-    product_type = _str(profile, "product_type", "UM-FUTURES")
+    provider = _str(profile, "provider", "bitget")
+    product_type = _str(profile, "product_type", "USDT-FUTURES")
     duration = _int(profile, "duration", 300)
     kline_type = _str(profile, "kline_type", "MARKET")
     start_time_ms = _parse_time_ms(_str(profile, "start_time", ""))

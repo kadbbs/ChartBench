@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=int, default=profile_int("duration", env_default_int("TQ_DEFAULT_DURATION_SECONDS", DEFAULT_DURATION_SECONDS)))
     parser.add_argument("--length", type=int, default=profile_int("length", env_default_int("TQ_DEFAULT_DATA_LENGTH", DEFAULT_DATA_LENGTH)))
     parser.add_argument("--strategy", default=profile_str("strategy", "live_decision"), help="回测策略名。默认复用当前实盘策略。")
-    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "UM-FUTURES")))
+    parser.add_argument("--product-type", default=profile_str("product_type", env_default_str("LIVE_TRADING_PRODUCT_TYPE", "USDT-FUTURES")))
     parser.add_argument("--kline-type", default=profile_str("kline_type", env_default_str("BINANCE_KLINE_TYPE", "MARKET")))
     parser.add_argument("--start-time", default=profile_str("start_time", ""), help="回测开始时间，支持毫秒/秒时间戳或 ISO 时间；配合 --end-time 指定完整区间。")
     parser.add_argument("--end-time", default=profile_str("end_time", ""), help="回测结束时间，支持毫秒时间戳或 ISO 时间；为空则使用当前时间。")

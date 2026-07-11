@@ -19,5 +19,10 @@
 # 运行模式：email=仅邮件/日志观察。
 LIVE_TRADING_MODE: email
 
+# 实盘观察链路固定使用 Bitget USDT-FUTURES，避免继承其他机器的默认 provider。
+LIVE_TRADING_PROVIDER: bitget
+LIVE_TRADING_PRODUCT_TYPE: USDT-FUTURES
+TQ_DEFAULT_SYMBOL: BTCUSDT
+
 # 观察模式不需要也不应该自动划转。
 LIVE_TRADING_AUTO_TRANSFER_FROM_SPOT: false

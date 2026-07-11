@@ -7,6 +7,7 @@ import math
 import platform
 import subprocess
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -16,6 +17,8 @@ import pandas as pd
 from tq_app.backtesting.config import backtest_signal_config_snapshot
 from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
 from tq_app.backtesting.strategies import KlineStrategy
+from tq_app.domain import RiskPolicy, RiskPolicyConfig, RiskState
+from tq_app.domain.risk import price_for_points
 from tq_app.live_trading import LiveTradingConfig
 from tq_app.service import DISPLAY_TIMEZONE
 
@@ -126,6 +129,7 @@ class BacktestEngine:
         self.config = config
         self.live_config = live_config
         self.strategy = strategy
+        self.risk_policy = RiskPolicy(RiskPolicyConfig.from_backtest_config(config))
 
     def run(self, bars: pd.DataFrame, htf_bars: pd.DataFrame | None = None) -> BacktestResult:
         if len(bars) < self.config.warmup_bars + 3:
@@ -339,39 +343,51 @@ class BacktestEngine:
 
     def _risk_exit(self, position: Position, candle: dict[str, Any], candle_index: int) -> RiskExit | None:
         trade = position.trade
-        entry_price = trade.entry_price
-        side = trade.side
-        position.max_favorable_points = max(position.max_favorable_points, _candle_favorable_points(side, entry_price, candle))
-        position.max_adverse_points = min(position.max_adverse_points, _candle_adverse_points(side, entry_price, candle))
-
-        if position.max_adverse_points <= self.config.disaster_stop_points:
-            return RiskExit(
-                reason="disaster_hard_stop",
-                price=_price_for_points(side, entry_price, self.config.disaster_stop_points),
-                marker_text="CLOSE DISASTER",
-            )
-
-        protection_points = _protection_points(position.max_favorable_points, self.config)
-        if protection_points is not None:
-            position.protected_stop_points = max(position.protected_stop_points or protection_points, protection_points)
-            if _candle_touches_points(candle, side, entry_price, position.protected_stop_points):
-                reason = "breakeven_protection" if position.protected_stop_points <= self.config.breakeven_stop_points else "trailing_protection"
-                return RiskExit(
-                    reason=reason,
-                    price=_price_for_points(side, entry_price, position.protected_stop_points),
-                    marker_text="CLOSE PROTECT",
-                )
-
-        if candle_index - position.entry_index == _startup_check_bars(self.config.duration_seconds, self.config.startup_check_bars_5m):
-            close_points = _points(side, entry_price, float(candle["close"]))
-            if position.max_favorable_points < self.config.startup_max_favorable_points and close_points < self.config.startup_current_points:
-                return RiskExit(
-                    reason="startup_failure_stop",
-                    price=float(candle["close"]),
-                    marker_text="CLOSE STARTUP",
-                )
-
-        return None
+        evaluation = self.risk_policy.evaluate_bar(
+            RiskState(
+                max_favorable_points=Decimal(str(position.max_favorable_points)),
+                max_adverse_points=Decimal(str(position.max_adverse_points)),
+                protected_stop_points=(
+                    Decimal(str(position.protected_stop_points))
+                    if position.protected_stop_points is not None
+                    else None
+                ),
+            ),
+            side=trade.side,
+            entry_price=trade.entry_price,
+            high=candle["high"],
+            low=candle["low"],
+            close=candle["close"],
+            bars_since_entry=candle_index - position.entry_index,
+        )
+        position.max_favorable_points = float(evaluation.state.max_favorable_points)
+        position.max_adverse_points = float(evaluation.state.max_adverse_points)
+        position.protected_stop_points = (
+            float(evaluation.state.protected_stop_points)
+            if evaluation.state.protected_stop_points is not None
+            else None
+        )
+        if evaluation.trigger is None or evaluation.exit_points is None:
+            return None
+        reason_by_trigger = {
+            "disaster": "disaster_hard_stop",
+            "protected": (
+                "breakeven_protection"
+                if evaluation.protection_kind == "breakeven"
+                else "trailing_protection"
+            ),
+            "startup": "startup_failure_stop",
+        }
+        marker_by_trigger = {
+            "disaster": "CLOSE DISASTER",
+            "protected": "CLOSE PROTECT",
+            "startup": "CLOSE STARTUP",
+        }
+        return RiskExit(
+            reason=reason_by_trigger[evaluation.trigger],
+            price=float(price_for_points(trade.side, trade.entry_price, evaluation.exit_points)),
+            marker_text=marker_by_trigger[evaluation.trigger],
+        )
 
     def _close_partial(
         self,
@@ -518,47 +534,6 @@ def _code_version(project_root: Path) -> dict[str, Any]:
 def _points(side: str, entry: float, exit_price: float) -> float:
     direction = 1.0 if side == "buy" else -1.0
     return (exit_price - entry) * direction
-
-
-def _price_for_points(side: str, entry: float, points: float) -> float:
-    direction = 1.0 if side == "buy" else -1.0
-    return entry + points * direction
-
-
-def _candle_favorable_points(side: str, entry: float, candle: dict[str, Any]) -> float:
-    if side == "buy":
-        return float(candle["high"]) - entry
-    return entry - float(candle["low"])
-
-
-def _candle_adverse_points(side: str, entry: float, candle: dict[str, Any]) -> float:
-    if side == "buy":
-        return float(candle["low"]) - entry
-    return entry - float(candle["high"])
-
-
-def _candle_touches_points(candle: dict[str, Any], side: str, entry: float, points: float) -> bool:
-    if side == "buy":
-        return float(candle["low"]) <= _price_for_points(side, entry, points)
-    return float(candle["high"]) >= _price_for_points(side, entry, points)
-
-
-def _protection_points(max_favorable_points: float, config: BacktestConfig) -> float | None:
-    if max_favorable_points >= config.trailing_trigger_3_points:
-        return max_favorable_points * config.trailing_protect_3_ratio
-    if max_favorable_points >= config.trailing_trigger_2_points:
-        return max_favorable_points * config.trailing_protect_2_ratio
-    if max_favorable_points >= config.trailing_trigger_1_points:
-        return max_favorable_points * config.trailing_protect_1_ratio
-    if max_favorable_points >= config.breakeven_trigger_points:
-        return config.breakeven_stop_points
-    return None
-
-
-def _startup_check_bars(duration_seconds: int, check_bars_5m: int) -> int:
-    if duration_seconds <= 0:
-        return max(int(check_bars_5m), 1)
-    return max(1, round((max(int(check_bars_5m), 1) * 300) / duration_seconds))
 
 
 def _apply_slippage(price: float, side: str, slippage_rate: float) -> float:

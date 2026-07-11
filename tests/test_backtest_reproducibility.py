@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 
 from tq_app.backtesting.config import apply_backtest_signal_profile, backtest_signal_config_snapshot
-from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile
+from tq_app.config_profiles import (
+    _read_flat_yaml,
+    available_backtest_profiles,
+    available_profiles,
+    load_backtest_profile,
+)
 from tq_app.live_trading import LiveTradingConfig
 
 
@@ -12,6 +17,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class BacktestReproducibilityTest(unittest.TestCase):
+    def test_project_and_live_profiles_default_to_bitget(self) -> None:
+        defaults = _read_flat_yaml(PROJECT_ROOT / "config" / "defaults.yaml")
+        self.assertEqual(defaults["TQ_DEFAULT_PROVIDER"], "bitget")
+        self.assertEqual(defaults["LIVE_TRADING_PROVIDER"], "bitget")
+        self.assertEqual(defaults["LIVE_TRADING_PRODUCT_TYPE"], "USDT-FUTURES")
+
+        for profile_name in available_profiles(PROJECT_ROOT):
+            with self.subTest(profile=profile_name):
+                profile = _read_flat_yaml(PROJECT_ROOT / "config" / "profiles" / f"{profile_name}.yaml")
+                self.assertEqual(profile["LIVE_TRADING_PROVIDER"], "bitget")
+                self.assertEqual(profile["LIVE_TRADING_PRODUCT_TYPE"], "USDT-FUTURES")
+
     def test_all_named_profiles_pin_provider_and_signal_configuration(self) -> None:
         required_keys = {
             "provider",
@@ -43,6 +60,7 @@ class BacktestReproducibilityTest(unittest.TestCase):
             with self.subTest(profile=profile_name):
                 profile = load_backtest_profile(PROJECT_ROOT, profile_name)
                 self.assertEqual(profile["provider"], "bitget")
+                self.assertEqual(profile["product_type"], "USDT-FUTURES")
                 self.assertEqual(required_keys - profile.keys(), set())
 
     def test_profile_values_override_environment_derived_signal_config(self) -> None:
