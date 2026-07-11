@@ -280,7 +280,7 @@ LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
 - 同一根 K 线出现 `Buy` 或 `买`。
 - `STC < 25`。
 - STC 为绿色。
-- 红色 Hull 带整体在开仓 K 线 low 下方。
+- 绿色 Hull 多趋势带整体在开仓 K 线 low 下方。
 - 高周期 Hull 为多趋势，且高周期 STC 为绿色；不要求高周期 STC `< 25`。
 
 空单观察：
@@ -288,7 +288,7 @@ LIVE_TRADING_HTF_HULL_DURATION_SECONDS: 86400
 - 同一根 K 线出现 `Sell` 或 `卖`。
 - `STC > 75`。
 - STC 为红色。
-- 绿色 Hull 带整体在开仓 K 线 high 上方。
+- 红色 Hull 空趋势带整体在开仓 K 线 high 上方。
 - 高周期 Hull 为空趋势，且高周期 STC 为红色；不要求高周期 STC `> 75`。
 
 如果不使用 `stc_extreme_contrarian`，会退回 marker 模式：

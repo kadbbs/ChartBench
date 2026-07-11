@@ -173,12 +173,12 @@ class SignalEvaluator:
         duration_text = duration_label(duration)
         if trend == "buy":
             if side == "sell":
-                return False, f"{duration_text} Hull 为红色多趋势，禁止 5m 反向开空；{duration_text}={label}", context
-            return True, f"{duration_text} Hull 为红色多趋势，允许顺势开多；{duration_text}={label}", context
+                return False, f"{duration_text} Hull 为绿色多趋势，禁止 5m 反向开空；{duration_text}={label}", context
+            return True, f"{duration_text} Hull 为绿色多趋势，允许顺势开多；{duration_text}={label}", context
         if trend == "sell":
             if side == "buy":
-                return False, f"{duration_text} Hull 为绿色空趋势，禁止 5m 反向开多；{duration_text}={label}", context
-            return True, f"{duration_text} Hull 为绿色空趋势，允许顺势开空；{duration_text}={label}", context
+                return False, f"{duration_text} Hull 为红色空趋势，禁止 5m 反向开多；{duration_text}={label}", context
+            return True, f"{duration_text} Hull 为红色空趋势，允许顺势开空；{duration_text}={label}", context
         return False, f"高周期 Hull 趋势不明确，禁止开仓：{detail.get('reason') or detail}", context
 
     def _reentry_hull_allows_side(
@@ -225,7 +225,7 @@ class SignalEvaluator:
         detail["stc_trend"] = stc_trend
         if stc_trend != hull_trend:
             text = duration_label(int(snapshot.get("duration_seconds") or self.primary_htf_duration_seconds))
-            direction_text = "红色上升" if hull_trend == "buy" else "绿色下降"
+            direction_text = "绿色上升" if hull_trend == "buy" else "红色下降"
             detail["reason"] = f"{text} Hull 为{direction_text}趋势，但 {text} STC 不是同向色"
             return None, detail
         return hull_trend, detail
@@ -254,7 +254,7 @@ class SignalEvaluator:
         if green_band and not red_band:
             self._attach_hull_trend_start(snapshot, candles, actual_index, "sell", detail)
             return "sell", detail
-        detail["reason"] = "红带/绿带状态为空或同时存在"
+        detail["reason"] = "绿色多趋势带/红色空趋势带状态为空或同时存在"
         return None, detail
 
     def _attach_hull_trend_start(

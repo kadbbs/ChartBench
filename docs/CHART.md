@@ -160,7 +160,7 @@ macd
 `merged_dkx_hull_ut` 来自 `custom_indicators.py`，会生成：
 
 - UT / DKX 买卖 marker。
-- Hull 红带/绿带。
+- Hull 多趋势绿带/空趋势红带。
 - 策略用于判断 K 线和 Hull 带相对位置。
 
 `stc` 和 `macd` 在 `tq_app/indicators/builtin.py`。

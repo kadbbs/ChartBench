@@ -143,20 +143,20 @@ def hull_position_allows_side(
     hull_values = hull_band_values(indicator_values, side)
     if side == "buy":
         if not hull_values:
-            return False, "缺少红带 Hull 指标值，无法判断多单位置，禁止开仓。"
+            return False, "缺少绿色 Hull 多趋势带指标值，无法判断多单位置，禁止开仓。"
         if all(value < low for value in hull_values):
-            return True, f"红带在 K 线下方，允许多单：hull={format_float_list(hull_values)}, low={format_price(low)}"
+            return True, f"绿色 Hull 多趋势带在 K 线下方，允许多单：hull={format_float_list(hull_values)}, low={format_price(low)}"
         return False, (
-            "红带未完全位于开仓 K 线下方，禁止多单：要求红带上下边界都 < low；"
+            "绿色 Hull 多趋势带未完全位于开仓 K 线下方，禁止多单：要求上下边界都 < low；"
             f"hull={format_float_list(hull_values)}, high={format_price(high)}, low={format_price(low)}"
         )
     if side == "sell":
         if not hull_values:
-            return False, "缺少绿带 Hull 指标值，无法判断空单位置，禁止开仓。"
+            return False, "缺少红色 Hull 空趋势带指标值，无法判断空单位置，禁止开仓。"
         if all(value > high for value in hull_values):
-            return True, f"绿带在 K 线上方，允许空单：hull={format_float_list(hull_values)}, high={format_price(high)}"
+            return True, f"红色 Hull 空趋势带在 K 线上方，允许空单：hull={format_float_list(hull_values)}, high={format_price(high)}"
         return False, (
-            "绿带未完全位于开仓 K 线上方，禁止空单：要求绿带上下边界都 > high；"
+            "红色 Hull 空趋势带未完全位于开仓 K 线上方，禁止空单：要求上下边界都 > high；"
             f"hull={format_float_list(hull_values)}, high={format_price(high)}, low={format_price(low)}"
         )
     return False, f"未知开仓方向，无法判断 Hull 位置: {side}"
