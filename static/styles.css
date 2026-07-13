@@ -418,3 +418,10 @@ details > summary::-webkit-details-marker {
   }
 
 }
+.workspace-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: #5ee0a0;
+  font-size: 12px;
+  text-decoration: none;
+}

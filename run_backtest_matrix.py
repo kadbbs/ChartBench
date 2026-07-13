@@ -146,6 +146,13 @@ def main() -> None:
         },
         output_dir=output_dir / "runs",
     )
+    prepared_study = BacktestEngine(
+        project_root=project_root,
+        config=base_config,
+        live_config=live_config,
+        strategy=data_strategy,
+        write_artifacts=False,
+    ).prepare_study(prepared.bars, prepared.htf_bars, prepared.reentry_htf_bars)
 
     rows: list[dict[str, Any]] = []
     for index, params in enumerate(combinations, start=1):
@@ -156,6 +163,7 @@ def main() -> None:
             prepared.bars,
             prepared.htf_bars,
             prepared.reentry_htf_bars,
+            prepared_study=prepared_study,
         )
         rows.append(_summary_row(index, params, result.metrics, run_dir))
 

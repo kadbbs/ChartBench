@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
 
-from tq_app.backtesting import BacktestConfig, BacktestEngine, BacktestMarketRequest, build_strategy, prepare_backtest_market
-from tq_app.backtesting.config import build_backtest_live_config
+from tq_app.backtesting import BacktestApplication, BacktestRunRequest
 from tq_app.backtesting.engine import DEFAULT_BACKTEST_FEE_RATE
-from tq_app.backtesting.runtime import parse_time_ms as _parse_time_ms, resolve_data_length as _resolve_data_length
+from tq_app.backtesting.runtime import parse_time_ms as _parse_time_ms
 from tq_app.cli.arguments import add_market_arguments
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile, load_layered_env
 from tq_app.configuration.defaults import DEFAULT_DATA_LENGTH, DEFAULT_DURATION_SECONDS, DEFAULT_PROVIDER, DEFAULT_SYMBOL, env_default_int, env_default_str
@@ -96,44 +94,17 @@ def main() -> None:
     if args.list_strategies:
         print(json.dumps({"strategies": get_strategy_catalog(project_root)}, ensure_ascii=False, indent=2))
         return
-    profile_values = load_backtest_profile(project_root, args.profile)
-    live_config = build_backtest_live_config(project_root, profile_values)
-    strategy = build_strategy(args.strategy, project_root, live_config)
-    start_time_ms = _parse_time_ms(args.start_time)
-    end_time_ms = _parse_time_ms(args.end_time)
-    if start_time_ms is not None and end_time_ms is None:
-        raise SystemExit("--start-time 需要同时指定 --end-time。")
-    if start_time_ms is not None and end_time_ms is not None and start_time_ms >= end_time_ms:
-        raise SystemExit("--start-time 必须早于 --end-time。")
-    data_length = _resolve_data_length(
-        requested_length=args.length,
-        duration_seconds=args.duration,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-    )
-
-    prepared = prepare_backtest_market(
-        project_root=project_root,
-        request=BacktestMarketRequest(
-            provider=args.provider,
-            symbol=args.symbol,
-            product_type=args.product_type,
-            duration_seconds=args.duration,
-            data_length=data_length,
-            start_time_ms=start_time_ms,
-            end_time_ms=end_time_ms,
-            kline_type=args.kline_type,
-            cache_enabled=args.cache,
-            cache_dir=Path(args.cache_dir),
-        ),
-        live_config=live_config,
-        strategy=strategy,
-    )
-
-    config = BacktestConfig(
-        symbol=args.symbol.upper(),
+    request = BacktestRunRequest(
+        profile=args.profile,
         provider=args.provider,
+        symbol=args.symbol,
         duration_seconds=args.duration,
+        data_length=args.length,
+        strategy=args.strategy,
+        product_type=args.product_type,
+        kline_type=args.kline_type,
+        start_time=args.start_time,
+        end_time=args.end_time,
         initial_equity=args.initial_equity,
         risk_per_trade=args.risk_per_trade,
         margin_amount=1_000.0,
@@ -141,11 +112,6 @@ def main() -> None:
         leverage=10.0,
         fee_rate=args.fee_rate,
         slippage_rate=args.slippage_rate,
-        stop_atr_multiplier=float(live_config.stop_atr_multiplier),
-        tp1_r_multiple=float(live_config.tp1_r_multiple),
-        tp1_size_ratio=float(live_config.tp1_size_ratio),
-        tp2_r_multiple=float(live_config.tp2_r_multiple),
-        atr_period=live_config.atr_period,
         warmup_bars=args.warmup_bars,
         risk_exits_enabled=args.risk_exits,
         startup_check_bars_5m=args.startup_check_bars_5m,
@@ -160,29 +126,14 @@ def main() -> None:
         trailing_protect_2_ratio=args.trailing_protect_2_ratio,
         trailing_trigger_3_points=args.trailing_trigger_3_points,
         trailing_protect_3_ratio=args.trailing_protect_3_ratio,
-        run_context={
-            "profile": args.profile or None,
-            "profile_values": profile_values,
-            "market_data": {
-                "provider": args.provider,
-                "symbol": args.symbol.upper(),
-                "product_type": args.product_type,
-                "kline_type": args.kline_type,
-                "duration_seconds": args.duration,
-                "data_length": data_length,
-                "start_time_ms": start_time_ms,
-                "end_time_ms": end_time_ms,
-                "cache_enabled": args.cache,
-                "cache_dir": str(Path(args.cache_dir)),
-            },
-        },
         output_dir=Path(args.output_dir),
+        cache_enabled=args.cache,
+        cache_dir=Path(args.cache_dir),
     )
-    result = BacktestEngine(project_root=project_root, config=config, live_config=live_config, strategy=strategy).run(
-        prepared.bars,
-        prepared.htf_bars,
-        prepared.reentry_htf_bars,
-    )
+    try:
+        result = BacktestApplication(project_root).run(request)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     print(json.dumps({"metrics": result.metrics, "output_dir": result.output_dir, "config": result.config}, ensure_ascii=False, default=str, indent=2))
 
 

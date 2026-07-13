@@ -28,12 +28,17 @@ class SnapshotBuilder:
         self.indicator_ids = indicator_ids
         self.registry = build_indicator_registry(project_root)
 
-    def build_full(self, bars: pd.DataFrame) -> dict[str, Any]:
+    def build_full(
+        self,
+        bars: pd.DataFrame,
+        indicator_params: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         normalized = normalize_bars(bars)
         indicators: list[IndicatorResult] = []
+        all_params = indicator_params or {}
         for indicator_id in self.indicator_ids:
             indicator = self.registry.get(indicator_id)
-            indicators.append(indicator.build(normalized, indicator.resolve_params(None)))
+            indicators.append(indicator.build(normalized, indicator.resolve_params(all_params.get(indicator_id))))
         return {
             "symbol": self.symbol,
             "provider": self.provider,

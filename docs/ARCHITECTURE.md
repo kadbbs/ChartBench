@@ -9,6 +9,9 @@ The project is organized as a modular monolith:
 - `tq_app/cli/` provides the unified command router and shared argument groups.
 - `tq_app/configuration/` owns shared defaults plus read-only config inspection and validation.
 - `tq_app/backtesting/runtime.py` prepares low, primary-HTF, and re-entry-HTF market data for both single and matrix backtests.
+- `tq_app/backtesting/application.py` is the shared run boundary used by CLI and Web, keeping profile resolution and effective `BacktestConfig` construction consistent.
+- `tq_app/backtesting/experiments.py` owns the opt-in Web experiment queue, lightweight matrix results, prepared-study reuse, stability scoring, and chart previews.
+- `tq_app/backtesting/web.py` exposes the isolated `/backtests` page and `/api/backtests/*` namespace without changing chart APIs.
 
 ## Registering a strategy
 

@@ -6,8 +6,9 @@ import json
 import math
 import platform
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -16,7 +17,7 @@ import pandas as pd
 
 from tq_app.backtesting.config import backtest_signal_config_snapshot
 from tq_app.backtesting.snapshot import BacktestSnapshotSlicer, SnapshotBuilder
-from tq_app.backtesting.strategies import KlineStrategy
+from tq_app.backtesting.strategies import BacktestSignal, KlineStrategy
 from tq_app.domain import RiskPolicy, RiskPolicyConfig, RiskState
 from tq_app.domain.risk import price_for_points
 from tq_app.live_trading import LiveTradingConfig
@@ -116,6 +117,17 @@ class BacktestResult:
     output_dir: str
 
 
+@dataclass(slots=True)
+class PreparedBacktestStudy:
+    full_snapshot: dict[str, Any]
+    indicator_parameters: dict[str, dict[str, Any]]
+    htf_snapshot: dict[str, Any] | None
+    reentry_htf_snapshot: dict[str, Any] | None
+    signals: list[BacktestSignal | None]
+    bar_count: int
+    strategy_signature: tuple[str, str, int, int | None, int]
+
+
 class BacktestEngine:
     def __init__(
         self,
@@ -124,11 +136,15 @@ class BacktestEngine:
         config: BacktestConfig,
         live_config: LiveTradingConfig,
         strategy: KlineStrategy,
+        indicator_params: dict[str, dict[str, Any]] | None = None,
+        write_artifacts: bool = True,
     ) -> None:
         self.project_root = project_root
         self.config = config
         self.live_config = live_config
         self.strategy = strategy
+        self.indicator_params = indicator_params or {}
+        self.write_artifacts = write_artifacts
         self.risk_policy = RiskPolicy(RiskPolicyConfig.from_backtest_config(config))
 
     def run(
@@ -136,58 +152,24 @@ class BacktestEngine:
         bars: pd.DataFrame,
         htf_bars: pd.DataFrame | None = None,
         reentry_htf_bars: pd.DataFrame | None = None,
+        *,
+        prepared_study: PreparedBacktestStudy | None = None,
     ) -> BacktestResult:
         if len(bars) < self.config.warmup_bars + 3:
             raise RuntimeError("K 线数量不足，无法完成回测。")
 
-        low_builder = SnapshotBuilder(
-            project_root=self.project_root,
-            symbol=self.config.symbol,
-            provider=self.config.provider,
-            duration_seconds=self.config.duration_seconds,
-            indicator_ids=["merged_dkx_hull_ut", "stc", "macd"],
-        )
-        full_snapshot = low_builder.build_full(bars)
-        indicator_parameters = {
-            indicator_id: low_builder.registry.get(indicator_id).resolve_params(None)
-            for indicator_id in low_builder.indicator_ids
-        }
-
-        htf_snapshot = None
-        if htf_bars is not None and not htf_bars.empty and self.live_config.htf_hull_filter_enabled:
-            htf_builder = SnapshotBuilder(
-                project_root=self.project_root,
-                symbol=self.config.symbol,
-                provider=self.config.provider,
-                duration_seconds=self.strategy.primary_htf_duration_seconds,
-                indicator_ids=["merged_dkx_hull_ut", "stc"],
-            )
-            htf_snapshot = htf_builder.build_full(htf_bars)
-
-        reentry_htf_snapshot = None
-        if reentry_htf_bars is not None and not reentry_htf_bars.empty:
-            reentry_duration = self.strategy.reentry_confirmation_duration_seconds
-            if reentry_duration is None:
-                raise RuntimeError("当前策略未声明重复开仓确认周期，却传入了确认周期 K 线。")
-            reentry_htf_builder = SnapshotBuilder(
-                project_root=self.project_root,
-                symbol=self.config.symbol,
-                provider=self.config.provider,
-                duration_seconds=reentry_duration,
-                indicator_ids=["merged_dkx_hull_ut", "stc"],
-            )
-            reentry_htf_snapshot = reentry_htf_builder.build_full(reentry_htf_bars)
+        study = prepared_study or self.prepare_study(bars, htf_bars, reentry_htf_bars)
+        if study.bar_count != len(bars):
+            raise RuntimeError("预计算研究数据与当前低周期 K 线数量不一致。")
+        if study.strategy_signature != self._strategy_signature():
+            raise RuntimeError("预计算研究数据与当前策略或预热参数不一致。")
+        full_snapshot = study.full_snapshot
+        indicator_parameters = study.indicator_parameters
+        htf_snapshot = study.htf_snapshot
+        reentry_htf_snapshot = study.reentry_htf_snapshot
 
         candles = full_snapshot["candles"]
         time_labels = full_snapshot.get("time_labels") or {}
-        snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
-        snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
-        htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
-        reentry_htf_slicer = (
-            BacktestSnapshotSlicer(reentry_htf_snapshot, max_bars=snapshot_window_bars)
-            if reentry_htf_snapshot is not None
-            else None
-        )
         equity = float(self.config.initial_equity)
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
@@ -219,14 +201,8 @@ class BacktestEngine:
                     position = None
                     risk_closed = True
 
-            snapshot = snapshot_slicer.slice(entry_index + 1)
-            if htf_slicer is not None:
-                snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
-            if reentry_htf_slicer is not None:
-                snapshot["reentry_higher_timeframe"] = reentry_htf_slicer.slice_until_time(
-                    int(entry_candle["time"])
-                )
-            signal = self.strategy.evaluate(snapshot)
+            raw_signal = study.signals[entry_index]
+            signal = replace(raw_signal) if raw_signal is not None else BacktestSignal(side=None, reason="")
             if signal.side in {"buy", "sell"} and signal.htf_lock_key and signal.htf_lock_key in htf_entry_locks:
                 if signal.htf_reentry_allowed:
                     confirmation = (signal.htf_reentry_context or {}).get("reason") or "1H Hull/STC 同向确认通过"
@@ -340,8 +316,101 @@ class BacktestEngine:
             markers=markers,
             output_dir=str(self.config.output_dir),
         )
-        self.write_outputs(result, full_snapshot)
+        if self.write_artifacts:
+            self.write_outputs(result, full_snapshot)
         return result
+
+    def prepare_study(
+        self,
+        bars: pd.DataFrame,
+        htf_bars: pd.DataFrame | None = None,
+        reentry_htf_bars: pd.DataFrame | None = None,
+    ) -> PreparedBacktestStudy:
+
+        low_builder = SnapshotBuilder(
+            project_root=self.project_root,
+            symbol=self.config.symbol,
+            provider=self.config.provider,
+            duration_seconds=self.config.duration_seconds,
+            indicator_ids=["merged_dkx_hull_ut", "stc", "macd"],
+        )
+        full_snapshot = low_builder.build_full(bars, self.indicator_params)
+        indicator_parameters = {
+            indicator_id: low_builder.registry.get(indicator_id).resolve_params(self.indicator_params.get(indicator_id))
+            for indicator_id in low_builder.indicator_ids
+        }
+
+        htf_snapshot = None
+        if htf_bars is not None and not htf_bars.empty and self.live_config.htf_hull_filter_enabled:
+            htf_builder = SnapshotBuilder(
+                project_root=self.project_root,
+                symbol=self.config.symbol,
+                provider=self.config.provider,
+                duration_seconds=self.strategy.primary_htf_duration_seconds,
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
+            )
+            htf_snapshot = htf_builder.build_full(htf_bars, self.indicator_params)
+
+        reentry_htf_snapshot = None
+        if reentry_htf_bars is not None and not reentry_htf_bars.empty:
+            reentry_duration = self.strategy.reentry_confirmation_duration_seconds
+            if reentry_duration is None:
+                raise RuntimeError("当前策略未声明重复开仓确认周期，却传入了确认周期 K 线。")
+            reentry_htf_builder = SnapshotBuilder(
+                project_root=self.project_root,
+                symbol=self.config.symbol,
+                provider=self.config.provider,
+                duration_seconds=reentry_duration,
+                indicator_ids=["merged_dkx_hull_ut", "stc"],
+            )
+            reentry_htf_snapshot = reentry_htf_builder.build_full(reentry_htf_bars, self.indicator_params)
+        signals = self._prepare_signals(full_snapshot, htf_snapshot, reentry_htf_snapshot)
+        return PreparedBacktestStudy(
+            full_snapshot=full_snapshot,
+            indicator_parameters=indicator_parameters,
+            htf_snapshot=htf_snapshot,
+            reentry_htf_snapshot=reentry_htf_snapshot,
+            signals=signals,
+            bar_count=len(bars),
+            strategy_signature=self._strategy_signature(),
+        )
+
+    def _prepare_signals(
+        self,
+        full_snapshot: dict[str, Any],
+        htf_snapshot: dict[str, Any] | None,
+        reentry_htf_snapshot: dict[str, Any] | None,
+    ) -> list[BacktestSignal | None]:
+        candles = full_snapshot.get("candles") or []
+        signals: list[BacktestSignal | None] = [None] * len(candles)
+        snapshot_window_bars = max(self.config.warmup_bars + 3, int(self.live_config.atr_period) + 3, 120)
+        snapshot_slicer = BacktestSnapshotSlicer(full_snapshot, max_bars=snapshot_window_bars)
+        htf_slicer = BacktestSnapshotSlicer(htf_snapshot, max_bars=snapshot_window_bars) if htf_snapshot is not None else None
+        reentry_htf_slicer = (
+            BacktestSnapshotSlicer(reentry_htf_snapshot, max_bars=snapshot_window_bars)
+            if reentry_htf_snapshot is not None
+            else None
+        )
+        for entry_index in range(max(self.config.warmup_bars, 1), len(candles)):
+            entry_candle = candles[entry_index]
+            snapshot = snapshot_slicer.slice(entry_index + 1)
+            if htf_slicer is not None:
+                snapshot["higher_timeframe"] = htf_slicer.slice_until_time(int(entry_candle["time"]))
+            if reentry_htf_slicer is not None:
+                snapshot["reentry_higher_timeframe"] = reentry_htf_slicer.slice_until_time(int(entry_candle["time"]))
+            signal = self.strategy.evaluate(snapshot)
+            if signal.side in {"buy", "sell"}:
+                signals[entry_index] = signal
+        return signals
+
+    def _strategy_signature(self) -> tuple[str, str, int, int | None, int]:
+        return (
+            self.strategy.name,
+            self.strategy.signal_strategy_name,
+            self.strategy.primary_htf_duration_seconds,
+            self.strategy.reentry_confirmation_duration_seconds,
+            self.config.warmup_bars,
+        )
 
     def _open_position(
         self,
@@ -528,6 +597,7 @@ def _pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
     return (exit_price - entry) * direction * qty
 
 
+@lru_cache(maxsize=8)
 def _code_version(project_root: Path) -> dict[str, Any]:
     commit = ""
     dirty: bool | None = None
@@ -724,13 +794,28 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
                 "同一个高周期 Hull 颜色周期内，同方向只允许首次开仓，平仓后本颜色周期不再重复同向开仓。"
             )
     if risk_exits_enabled:
+        startup_bars = result.config.get("startup_check_bars_5m")
+        startup_favorable = result.config.get("startup_max_favorable_points")
+        startup_current = result.config.get("startup_current_points")
+        disaster = result.config.get("disaster_stop_points")
+        breakeven_trigger = result.config.get("breakeven_trigger_points")
+        breakeven_stop = result.config.get("breakeven_stop_points")
+        trailing_values = [
+            (result.config.get("trailing_trigger_1_points"), result.config.get("trailing_protect_1_ratio")),
+            (result.config.get("trailing_trigger_2_points"), result.config.get("trailing_protect_2_ratio")),
+            (result.config.get("trailing_trigger_3_points"), result.config.get("trailing_protect_3_ratio")),
+        ]
         assumptions.extend(
             [
                 "持仓期间先检查风控出场；若本根 K 线被风控平仓，本根不再重新开仓。",
-                "启动失败止损：开仓后第 24 根 5 分钟 K 线检查，若最大浮盈小于 300 点且当前点数小于 -150 点，则按当根 close 平仓。",
-                "灾难硬止损：任何 K 线内最大浮亏达到 -1800 点，则按 -1800 点价格平仓。",
-                "保本保护：开仓后最大浮盈达到 800 点，保护线抬到 +100 点。",
-                "移动保护：最大浮盈达到 2000/4000/8000 点后，分别保护最大浮盈的 40%/50%/60%。",
+                f"启动失败止损：开仓后第 {startup_bars} 根 5 分钟 K 线检查，若最大浮盈小于 {startup_favorable} 点且当前点数小于 {startup_current} 点，则按当根 close 平仓。",
+                f"灾难硬止损：任何 K 线内最大浮亏达到 {disaster} 点，则按对应止损价格平仓。",
+                f"保本保护：开仓后最大浮盈达到 {breakeven_trigger} 点，保护线抬到 {breakeven_stop} 点。",
+                "移动保护：最大浮盈达到 "
+                + "/".join(str(item[0]) for item in trailing_values)
+                + " 点后，分别保护最大浮盈的 "
+                + "/".join(f"{float(item[1] or 0) * 100:g}%" for item in trailing_values)
+                + "。",
                 "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
             ]
         )

@@ -117,6 +117,17 @@ LIVE_TRADING_EMAIL_TO=
 ./myvenv/bin/python web_tq_chart.py
 ```
 
+显式启用回测研究工作台：
+
+```bash
+./myvenv/bin/python chartbench.py chart run --backtest-ui
+# 浏览器打开 http://127.0.0.1:8050/backtests
+```
+
+工作台支持三年缓存覆盖检查、指标/风控参数组合、后台单任务执行、稳健排名、
+参数热力图和候选组合复测。回测运行接口默认关闭；启用后如果服务监听
+`0.0.0.0`，请通过防火墙或带认证的反向代理限制访问。
+
 临时看 Binance / Bitget 图表：
 
 ```bash

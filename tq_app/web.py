@@ -10,7 +10,12 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 from tq_app.service import MarketDataService
 
 
-def create_app(service: MarketDataService, project_root: Path) -> Flask:
+def create_app(
+    service: MarketDataService,
+    project_root: Path,
+    *,
+    backtest_manager: Any | None = None,
+) -> Flask:
     app = Flask(
         __name__,
         template_folder=str(project_root / "templates"),
@@ -23,10 +28,18 @@ def create_app(service: MarketDataService, project_root: Path) -> Flask:
         "styles_css": str(int(css_asset.stat().st_mtime)) if css_asset.exists() else "0",
         "app_js": str(int(js_asset.stat().st_mtime)) if js_asset.exists() else "0",
     }
+    if backtest_manager is not None:
+        from tq_app.backtesting.web import create_backtest_blueprint
+
+        app.register_blueprint(create_backtest_blueprint(backtest_manager, project_root))
 
     @app.get("/")
     def index() -> str:
-        return render_template("index.html", asset_versions=asset_versions)
+        return render_template(
+            "index.html",
+            asset_versions=asset_versions,
+            backtest_ui_enabled=backtest_manager is not None,
+        )
 
     @app.get("/api/config")
     def api_config() -> Any:

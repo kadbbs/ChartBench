@@ -149,6 +149,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default=env_default_str("TQ_DEFAULT_HOST", DEFAULT_HOST), help="监听地址")
     parser.add_argument("--port", type=int, default=env_default_int("TQ_DEFAULT_PORT", DEFAULT_PORT), help="监听端口")
     parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器")
+    parser.add_argument(
+        "--backtest-ui",
+        action="store_true",
+        help="显式启用回测研究工作台和后台回测任务。",
+    )
     return parser.parse_args()
 
 
@@ -169,7 +174,12 @@ def main() -> None:
     )
     service.start()
 
-    app = create_app(service, project_root)
+    backtest_manager = None
+    if args.backtest_ui:
+        from tq_app.backtesting.experiments import BacktestExperimentManager
+
+        backtest_manager = BacktestExperimentManager(project_root)
+    app = create_app(service, project_root, backtest_manager=backtest_manager)
     server = MultiServerThread(app, args.host, args.port)
     url = display_url(args.host, args.port)
     shutdown_requested = threading.Event()
@@ -189,6 +199,10 @@ def main() -> None:
     print("图表地址:")
     for item in listening_summary(args.host, args.port):
         print(f"  {item}")
+    if backtest_manager is not None:
+        print(f"回测工作台: {url}/backtests")
+        if args.host.strip() in {"0.0.0.0", "::", ""}:
+            print("提示: 当前监听所有网卡；请通过防火墙或反向代理限制回测接口访问。")
     server.start()
 
     if args.open_browser:
@@ -201,6 +215,8 @@ def main() -> None:
         request_shutdown()
     finally:
         server.shutdown()
+        if backtest_manager is not None:
+            backtest_manager.shutdown()
         service.stop()
 
 

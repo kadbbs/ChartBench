@@ -20,6 +20,14 @@ http://0.0.0.0:8050
 ./myvenv/bin/python web_tq_chart.py --open-browser
 ```
 
+显式启用同一服务中的回测研究工作台：
+
+```bash
+./myvenv/bin/python web_tq_chart.py --backtest-ui
+```
+
+启用后访问 `/backtests`。普通启动不会注册回测页面、API 或后台任务进程。
+
 ## 常用命令
 
 指定天勤合约和周期：

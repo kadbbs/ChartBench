@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChartBench 回测研究工作台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='backtests.css', v=asset_versions.css) }}" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Strategy Research</div>
+      <h1>回测研究工作台</h1>
+      <p>三年长周期验证 · 参数稳定区 · 候选方案复测</p>
+    </div>
+    <a class="ghost-button" href="/">← 返回行情图表</a>
+  </header>
+
+  <main class="workspace">
+    <aside class="builder-card">
+      <div class="step-heading"><span>1</span><div><strong>选择研究数据</strong><small>Profile 提供可复现基线</small></div></div>
+      <label class="field"><span>实验名称</span><input id="experiment-name" placeholder="例如 BTC 三年风控稳定性" /></label>
+      <label class="field"><span>回测 Profile</span><select id="profile-select"></select></label>
+      <div class="field-grid three">
+        <label class="field"><span>Provider</span><select id="provider-select"><option>bitget</option><option>binance</option></select></label>
+        <label class="field"><span>Symbol</span><input id="symbol-input" /></label>
+        <label class="field"><span>周期</span><select id="duration-select"></select></label>
+      </div>
+      <div class="field-grid two">
+        <label class="field"><span>开始时间</span><input id="start-time-input" type="datetime-local" /></label>
+        <label class="field"><span>结束时间</span><input id="end-time-input" type="datetime-local" /></label>
+      </div>
+      <label class="field"><span>策略</span><select id="strategy-select"></select></label>
+      <div id="data-estimate" class="estimate-box muted">正在读取缓存覆盖情况…</div>
+
+      <div class="step-heading section-gap"><span>2</span><div><strong>设计参数组合</strong><small>逗号分隔多个候选值；单值表示固定</small></div></div>
+      <div class="parameter-section">
+        <div class="parameter-title">指标与信号</div>
+        <div class="field-grid two compact">
+          <label class="field"><span>Hull Length</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length" /></label>
+          <label class="field"><span>UT 灵敏度</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_sensitivity" /></label>
+          <label class="field"><span>STC Length</span><input data-grid-key="indicator.stc.length" /></label>
+          <label class="field"><span>STC Factor</span><input data-grid-key="indicator.stc.factor" /></label>
+        </div>
+        <details class="inline-details">
+          <summary>更多指标参数</summary>
+          <div class="field-grid two compact detail-fields">
+            <label class="field"><span>Hull 倍数</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length_mult" /></label>
+            <label class="field"><span>Hull 算法</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_variation" placeholder="Hma,Ehma,Thma" /></label>
+            <label class="field"><span>UT ATR 周期</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_atr_period" /></label>
+            <label class="field"><span>UT HA K线</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_use_heikin_ashi" placeholder="false,true" /></label>
+            <label class="field"><span>STC Fast</span><input data-grid-key="indicator.stc.fast_length" /></label>
+            <label class="field"><span>STC Slow</span><input data-grid-key="indicator.stc.slow_length" /></label>
+          </div>
+        </details>
+      </div>
+      <div class="parameter-section">
+        <div class="parameter-title">核心风控</div>
+        <div class="field-grid two compact">
+          <label class="field"><span>启动检查 K 数</span><input data-grid-key="startup_check_bars_5m" /></label>
+          <label class="field"><span>启动当前点数</span><input data-grid-key="startup_current_points" /></label>
+          <label class="field"><span>灾难止损点数</span><input data-grid-key="disaster_stop_points" /></label>
+          <label class="field"><span>保本触发点数</span><input data-grid-key="breakeven_trigger_points" /></label>
+          <label class="field"><span>保本保护点数</span><input data-grid-key="breakeven_stop_points" /></label>
+          <label class="field"><span>首档移动触发</span><input data-grid-key="trailing_trigger_1_points" /></label>
+        </div>
+      </div>
+      <details class="advanced-panel">
+        <summary>更多风控与成本参数</summary>
+        <div class="field-grid two compact detail-fields">
+          <label class="field"><span>启动最大浮盈</span><input data-grid-key="startup_max_favorable_points" /></label>
+          <label class="field"><span>首档保护比例</span><input data-grid-key="trailing_protect_1_ratio" /></label>
+          <label class="field"><span>二档移动触发</span><input data-grid-key="trailing_trigger_2_points" /></label>
+          <label class="field"><span>二档保护比例</span><input data-grid-key="trailing_protect_2_ratio" /></label>
+          <label class="field"><span>三档移动触发</span><input data-grid-key="trailing_trigger_3_points" /></label>
+          <label class="field"><span>三档保护比例</span><input data-grid-key="trailing_protect_3_ratio" /></label>
+          <label class="field"><span>初始权益</span><input id="initial-equity-input" type="number" /></label>
+          <label class="field"><span>手续费率</span><input id="fee-rate-input" type="number" step="0.00001" /></label>
+          <label class="field"><span>滑点率</span><input id="slippage-rate-input" type="number" step="0.00001" /></label>
+          <label class="check-field"><input id="cache-enabled-input" type="checkbox" checked /><span>优先使用本地缓存</span></label>
+        </div>
+      </details>
+      <div id="combination-estimate" class="combination-box">组合数：1</div>
+      <button id="run-button" class="primary-button" type="button">开始回测实验</button>
+      <div id="form-error" class="error-message"></div>
+    </aside>
+
+    <section class="content-column">
+      <section class="content-card">
+        <div class="card-heading">
+          <div><div class="eyebrow">Experiments</div><h2>实验任务</h2></div>
+          <button id="refresh-runs-button" class="text-button" type="button">刷新</button>
+        </div>
+        <div id="run-list" class="run-list"><div class="empty-state">还没有 UI 回测实验</div></div>
+      </section>
+
+      <section id="result-section" class="content-card result-card is-hidden">
+        <div class="card-heading">
+          <div><div class="eyebrow">Result</div><h2 id="result-title">实验结果</h2></div>
+          <span id="result-verdict" class="verdict-badge">--</span>
+        </div>
+        <p id="score-explanation" class="result-note"></p>
+        <div id="metric-grid" class="metric-grid"></div>
+        <div id="split-grid" class="split-grid"></div>
+
+        <div id="heatmap-section" class="analysis-block is-hidden">
+          <div class="block-heading"><h3>参数稳定区</h3><span>颜色越亮代表稳健分越高；优先选择连续良好区域</span></div>
+          <div id="heatmap" class="heatmap"></div>
+        </div>
+
+        <div class="analysis-block">
+          <div class="block-heading"><h3>参数组合排行</h3><span>点击“复测”可将该组合带回左侧</span></div>
+          <div class="table-wrap"><table id="result-table"></table></div>
+        </div>
+
+        <div id="chart-section" class="analysis-block is-hidden">
+          <div class="block-heading"><h3>长周期图表预览</h3><span id="chart-note"></span></div>
+          <div id="backtest-chart" class="chart"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='backtests.js', v=asset_versions.js) }}"></script>
+</body>
+</html>
