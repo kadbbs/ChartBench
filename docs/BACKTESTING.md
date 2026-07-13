@@ -31,8 +31,10 @@
 工作台面向长周期参数研究：
 
 - 选择命名 profile 后自动加载品种、周期、时间范围和风险基线。
+- 策略选择器旁的“查看策略说明”会展示当前策略的入场条件、高周期过滤、趋势段锁和重复开仓规则。
 - 提交前显示目标 K 线数量、本地缓存覆盖范围、组合数和计算类型。
 - 风控参数与 Hull/STC 指标参数可以组成笛卡尔积，单次最多 256 组。
+- 参数输入支持单值、逗号列表和 `起始:结束:步长`，例如 `600:1000:100` 或倒序范围 `-120:-180:-30`。
 - 同一实验只准备一次低周期和高周期行情。
 - 相同指标参数的组合共享预计算指标快照和策略信号，修改纯风控参数时只重跑撮合。
 - 参数矩阵只保存指标和交易摘要，不为每一组复制完整 `candles.json`。
@@ -72,6 +74,7 @@ config/backtests/
 latest_month
 btc_5m_range
 btc_5m_range_cached
+btc_5m_range_cached_1d_1h_reentry
 btc_5m_range_cached_legacy
 sol_5m_range_cached
 sol_5m_range_cached_legacy
@@ -111,6 +114,16 @@ BTC 长区间缓存回测：
 ```bash
 ./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached
 ```
+
+BTC 1D 主趋势、1H Hull/STC 同向重复开仓回测：
+
+```bash
+./myvenv/bin/python run_backtest.py --profile btc_5m_range_cached_1d_1h_reentry
+```
+
+该 profile 首次开仓使用 1D Hull/STC 主方向；风控平仓后，在同一 1D Hull
+颜色段内出现后续低周期信号时，只有已收完的 1H Hull 和 STC 都与开仓方向
+同向才允许重复开仓。原 `btc_5m_range_cached` 保持历史口径不变。
 
 SOL 长区间缓存回测：
 

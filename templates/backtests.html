@@ -31,10 +31,18 @@
         <label class="field"><span>开始时间</span><input id="start-time-input" type="datetime-local" /></label>
         <label class="field"><span>结束时间</span><input id="end-time-input" type="datetime-local" /></label>
       </div>
-      <label class="field"><span>策略</span><select id="strategy-select"></select></label>
+      <div class="field strategy-field">
+        <div class="field-heading">
+          <label for="strategy-select">策略</label>
+          <button id="strategy-details-button" class="strategy-details-button" type="button" aria-haspopup="dialog" aria-controls="strategy-details-modal">查看策略说明</button>
+        </div>
+        <select id="strategy-select"></select>
+      </div>
+      <div id="strategy-hint" class="strategy-hint"></div>
       <div id="data-estimate" class="estimate-box muted">正在读取缓存覆盖情况…</div>
 
-      <div class="step-heading section-gap"><span>2</span><div><strong>设计参数组合</strong><small>逗号分隔多个候选值；单值表示固定</small></div></div>
+      <div class="step-heading section-gap"><span>2</span><div><strong>设计参数组合</strong><small>单值、逗号列表或 起始:结束:步长</small></div></div>
+      <div class="syntax-hint"><code>600:1000:100</code> → 600、700…1000；倒序可写 <code>-120:-180:-30</code></div>
       <div class="parameter-section">
         <div class="parameter-title">指标与信号</div>
         <div class="field-grid two compact">
@@ -121,6 +129,20 @@
       </section>
     </section>
   </main>
+
+  <div id="strategy-details-modal" class="strategy-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="strategy-details-title" tabindex="-1">
+    <section class="strategy-drawer">
+      <header class="strategy-drawer-header">
+        <div>
+          <div class="eyebrow">Strategy Guide</div>
+          <h2 id="strategy-details-title">策略说明</h2>
+          <code id="strategy-details-name"></code>
+        </div>
+        <button id="strategy-details-close" class="strategy-close-button" type="button" aria-label="关闭策略说明">×</button>
+      </header>
+      <div id="strategy-details-content" class="strategy-details-content"></div>
+    </section>
+  </div>
   <script src="{{ url_for('static', filename='backtests.js', v=asset_versions.js) }}"></script>
 </body>
 </html>

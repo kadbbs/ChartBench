@@ -5,6 +5,7 @@ from pathlib import Path
 
 from flask import Flask
 
+from tq_app.backtesting.application import BacktestApplication
 from tq_app.backtesting.experiments import build_experiment_spec, cache_coverage
 from tq_app.backtesting.web import create_backtest_blueprint
 from tq_app.web import create_app
@@ -59,6 +60,18 @@ class BacktestExperimentTest(unittest.TestCase):
         self.assertEqual(spec.combinations[-1]["indicator.stc.length"], 80)
         self.assertTrue(spec.base_request.cache_enabled)
 
+    def test_1d_1h_reentry_profile_selects_fixed_timeframes(self) -> None:
+        spec = build_experiment_spec(
+            PROJECT_ROOT,
+            {"profile": "btc_5m_range_cached_1d_1h_reentry", "grid": {}},
+        )
+
+        resolved = BacktestApplication(PROJECT_ROOT).resolve(spec.base_request)
+
+        self.assertEqual(spec.base_request.strategy, "stc_1d_1h_reentry")
+        self.assertEqual(resolved.strategy.primary_htf_duration_seconds, 86400)
+        self.assertEqual(resolved.strategy.reentry_confirmation_duration_seconds, 3600)
+
     def test_unknown_or_excessive_parameter_grid_is_rejected(self) -> None:
         payload = self.payload()
         payload["grid"] = {"not_a_parameter": [1, 2]}
@@ -70,6 +83,36 @@ class BacktestExperimentTest(unittest.TestCase):
             "breakeven_trigger_points": list(range(17)),
         }
         with self.assertRaisesRegex(ValueError, "最多允许"):
+            build_experiment_spec(PROJECT_ROOT, payload)
+
+    def test_numeric_ranges_support_steps_floats_descending_and_mixed_values(self) -> None:
+        payload = self.payload()
+        payload["grid"] = {
+            "startup_check_bars_5m": "18:24:3",
+            "trailing_protect_1_ratio": "0.3:0.5:0.1",
+            "startup_current_points": "-120:-180:-30",
+            "disaster_stop_points": "-1400:-1800:-200,-2200",
+        }
+
+        spec = build_experiment_spec(PROJECT_ROOT, payload)
+
+        self.assertEqual(spec.grid["startup_check_bars_5m"], [18, 21, 24])
+        self.assertEqual(spec.grid["trailing_protect_1_ratio"], [0.3, 0.4, 0.5])
+        self.assertEqual(spec.grid["startup_current_points"], [-120.0, -150.0, -180.0])
+        self.assertEqual(spec.grid["disaster_stop_points"], [-1400.0, -1600.0, -1800.0, -2200.0])
+
+    def test_invalid_step_ranges_are_rejected(self) -> None:
+        payload = self.payload()
+        payload["grid"] = {"breakeven_trigger_points": "600:1000:0"}
+        with self.assertRaisesRegex(ValueError, "步长不能为 0"):
+            build_experiment_spec(PROJECT_ROOT, payload)
+
+        payload["grid"] = {"breakeven_trigger_points": "600:1000:-100"}
+        with self.assertRaisesRegex(ValueError, "方向与范围不一致"):
+            build_experiment_spec(PROJECT_ROOT, payload)
+
+        payload["grid"] = {"startup_check_bars_5m": "18:24:0.5"}
+        with self.assertRaisesRegex(ValueError, "必须都是整数"):
             build_experiment_spec(PROJECT_ROOT, payload)
 
     def test_cache_coverage_reports_existing_long_range_cache(self) -> None:
@@ -85,6 +128,9 @@ class BacktestExperimentTest(unittest.TestCase):
         self.assertEqual(client.get("/backtests").status_code, 200)
         catalog = client.get("/api/backtests/catalog").get_json()
         self.assertIn("btc_5m_range_cached", {item["name"] for item in catalog["profiles"]})
+        reentry = next(item for item in catalog["strategies"] if item["name"].endswith("1d_1h_reentry"))
+        self.assertEqual(reentry["details"]["primary_htf_duration_seconds"], 86400)
+        self.assertGreaterEqual(len(reentry["details"]["sections"]), 3)
         estimate = client.post("/api/backtests/estimate", json=self.payload())
         self.assertEqual(estimate.status_code, 200)
         self.assertEqual(estimate.get_json()["combinations"], 4)

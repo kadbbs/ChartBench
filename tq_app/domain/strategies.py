@@ -77,6 +77,7 @@ class StrategyRegistry:
                     for name, target in self._canonical_by_name.items()
                     if target == canonical and name != canonical
                 ),
+                "details": _strategy_catalog_details(self._factories[canonical], canonical),
             }
             for canonical in canonical_names
         ]
@@ -84,6 +85,42 @@ class StrategyRegistry:
 
 class MarkerSignalStrategy:
     name = "marker_signal"
+    explanation = {
+        "title": "标记信号顺势策略",
+        "summary": "直接读取 Buy、Sell、买、卖标记，并用当前 K 线位置和高周期 Hull/STC 方向过滤入场。",
+        "tags": ["标记信号", "Hull 位置过滤", "高周期顺势"],
+        "sections": [
+            {
+                "title": "低周期入场",
+                "items": [
+                    "signal_mode=any 时，Buy/买任一出现视为多信号，Sell/卖任一出现视为空信号。",
+                    "signal_mode 也可选择 ut、dkx 或 confirmed；confirmed 要求两套同向标记同时出现。",
+                    "同一根 K 线同时存在多空信号，或完全没有信号时，不开仓。",
+                ],
+            },
+            {
+                "title": "Hull 位置条件",
+                "items": [
+                    "开多要求绿色 Hull 趋势带的上下边界都位于入场 K 线最低价下方。",
+                    "开空要求红色 Hull 趋势带的上下边界都位于入场 K 线最高价上方。",
+                ],
+            },
+            {
+                "title": "高周期与重复开仓",
+                "items": [
+                    "启用高周期过滤时，已收完的高周期 Hull 与 STC 必须同向，并且与低周期入场方向一致。",
+                    "同一高周期 Hull 颜色段内，同一方向只允许首次开仓；该策略没有额外的重复开仓确认周期。",
+                ],
+            },
+            {
+                "title": "需要关注的配置",
+                "items": [
+                    "signal_mode、use_closed_bar、htf_hull_filter_enabled 和 htf_hull_duration_seconds 会改变信号口径。",
+                    "止损、保本、移动保护、手续费和滑点由回测 Profile 的公共风控配置负责。",
+                ],
+            },
+        ],
+    }
 
     def evaluate(self, context: StrategyContext) -> StrategyResult:
         side = _side_from_marker_texts(context.marker_texts, context.signal_mode)
@@ -102,6 +139,43 @@ class MarkerSignalStrategy:
 
 class StcExtremeContrarianStrategy:
     name = "stc_extreme_contrarian"
+    explanation = {
+        "title": "STC 极值反转顺势策略",
+        "summary": "在低周期 STC 极值区寻找反转标记，同时要求 Hull 位置正确，并服从高周期 Hull/STC 主趋势。",
+        "tags": ["STC 极值", "反转入场", "高周期顺势"],
+        "sections": [
+            {
+                "title": "多单条件",
+                "items": [
+                    "Buy 或 买 标记至少出现一个。",
+                    "低周期 STC 小于 25 且为绿色。",
+                    "绿色 Hull 趋势带的上下边界都必须位于入场 K 线最低价下方。",
+                ],
+            },
+            {
+                "title": "空单条件",
+                "items": [
+                    "Sell 或 卖 标记至少出现一个。",
+                    "低周期 STC 大于 75 且为红色。",
+                    "红色 Hull 趋势带的上下边界都必须位于入场 K 线最高价上方。",
+                ],
+            },
+            {
+                "title": "高周期与重复开仓",
+                "items": [
+                    "高周期由 htf_hull_duration_seconds 配置决定；已收完的 Hull 与 STC 必须同向，并与入场方向一致。",
+                    "同一高周期 Hull 颜色段内，同一方向只允许首次开仓；风控平仓后也不会在该颜色段内再次进入。",
+                ],
+            },
+            {
+                "title": "需要关注的配置",
+                "items": [
+                    "STC 的 length、fast_length、slow_length、factor 与 Hull 参数会直接改变信号。",
+                    "use_closed_bar 决定使用已收完 K 线还是最新 K 线；风控退出和交易成本由 Profile 负责。",
+                ],
+            },
+        ],
+    }
 
     def evaluate(self, context: StrategyContext) -> StrategyResult:
         texts = set(context.marker_texts)
@@ -143,6 +217,42 @@ class StcExtremeContrarian1d1hReentryStrategy(StcExtremeContrarianStrategy):
     name = "stc_extreme_contrarian_1d_1h_reentry"
     primary_htf_duration_seconds = 86400
     reentry_confirmation_duration_seconds = 3600
+    explanation = {
+        "title": "STC 1D 主趋势 / 1H 同向再入场",
+        "summary": "低周期使用 STC 极值反转信号，固定由 1D Hull/STC 决定主方向，并允许平仓后经 1H 同向确认重复开仓。",
+        "tags": ["1D 主趋势", "1H 再入场", "STC 极值"],
+        "sections": [
+            {
+                "title": "首次开仓",
+                "items": [
+                    "低周期入场条件与 STC 极值反转顺势策略相同：多单要求 Buy/买、STC<25 绿色且 Hull 在 K 线下方；空单条件相反。",
+                    "主趋势周期固定为 1D，不受 Profile 中其他高周期数值覆盖；已收完的 1D Hull 和 STC 必须与入场方向一致。",
+                ],
+            },
+            {
+                "title": "1H 同向重复开仓",
+                "items": [
+                    "首次仓位被风控平掉后，如果仍处于同一个 1D Hull 颜色段，后续低周期信号可以申请再次开仓。",
+                    "重复开仓必须使用已收完的 1H K 线确认，且 1H Hull 与 1H STC 都要和申请方向一致。",
+                    "1H 方向相反、Hull/STC 不一致、快照缺失或周期不正确时，都会继续保持 1D 段内开仓锁。",
+                ],
+            },
+            {
+                "title": "趋势段锁定",
+                "items": [
+                    "锁按品种、方向、1D 周期和 1D Hull 趋势起点生成；1D Hull 进入新颜色段后会形成新的开仓机会。",
+                    "1H 只负责确认同一 1D 段内的后续入场，不会改变 1D 主方向。",
+                ],
+            },
+            {
+                "title": "适合验证的内容",
+                "items": [
+                    "建议重点比较重复入场带来的交易次数、回撤、手续费占比及不同市场阶段的稳定性。",
+                    "止损、保本、移动保护与成本仍使用 Profile 的公共风控参数，可与指标参数组成矩阵测试。",
+                ],
+            },
+        ],
+    }
 
 
 def hull_position_allows_side(
@@ -228,6 +338,55 @@ def _normalize_strategy_name(name: str) -> str:
     if not normalized:
         raise ValueError("策略名称不能为空")
     return normalized
+
+
+def _strategy_catalog_details(factory: StrategyFactory, canonical_name: str) -> dict[str, object]:
+    raw = getattr(factory, "explanation", None)
+    if not isinstance(raw, dict):
+        return {
+            "title": canonical_name,
+            "summary": "该自定义策略尚未提供结构化说明，请以策略实现及回测结果为准。",
+            "tags": ["自定义策略"],
+            "sections": [
+                {
+                    "title": "说明状态",
+                    "items": ["策略可正常使用，但作者尚未在 explanation 元数据中声明入场、过滤和重复开仓规则。"],
+                }
+            ],
+            "primary_htf_duration_seconds": _positive_int_or_none(
+                getattr(factory, "primary_htf_duration_seconds", None)
+            ),
+            "reentry_confirmation_duration_seconds": _positive_int_or_none(
+                getattr(factory, "reentry_confirmation_duration_seconds", None)
+            ),
+        }
+    sections = []
+    for section in raw.get("sections", []):
+        if not isinstance(section, dict):
+            continue
+        items = [str(item) for item in section.get("items", []) if str(item).strip()]
+        if items:
+            sections.append({"title": str(section.get("title") or "规则"), "items": items})
+    return {
+        "title": str(raw.get("title") or canonical_name),
+        "summary": str(raw.get("summary") or "暂无策略摘要。"),
+        "tags": [str(tag) for tag in raw.get("tags", []) if str(tag).strip()],
+        "sections": sections,
+        "primary_htf_duration_seconds": _positive_int_or_none(
+            getattr(factory, "primary_htf_duration_seconds", None)
+        ),
+        "reentry_confirmation_duration_seconds": _positive_int_or_none(
+            getattr(factory, "reentry_confirmation_duration_seconds", None)
+        ),
+    }
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 _REGISTRY = StrategyRegistry()

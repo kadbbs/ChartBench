@@ -25,11 +25,21 @@ class BacktestUiContractTest(unittest.TestCase):
             "end-time-input",
             "combination-estimate",
             "run-button",
+            "strategy-details-button",
+            "strategy-details-modal",
+            "strategy-details-content",
+            "strategy-details-close",
             "result-table",
             "heatmap",
             "backtest-chart",
         }:
             self.assertIn(f'id="{element_id}"', TEMPLATE)
+
+    def test_strategy_detail_panel_tracks_selected_catalog_strategy(self) -> None:
+        self.assertIn('role="dialog"', TEMPLATE)
+        self.assertIn("function effectiveStrategyName", SCRIPT)
+        self.assertIn("function renderStrategyDetails", SCRIPT)
+        self.assertIn('details.reentry_confirmation_duration_seconds', SCRIPT)
 
 
 if __name__ == "__main__":

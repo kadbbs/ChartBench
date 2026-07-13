@@ -37,6 +37,16 @@ class StrategyCliTest(unittest.TestCase):
             by_name["stc_extreme_contrarian_1d_1h_reentry"],
             ["stc_1d_1h_reentry"],
         )
+        details_by_name = {item["name"]: item["details"] for item in live}
+        self.assertIn("STC 小于 25", " ".join(details_by_name["stc_extreme_contrarian"]["sections"][0]["items"]))
+        self.assertEqual(
+            details_by_name["stc_extreme_contrarian_1d_1h_reentry"]["primary_htf_duration_seconds"],
+            86400,
+        )
+        self.assertEqual(
+            details_by_name["stc_extreme_contrarian_1d_1h_reentry"]["reentry_confirmation_duration_seconds"],
+            3600,
+        )
 
     def test_custom_strategy_is_grouped_with_its_alias(self) -> None:
         registry = StrategyRegistry()
@@ -56,10 +66,11 @@ def register_strategies(registry):
             )
             load_custom_strategies(root, registry)
 
-        self.assertEqual(
-            registry.catalog(),
-            [{"name": "custom_strategy", "aliases": ["custom"]}],
-        )
+        catalog = registry.catalog()
+        self.assertEqual(catalog[0]["name"], "custom_strategy")
+        self.assertEqual(catalog[0]["aliases"], ["custom"])
+        self.assertEqual(catalog[0]["details"]["tags"], ["自定义策略"])
+        self.assertIn("尚未提供结构化说明", catalog[0]["details"]["summary"])
 
 
 if __name__ == "__main__":

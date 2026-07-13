@@ -7,6 +7,7 @@ const state = {
   pollTimer: null,
   estimateTimer: null,
   chart: null,
+  strategyDetailsReturnFocus: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +39,7 @@ function populateProfile(name) {
   $("start-time-input").value = localInputValue(profileValue(profile, "start_time"));
   $("end-time-input").value = localInputValue(profileValue(profile, "end_time"));
   $("strategy-select").value = profileValue(profile, "strategy", "live_decision");
+  updateStrategyHint();
   $("initial-equity-input").value = profileValue(profile, "initial_equity", 20000);
   $("fee-rate-input").value = profileValue(profile, "fee_rate", 0.00023);
   $("slippage-rate-input").value = profileValue(profile, "slippage_rate", 0);
@@ -63,7 +65,30 @@ function populateProfile(name) {
 }
 
 function parseGridValue(input) {
-  return input.value.split(",").map((item) => item.trim()).filter(Boolean);
+  const values = [];
+  input.value.split(",").map((item) => item.trim()).filter(Boolean).forEach((token) => {
+    const range = expandNumericRange(token);
+    if (range) values.push(...range);
+    else values.push(token);
+  });
+  return [...new Set(values)];
+}
+
+function expandNumericRange(token) {
+  const match = token.match(/^(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+  const precision = Math.max(...match.slice(1).map((item) => (item.split(".")[1] || "").length));
+  const scale = 10 ** precision;
+  const start = Math.round(Number(match[1]) * scale);
+  const end = Math.round(Number(match[2]) * scale);
+  const step = Math.round(Number(match[3]) * scale);
+  if (!step || (end - start) * step < 0) return null;
+  const values = [];
+  const within = step > 0 ? (value) => value <= end : (value) => value >= end;
+  for (let value = start; within(value) && values.length <= 256; value += step) {
+    values.push(String(value / scale));
+  }
+  return values;
 }
 
 function buildPayload() {
@@ -100,6 +125,91 @@ function scheduleEstimate() {
   const count = combinationCount();
   $("combination-estimate").textContent = `组合数：${count} · ${count === 1 ? "生成完整报告和图表" : "矩阵仅保存轻量摘要，候选组合可一键复测"}`;
   state.estimateTimer = setTimeout(refreshEstimate, 350);
+}
+
+function updateStrategyHint() {
+  const selectedName = $("strategy-select").value;
+  const strategy = strategyCatalogItem(effectiveStrategyName(selectedName));
+  const hint = $("strategy-hint");
+  const isReentry = Boolean(strategy?.details?.reentry_confirmation_duration_seconds);
+  hint.classList.toggle("is-reentry", isReentry);
+  hint.textContent = strategy?.details?.summary || "该策略尚未提供摘要，可打开策略说明查看可用信息。";
+}
+
+function strategyCatalogItem(name) {
+  return state.catalog?.strategies?.find((item) => item.name === name || (item.aliases || []).includes(name)) || null;
+}
+
+function effectiveStrategyName(selectedName) {
+  if (selectedName !== "live_decision") return selectedName;
+  const profile = state.profiles.get($("profile-select").value);
+  return profileValue(profile, "signal_strategy", "marker_signal");
+}
+
+function strategyDurationLabel(seconds) {
+  const value = Number(seconds || 0);
+  if (!value) return "未启用";
+  if (value % 86400 === 0) return `${value / 86400}D`;
+  if (value % 3600 === 0) return `${value / 3600}H`;
+  if (value % 60 === 0) return `${value / 60}m`;
+  return `${value}s`;
+}
+
+function renderStrategyDetails() {
+  const selectedName = $("strategy-select").value;
+  const effectiveName = effectiveStrategyName(selectedName);
+  const strategy = strategyCatalogItem(effectiveName) || strategyCatalogItem(selectedName);
+  if (!strategy) {
+    $("strategy-details-title").textContent = "策略说明不可用";
+    $("strategy-details-name").textContent = selectedName || "--";
+    $("strategy-details-content").innerHTML = '<p class="strategy-summary">目录中没有找到该策略的说明。</p>';
+    return;
+  }
+  const details = strategy.details || {};
+  const profile = state.profiles.get($("profile-select").value);
+  const htfEnabled = String(profileValue(profile, "htf_hull_filter_enabled", "true")).toLowerCase() !== "false";
+  const primarySeconds = details.primary_htf_duration_seconds
+    || (htfEnabled ? Number(profileValue(profile, "htf_hull_duration_seconds", 0)) : 0);
+  const reentrySeconds = details.reentry_confirmation_duration_seconds;
+  const aliasNote = selectedName === "live_decision"
+    ? `Profile 委托：live_decision → ${effectiveName}`
+    : selectedName !== strategy.name ? `当前使用别名：${selectedName} → ${strategy.name}` : `主策略：${strategy.name}`;
+  const tags = (details.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("");
+  const sections = (details.sections || []).map((section) => `
+    <section class="strategy-rule-section">
+      <h3>${escapeHtml(section.title || "规则")}</h3>
+      <ul>${(section.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </section>
+  `).join("");
+
+  $("strategy-details-title").textContent = details.title || strategy.name;
+  $("strategy-details-name").textContent = aliasNote;
+  $("strategy-details-content").innerHTML = `
+    <p class="strategy-summary">${escapeHtml(details.summary || "暂无策略摘要。")}</p>
+    <div class="strategy-tags">${tags}</div>
+    <div class="strategy-context-grid">
+      <div><span>执行周期</span><strong>${escapeHtml(strategyDurationLabel($("duration-select").value))}</strong></div>
+      <div><span>主趋势过滤</span><strong>${escapeHtml(htfEnabled ? strategyDurationLabel(primarySeconds) : "已关闭")}</strong></div>
+      <div><span>重复开仓确认</span><strong>${escapeHtml(reentrySeconds ? strategyDurationLabel(reentrySeconds) : "不允许")}</strong></div>
+      <div><span>信号 K 线</span><strong>${String(profileValue(profile, "use_closed_bar", "true")).toLowerCase() === "false" ? "最新 K 线" : "已收完 K 线"}</strong></div>
+    </div>
+    <div class="strategy-rule-list">${sections}</div>
+    <p class="strategy-footnote">这里解释的是信号与重复开仓逻辑；实际盈亏还会受到左侧风控参数、手续费、滑点和行情数据质量影响。</p>
+  `;
+}
+
+function openStrategyDetails() {
+  renderStrategyDetails();
+  state.strategyDetailsReturnFocus = document.activeElement;
+  $("strategy-details-modal").classList.remove("is-hidden");
+  document.body.classList.add("modal-open");
+  $("strategy-details-close").focus();
+}
+
+function closeStrategyDetails() {
+  $("strategy-details-modal").classList.add("is-hidden");
+  document.body.classList.remove("modal-open");
+  state.strategyDetailsReturnFocus?.focus?.();
 }
 
 async function refreshEstimate() {
@@ -305,14 +415,29 @@ async function boot() {
   state.catalog.profiles.forEach((profile) => state.profiles.set(profile.name, profile));
   $("profile-select").innerHTML = state.catalog.profiles.map((profile) => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name)}</option>`).join("");
   $("duration-select").innerHTML = state.catalog.durations.map((duration) => `<option value="${duration}">${duration >= 3600 ? `${duration/3600}h` : `${duration/60}m`}</option>`).join("");
-  const strategies = state.catalog.strategies.flatMap((item) => [item.name, ...(item.aliases || [])]);
-  $("strategy-select").innerHTML = strategies.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+  const strategies = state.catalog.strategies.flatMap((item) => [item.name, ...(item.aliases || [])].map((name) => ({ name, item })));
+  $("strategy-select").innerHTML = strategies.map(({name, item}) => {
+    const title = item.details?.title ? ` · ${item.details.title}` : "";
+    return `<option value="${escapeHtml(name)}">${escapeHtml(name + title)}</option>`;
+  }).join("");
   $("profile-select").addEventListener("change", () => populateProfile($("profile-select").value));
   ["provider-select","symbol-input","duration-select","start-time-input","end-time-input","strategy-select","initial-equity-input","fee-rate-input","slippage-rate-input","cache-enabled-input"].forEach((id) => $(id).addEventListener("change", scheduleEstimate));
+  $("strategy-select").addEventListener("change", updateStrategyHint);
+  $("strategy-details-button").addEventListener("click", openStrategyDetails);
+  $("strategy-details-close").addEventListener("click", closeStrategyDetails);
+  $("strategy-details-modal").addEventListener("click", (event) => {
+    if (event.target === $("strategy-details-modal")) closeStrategyDetails();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("strategy-details-modal").classList.contains("is-hidden")) closeStrategyDetails();
+  });
   gridInputs().forEach((input) => input.addEventListener("input", scheduleEstimate));
+  gridInputs().forEach((input) => { input.placeholder ||= "单值或 起始:结束:步长"; });
   $("run-button").addEventListener("click", submitRun);
   $("refresh-runs-button").addEventListener("click", refreshRuns);
-  const recommended = state.profiles.has("btc_5m_range_cached") ? "btc_5m_range_cached" : state.catalog.profiles[0]?.name || "";
+  const recommended = state.profiles.has("btc_5m_range_cached_1d_1h_reentry")
+    ? "btc_5m_range_cached_1d_1h_reentry"
+    : state.profiles.has("btc_5m_range_cached") ? "btc_5m_range_cached" : state.catalog.profiles[0]?.name || "";
   $("profile-select").value = recommended;
   populateProfile(recommended);
   await refreshRuns();

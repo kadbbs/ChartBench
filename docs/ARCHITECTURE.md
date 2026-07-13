@@ -25,6 +25,14 @@ from tq_app.domain import StrategyResult
 
 class MyStrategy:
     name = "my_strategy"
+    explanation = {
+        "title": "My strategy",
+        "summary": "A short description shown in the backtest strategy panel.",
+        "tags": ["custom"],
+        "sections": [
+            {"title": "Entry", "items": ["Open long when a Buy marker appears."]},
+        ],
+    }
 
     def evaluate(self, context):
         if "Buy" in context.marker_texts:
@@ -39,6 +47,10 @@ def register_strategies(registry):
 Select it with `LIVE_TRADING_STRATEGY: my_strategy` in a live profile or
 `signal_strategy: my_strategy` in a backtest profile. Both modes use the same
 `SignalEvaluator`.
+
+The optional JSON-compatible `explanation` metadata is returned by the strategy
+catalog and rendered by the backtest UI. If it is omitted, the UI still shows a
+fallback panel that identifies the strategy as custom and points to its implementation.
 
 ### Built-in 1D/1H re-entry strategy
 

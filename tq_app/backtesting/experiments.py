@@ -11,6 +11,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ INDICATOR_PARAMETER_TYPES: dict[str, type] = {
 PARAMETER_TYPES = {**RISK_PARAMETER_TYPES, **INDICATOR_PARAMETER_TYPES}
 MAX_EXPERIMENT_COMBINATIONS = 256
 MAX_EXPERIMENT_BARS = 1_200_000
+MAX_PARAMETER_VALUES = 256
 
 
 @dataclass(slots=True)
@@ -241,7 +243,7 @@ def build_experiment_spec(project_root: Path, payload: dict[str, Any]) -> Experi
     grid: dict[str, list[Any]] = {}
     for key, raw_values in grid_raw.items():
         values = raw_values if isinstance(raw_values, list) else [raw_values]
-        coerced = [_coerce_parameter(PARAMETER_TYPES[key], item) for item in values if str(item).strip()]
+        coerced = _expand_parameter_values(key, values)
         if coerced:
             grid[key] = list(dict.fromkeys(coerced))
     combinations = _combinations(grid)
@@ -612,6 +614,50 @@ def _coerce_parameter(kind: type, value: Any) -> Any:
     if kind is float:
         return float(value)
     return str(value).strip()
+
+
+def _expand_parameter_values(key: str, raw_values: list[Any]) -> list[Any]:
+    kind = PARAMETER_TYPES[key]
+    tokens: list[Any] = []
+    for raw in raw_values:
+        if isinstance(raw, str) and "," in raw:
+            tokens.extend(item.strip() for item in raw.split(",") if item.strip())
+        elif str(raw).strip():
+            tokens.append(raw)
+    expanded: list[Any] = []
+    for token in tokens:
+        text = str(token).strip()
+        if kind in {int, float} and text.count(":") == 2:
+            expanded.extend(_numeric_parameter_range(key, kind, text))
+        else:
+            expanded.append(_coerce_parameter(kind, token))
+        if len(expanded) > MAX_PARAMETER_VALUES:
+            raise ValueError(f"参数 {key} 展开后超过 {MAX_PARAMETER_VALUES} 个候选值。")
+    return expanded
+
+
+def _numeric_parameter_range(key: str, kind: type, expression: str) -> list[int | float]:
+    parts = [item.strip() for item in expression.split(":")]
+    try:
+        start, end, step = (Decimal(item) for item in parts)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"参数 {key} 的范围格式无效: {expression}，应为 起始:结束:步长。") from exc
+    if step == 0:
+        raise ValueError(f"参数 {key} 的步长不能为 0。")
+    if (end - start) * step < 0:
+        raise ValueError(f"参数 {key} 的步长方向与范围不一致: {expression}。")
+    if kind is int and any(value != value.to_integral_value() for value in (start, end, step)):
+        raise ValueError(f"整数参数 {key} 的起始、结束和步长必须都是整数。")
+
+    values: list[int | float] = []
+    current = start
+    within = (lambda value: value <= end) if step > 0 else (lambda value: value >= end)
+    while within(current):
+        values.append(int(current) if kind is int else float(current))
+        if len(values) > MAX_PARAMETER_VALUES:
+            raise ValueError(f"参数 {key} 展开后超过 {MAX_PARAMETER_VALUES} 个候选值。")
+        current += step
+    return values
 
 
 def _as_bool(value: Any) -> bool:
