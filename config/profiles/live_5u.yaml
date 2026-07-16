@@ -82,11 +82,11 @@ LIVE_TRADING_RISK_PRICE_SOURCE: mark_price
 # 规则 1：启动失败止损。
 # 开仓后第 24 根 5m K 线检查一次：
 # - 如果开仓以来最大浮盈 < 300 点
-# - 且当前点数 < -120 点
+# - 且当前点数 < -300 点
 # 就市价平仓。
 LIVE_TRADING_RISK_STARTUP_CHECK_BARS_5M: 24
 LIVE_TRADING_RISK_STARTUP_MAX_FAVORABLE_POINTS: 300
-LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -120
+LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -300
 
 # 规则 2：灾难硬止损。
 # 任何时候最大浮亏或当前浮亏达到 -1800 点，立即市价平仓。

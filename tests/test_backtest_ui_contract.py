@@ -41,6 +41,20 @@ class BacktestUiContractTest(unittest.TestCase):
         self.assertIn("function renderStrategyDetails", SCRIPT)
         self.assertIn('details.reentry_confirmation_duration_seconds', SCRIPT)
 
+    def test_research_form_uses_full_width_progressive_layout(self) -> None:
+        for class_name in {
+            "builder-header",
+            "builder-body",
+            "config-grid",
+            "parameter-layout",
+            "run-dock",
+            "workflow-steps",
+        }:
+            self.assertIn(f'class="{class_name}', TEMPLATE)
+        self.assertNotIn('<aside class="builder-card"', TEMPLATE)
+        self.assertIn("function profileDisplayName", SCRIPT)
+        self.assertIn('class="estimate-item"', SCRIPT)
+
 
 if __name__ == "__main__":
     unittest.main()

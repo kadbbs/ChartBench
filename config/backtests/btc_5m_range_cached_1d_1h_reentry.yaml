@@ -30,7 +30,7 @@ warmup_bars: 80
 risk_exits_enabled: true
 startup_check_bars_5m: 24
 startup_max_favorable_points: 300
-startup_current_points: -120
+startup_current_points: -300
 disaster_stop_points: -1800
 breakeven_trigger_points: 800
 breakeven_stop_points: 100

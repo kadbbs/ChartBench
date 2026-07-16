@@ -9,98 +9,141 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <div class="eyebrow">Strategy Research</div>
-      <h1>回测研究工作台</h1>
-      <p>三年长周期验证 · 参数稳定区 · 候选方案复测</p>
+    <div class="topbar-inner">
+      <a class="brand" href="/backtests" aria-label="ChartBench 回测研究台">
+        <span class="brand-mark">CB</span>
+        <span><strong>ChartBench</strong><small>回测研究台</small></span>
+      </a>
+      <div class="topbar-actions">
+        <span class="environment-badge"><i></i>研究环境</span>
+        <a class="ghost-button" href="/">返回行情图表 <span>↗</span></a>
+      </div>
     </div>
-    <a class="ghost-button" href="/">← 返回行情图表</a>
   </header>
 
   <main class="workspace">
-    <aside class="builder-card">
-      <div class="step-heading"><span>1</span><div><strong>选择研究数据</strong><small>Profile 提供可复现基线</small></div></div>
-      <label class="field"><span>实验名称</span><input id="experiment-name" placeholder="例如 BTC 三年风控稳定性" /></label>
-      <label class="field"><span>回测 Profile</span><select id="profile-select"></select></label>
-      <div class="field-grid three">
-        <label class="field"><span>Provider</span><select id="provider-select"><option>bitget</option><option>binance</option></select></label>
-        <label class="field"><span>Symbol</span><input id="symbol-input" /></label>
-        <label class="field"><span>周期</span><select id="duration-select"></select></label>
-      </div>
-      <div class="field-grid two">
-        <label class="field"><span>开始时间</span><input id="start-time-input" type="datetime-local" /></label>
-        <label class="field"><span>结束时间</span><input id="end-time-input" type="datetime-local" /></label>
-      </div>
-      <div class="field strategy-field">
-        <div class="field-heading">
-          <label for="strategy-select">策略</label>
-          <button id="strategy-details-button" class="strategy-details-button" type="button" aria-haspopup="dialog" aria-controls="strategy-details-modal">查看策略说明</button>
+    <section class="builder-card">
+      <header class="builder-header">
+        <div>
+          <div class="eyebrow">NEW EXPERIMENT</div>
+          <h1>设计一次可复现的策略实验</h1>
+          <p>先确定数据与策略，再组合参数。提交前会检查缓存覆盖和计算规模。</p>
         </div>
-        <select id="strategy-select"></select>
-      </div>
-      <div id="strategy-hint" class="strategy-hint"></div>
-      <div id="data-estimate" class="estimate-box muted">正在读取缓存覆盖情况…</div>
+        <div class="workflow-steps" aria-label="实验流程">
+          <span class="is-current"><i>1</i>配置</span>
+          <span><i>2</i>运行</span>
+          <span><i>3</i>比较</span>
+        </div>
+      </header>
 
-      <div class="step-heading section-gap"><span>2</span><div><strong>设计参数组合</strong><small>单值、逗号列表或 起始:结束:步长</small></div></div>
-      <div class="syntax-hint"><code>600:1000:100</code> → 600、700…1000；倒序可写 <code>-120:-180:-30</code></div>
-      <div class="parameter-section">
-        <div class="parameter-title">指标与信号</div>
-        <div class="field-grid two compact">
-          <label class="field"><span>Hull Length</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length" /></label>
-          <label class="field"><span>UT 灵敏度</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_sensitivity" /></label>
-          <label class="field"><span>STC Length</span><input data-grid-key="indicator.stc.length" /></label>
-          <label class="field"><span>STC Factor</span><input data-grid-key="indicator.stc.factor" /></label>
-        </div>
-        <details class="inline-details">
-          <summary>更多指标参数</summary>
-          <div class="field-grid two compact detail-fields">
-            <label class="field"><span>Hull 倍数</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length_mult" /></label>
-            <label class="field"><span>Hull 算法</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_variation" placeholder="Hma,Ehma,Thma" /></label>
-            <label class="field"><span>UT ATR 周期</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_atr_period" /></label>
-            <label class="field"><span>UT HA K线</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_use_heikin_ashi" placeholder="false,true" /></label>
-            <label class="field"><span>STC Fast</span><input data-grid-key="indicator.stc.fast_length" /></label>
-            <label class="field"><span>STC Slow</span><input data-grid-key="indicator.stc.slow_length" /></label>
+      <div class="builder-body">
+        <section class="config-section">
+          <div class="section-heading">
+            <div><span class="section-number">01</span><div><h2>数据与策略</h2><p>Profile 是可复现基线，下面的字段只影响本次实验。</p></div></div>
           </div>
-        </details>
+
+          <div class="config-grid">
+            <label class="field span-5"><span>实验名称</span><input id="experiment-name" placeholder="例如：BTC 三年风控稳定性" /></label>
+            <label class="field span-7"><span>回测 Profile</span><select id="profile-select"></select></label>
+            <label class="field span-2"><span>数据源</span><select id="provider-select"><option>bitget</option><option>binance</option></select></label>
+            <label class="field span-3"><span>交易品种</span><input id="symbol-input" /></label>
+            <label class="field span-2"><span>执行周期</span><select id="duration-select"></select></label>
+            <label class="field span-2-5"><span>开始时间</span><input id="start-time-input" type="datetime-local" /></label>
+            <label class="field span-2-5"><span>结束时间</span><input id="end-time-input" type="datetime-local" /></label>
+
+            <div class="strategy-block span-12">
+              <div class="strategy-main">
+                <div class="field strategy-field">
+                  <div class="field-heading"><label for="strategy-select">交易策略</label></div>
+                  <select id="strategy-select"></select>
+                </div>
+                <button id="strategy-details-button" class="strategy-details-button" type="button" aria-haspopup="dialog" aria-controls="strategy-details-modal">
+                  <span class="button-icon">i</span><span><strong>策略规则</strong><small>查看完整入场与重复开仓逻辑</small></span><b>→</b>
+                </button>
+              </div>
+              <div id="strategy-hint" class="strategy-hint"></div>
+            </div>
+
+            <div id="data-estimate" class="estimate-box span-12 muted"><span class="loading-dot"></span>正在检查数据与缓存…</div>
+          </div>
+        </section>
+
+        <section class="config-section parameter-config-section">
+          <div class="section-heading">
+            <div><span class="section-number">02</span><div><h2>参数空间</h2><p>单值代表固定参数；多个候选值会自动生成组合。</p></div></div>
+            <div class="range-guide"><code>600:1000:100</code><span>范围与步进</span><code>-120:-180:-30</code><span>支持倒序</span></div>
+          </div>
+
+          <div class="parameter-layout">
+            <section class="parameter-section">
+              <div class="parameter-title"><span class="parameter-icon signal">S</span><div><strong>指标与信号</strong><small>改变时需要重新计算指标和信号</small></div></div>
+              <div class="field-grid two compact">
+                <label class="field"><span>Hull Length</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length" /></label>
+                <label class="field"><span>UT 灵敏度</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_sensitivity" /></label>
+                <label class="field"><span>STC Length</span><input data-grid-key="indicator.stc.length" /></label>
+                <label class="field"><span>STC Factor</span><input data-grid-key="indicator.stc.factor" /></label>
+              </div>
+              <details class="inline-details">
+                <summary><span>更多指标参数</span><b>+</b></summary>
+                <div class="field-grid three compact detail-fields">
+                  <label class="field"><span>Hull 倍数</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_length_mult" /></label>
+                  <label class="field"><span>Hull 算法</span><input data-grid-key="indicator.merged_dkx_hull_ut.hull_variation" placeholder="Hma,Ehma,Thma" /></label>
+                  <label class="field"><span>UT ATR 周期</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_atr_period" /></label>
+                  <label class="field"><span>UT HA K线</span><input data-grid-key="indicator.merged_dkx_hull_ut.ut_use_heikin_ashi" placeholder="false,true" /></label>
+                  <label class="field"><span>STC Fast</span><input data-grid-key="indicator.stc.fast_length" /></label>
+                  <label class="field"><span>STC Slow</span><input data-grid-key="indicator.stc.slow_length" /></label>
+                </div>
+              </details>
+            </section>
+
+            <section class="parameter-section">
+              <div class="parameter-title"><span class="parameter-icon risk">R</span><div><strong>核心风控</strong><small>只重跑撮合，适合优先做范围测试</small></div></div>
+              <div class="field-grid two compact">
+                <label class="field"><span>启动检查（5m 根数）</span><input data-grid-key="startup_check_bars_5m" /></label>
+                <label class="field"><span>启动当前盈亏（点）</span><input data-grid-key="startup_current_points" /></label>
+                <label class="field"><span>灾难止损（点）</span><input data-grid-key="disaster_stop_points" /></label>
+                <label class="field"><span>保本触发（点）</span><input data-grid-key="breakeven_trigger_points" /></label>
+                <label class="field"><span>保本保护（点）</span><input data-grid-key="breakeven_stop_points" /></label>
+                <label class="field"><span>首档移动触发（点）</span><input data-grid-key="trailing_trigger_1_points" /></label>
+              </div>
+            </section>
+          </div>
+
+          <details class="advanced-panel">
+            <summary><span><strong>高级风控与交易成本</strong><small>移动保护、初始资金、手续费与滑点</small></span><b>展开设置</b></summary>
+            <div class="field-grid five compact detail-fields">
+              <label class="field"><span>启动最大浮盈</span><input data-grid-key="startup_max_favorable_points" /></label>
+              <label class="field"><span>首档保护比例</span><input data-grid-key="trailing_protect_1_ratio" /></label>
+              <label class="field"><span>二档移动触发</span><input data-grid-key="trailing_trigger_2_points" /></label>
+              <label class="field"><span>二档保护比例</span><input data-grid-key="trailing_protect_2_ratio" /></label>
+              <label class="field"><span>三档移动触发</span><input data-grid-key="trailing_trigger_3_points" /></label>
+              <label class="field"><span>三档保护比例</span><input data-grid-key="trailing_protect_3_ratio" /></label>
+              <label class="field"><span>初始权益（USDT）</span><input id="initial-equity-input" type="number" /></label>
+              <label class="field"><span>手续费率</span><input id="fee-rate-input" type="number" step="0.00001" /></label>
+              <label class="field"><span>滑点率</span><input id="slippage-rate-input" type="number" step="0.00001" /></label>
+              <label class="check-field"><input id="cache-enabled-input" type="checkbox" checked /><span><strong>优先本地缓存</strong><small>缺失区间自动补齐</small></span></label>
+            </div>
+          </details>
+        </section>
       </div>
-      <div class="parameter-section">
-        <div class="parameter-title">核心风控</div>
-        <div class="field-grid two compact">
-          <label class="field"><span>启动检查 K 数</span><input data-grid-key="startup_check_bars_5m" /></label>
-          <label class="field"><span>启动当前点数</span><input data-grid-key="startup_current_points" /></label>
-          <label class="field"><span>灾难止损点数</span><input data-grid-key="disaster_stop_points" /></label>
-          <label class="field"><span>保本触发点数</span><input data-grid-key="breakeven_trigger_points" /></label>
-          <label class="field"><span>保本保护点数</span><input data-grid-key="breakeven_stop_points" /></label>
-          <label class="field"><span>首档移动触发</span><input data-grid-key="trailing_trigger_1_points" /></label>
+
+      <footer class="run-dock">
+        <div id="combination-estimate" class="combination-box"><span>本次实验</span><strong>1 个组合</strong><small>生成完整报告和图表</small></div>
+        <div class="run-action">
+          <div><span>提交后将在后台运行</span><small>可以离开页面，任务状态会持续保存</small></div>
+          <button id="run-button" class="primary-button" type="button"><span>开始回测实验</span><b>→</b></button>
         </div>
-      </div>
-      <details class="advanced-panel">
-        <summary>更多风控与成本参数</summary>
-        <div class="field-grid two compact detail-fields">
-          <label class="field"><span>启动最大浮盈</span><input data-grid-key="startup_max_favorable_points" /></label>
-          <label class="field"><span>首档保护比例</span><input data-grid-key="trailing_protect_1_ratio" /></label>
-          <label class="field"><span>二档移动触发</span><input data-grid-key="trailing_trigger_2_points" /></label>
-          <label class="field"><span>二档保护比例</span><input data-grid-key="trailing_protect_2_ratio" /></label>
-          <label class="field"><span>三档移动触发</span><input data-grid-key="trailing_trigger_3_points" /></label>
-          <label class="field"><span>三档保护比例</span><input data-grid-key="trailing_protect_3_ratio" /></label>
-          <label class="field"><span>初始权益</span><input id="initial-equity-input" type="number" /></label>
-          <label class="field"><span>手续费率</span><input id="fee-rate-input" type="number" step="0.00001" /></label>
-          <label class="field"><span>滑点率</span><input id="slippage-rate-input" type="number" step="0.00001" /></label>
-          <label class="check-field"><input id="cache-enabled-input" type="checkbox" checked /><span>优先使用本地缓存</span></label>
-        </div>
-      </details>
-      <div id="combination-estimate" class="combination-box">组合数：1</div>
-      <button id="run-button" class="primary-button" type="button">开始回测实验</button>
       <div id="form-error" class="error-message"></div>
-    </aside>
+      </footer>
+    </section>
 
     <section class="content-column">
       <section class="content-card">
         <div class="card-heading">
-          <div><div class="eyebrow">Experiments</div><h2>实验任务</h2></div>
-          <button id="refresh-runs-button" class="text-button" type="button">刷新</button>
+          <div><div class="eyebrow">EXPERIMENT HISTORY</div><h2>实验任务</h2><p>查看运行进度，并重新打开历史实验结果。</p></div>
+          <button id="refresh-runs-button" class="text-button" type="button"><span>↻</span> 刷新状态</button>
         </div>
-        <div id="run-list" class="run-list"><div class="empty-state">还没有 UI 回测实验</div></div>
+        <div id="run-list" class="run-list"><div class="empty-state"><span>↗</span><strong>还没有实验任务</strong><small>完成上方配置后，点击“开始回测实验”。</small></div></div>
       </section>
 
       <section id="result-section" class="content-card result-card is-hidden">

@@ -123,7 +123,11 @@ function combinationCount() {
 function scheduleEstimate() {
   clearTimeout(state.estimateTimer);
   const count = combinationCount();
-  $("combination-estimate").textContent = `组合数：${count} · ${count === 1 ? "生成完整报告和图表" : "矩阵仅保存轻量摘要，候选组合可一键复测"}`;
+  $("combination-estimate").innerHTML = `
+    <span>本次实验</span>
+    <strong>${formatNumber(count, 0)} 个组合</strong>
+    <small>${count === 1 ? "生成完整报告和图表" : "矩阵保存轻量摘要，候选可一键复测"}</small>
+  `;
   state.estimateTimer = setTimeout(refreshEstimate, 350);
 }
 
@@ -218,22 +222,25 @@ async function refreshEstimate() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(buildPayload()),
     });
     const cache = payload.cache;
-    const barsLabel = payload.estimated_bars == null ? "滚动数据窗口" : `<strong>${formatNumber(payload.estimated_bars, 0)}</strong> 根目标 K 线`;
+    const barsLabel = payload.estimated_bars == null ? "滚动数据窗口" : `${formatNumber(payload.estimated_bars, 0)} 根 K 线`;
     const cacheStatus = cache.complete ? '<span class="ok">缓存完整</span>' : cache.exists ? '<span class="warn">缓存不完整，将自动补齐</span>' : '<span class="warn">没有本地缓存，首次运行需要下载</span>';
-    $("data-estimate").innerHTML = [
-      `${barsLabel} · <strong>${payload.combinations}</strong> 个组合`,
-      `${cacheStatus} · ${escapeHtml(cache.first_time || "--")} 至 ${escapeHtml(cache.last_time || "--")} · ${formatBytes(cache.size_bytes)}`,
-      escapeHtml(payload.execution_class),
-    ].join("<br>");
+    $("data-estimate").innerHTML = `
+      <div class="estimate-item"><span>目标数据</span><strong>${escapeHtml(barsLabel)}</strong></div>
+      <div class="estimate-item"><span>参数规模</span><strong>${formatNumber(payload.combinations, 0)} 个组合</strong></div>
+      <div class="estimate-item"><span>本地缓存 · ${formatBytes(cache.size_bytes)}</span><strong>${cacheStatus}</strong><small>${escapeHtml(cache.first_time || "--")} 至 ${escapeHtml(cache.last_time || "--")}</small></div>
+      <div class="estimate-item"><span>执行方式</span><strong>${escapeHtml(payload.execution_class)}</strong></div>
+    `;
     $("form-error").textContent = "";
   } catch (error) {
-    $("data-estimate").textContent = error.message;
+    $("data-estimate").innerHTML = `<div class="estimate-item"><span>配置检查未通过</span><strong class="warn">${escapeHtml(error.message)}</strong></div>`;
   }
 }
 
 async function submitRun() {
   const button = $("run-button");
   button.disabled = true;
+  const previousLabel = button.innerHTML;
+  button.innerHTML = '<span>正在创建任务…</span><b>···</b>';
   $("form-error").textContent = "";
   try {
     const status = await fetchJson("/api/backtests/runs", {
@@ -246,6 +253,7 @@ async function submitRun() {
     $("form-error").textContent = error.message;
   } finally {
     button.disabled = false;
+    button.innerHTML = previousLabel;
   }
 }
 
@@ -263,7 +271,7 @@ async function refreshRuns() {
 
 function renderRuns() {
   if (!state.runs.length) {
-    $("run-list").innerHTML = '<div class="empty-state">还没有 UI 回测实验</div>';
+    $("run-list").innerHTML = '<div class="empty-state"><span>↗</span><strong>还没有实验任务</strong><small>完成上方配置后，点击“开始回测实验”。</small></div>';
     return;
   }
   $("run-list").innerHTML = state.runs.map((run) => `
@@ -379,7 +387,7 @@ async function refillCandidate(row) {
   });
   $("experiment-name").value = `${$("experiment-name").value.replace(/ · 复测$/, "")} · 复测`;
   scheduleEstimate();
-  document.querySelector(".builder-card").scrollTo({ top: 0, behavior: "smooth" });
+  document.querySelector(".builder-card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderChart(payload) {
@@ -389,9 +397,9 @@ function renderChart(payload) {
   container.innerHTML = "";
   if (state.chart) state.chart.remove();
   state.chart = LightweightCharts.createChart(container, {
-    width: container.clientWidth, height: 500, layout: { background: { color: "#091512" }, textColor: "#8ea69d" },
-    grid: { vertLines: { color: "rgba(181,218,204,.06)" }, horzLines: { color: "rgba(181,218,204,.06)" } },
-    timeScale: { borderColor: "rgba(181,218,204,.12)", timeVisible: true }, rightPriceScale: { borderColor: "rgba(181,218,204,.12)" },
+    width: container.clientWidth, height: 500, layout: { background: { color: "#090e13" }, textColor: "#7f919f" },
+    grid: { vertLines: { color: "rgba(184,205,224,.055)" }, horzLines: { color: "rgba(184,205,224,.055)" } },
+    timeScale: { borderColor: "rgba(184,205,224,.12)", timeVisible: true }, rightPriceScale: { borderColor: "rgba(184,205,224,.12)" },
   });
   const candles = state.chart.addCandlestickSeries({ upColor: "#5ee0a0", downColor: "#ff7777", borderVisible: false, wickUpColor: "#5ee0a0", wickDownColor: "#ff7777" });
   candles.setData(payload.candles || []);
@@ -410,15 +418,29 @@ function formatPct(value) { const formatted = formatNumber(value); return format
 function formatBytes(value) { const bytes = Number(value || 0); if (!bytes) return "0 MB"; return `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]); }
 
+function profileDisplayName(profile) {
+  const symbol = profileValue(profile, "symbol", "--");
+  const duration = strategyDurationLabel(profileValue(profile, "duration", 0));
+  const start = String(profileValue(profile, "start_time", "")).slice(0, 4);
+  const end = String(profileValue(profile, "end_time", "")).slice(0, 4);
+  const range = start && end ? `${start}–${end}` : "滚动窗口";
+  let variant = "标准基线";
+  if (profile.name.includes("1d_1h_reentry")) variant = "1D/1H 再入场";
+  else if (profile.name.includes("legacy")) variant = "历史口径";
+  else if (profile.name.includes("latest_month")) variant = "最近一个月";
+  else if (profile.name.includes("cached")) variant = "当前缓存口径";
+  return `${symbol} · ${duration} · ${range} · ${variant} — ${profile.name}`;
+}
+
 async function boot() {
   state.catalog = await fetchJson("/api/backtests/catalog");
   state.catalog.profiles.forEach((profile) => state.profiles.set(profile.name, profile));
-  $("profile-select").innerHTML = state.catalog.profiles.map((profile) => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name)}</option>`).join("");
+  $("profile-select").innerHTML = state.catalog.profiles.map((profile) => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profileDisplayName(profile))}</option>`).join("");
   $("duration-select").innerHTML = state.catalog.durations.map((duration) => `<option value="${duration}">${duration >= 3600 ? `${duration/3600}h` : `${duration/60}m`}</option>`).join("");
   const strategies = state.catalog.strategies.flatMap((item) => [item.name, ...(item.aliases || [])].map((name) => ({ name, item })));
   $("strategy-select").innerHTML = strategies.map(({name, item}) => {
-    const title = item.details?.title ? ` · ${item.details.title}` : "";
-    return `<option value="${escapeHtml(name)}">${escapeHtml(name + title)}</option>`;
+    const title = item.details?.title || name;
+    return `<option value="${escapeHtml(name)}">${escapeHtml(`${title} — ${name}`)}</option>`;
   }).join("");
   $("profile-select").addEventListener("change", () => populateProfile($("profile-select").value));
   ["provider-select","symbol-input","duration-select","start-time-input","end-time-input","strategy-select","initial-equity-input","fee-rate-input","slippage-rate-input","cache-enabled-input"].forEach((id) => $(id).addEventListener("change", scheduleEstimate));
