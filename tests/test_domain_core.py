@@ -206,6 +206,25 @@ def register_strategies(registry):
 
         self.assertEqual(evaluator.primary_htf_duration_seconds, 86400)
         self.assertEqual(evaluator.reentry_confirmation_duration_seconds, 3600)
+        self.assertFalse(evaluator.refresh_startup_on_same_side_signal)
+
+    def test_24bar_refresh_alias_propagates_refresh_capability_to_decision(self) -> None:
+        evaluator = SignalEvaluator(
+            SignalConfig(strategy="stc_1d_1h_reentry_24bar_refresh")
+        )
+
+        decision = evaluator.evaluate(_reentry_strategy_snapshot("buy"))
+
+        self.assertEqual(
+            evaluator.strategy.name,
+            "stc_extreme_contrarian_1d_1h_reentry_24bar_refresh",
+        )
+        self.assertEqual(evaluator.primary_htf_duration_seconds, 86400)
+        self.assertEqual(evaluator.reentry_confirmation_duration_seconds, 3600)
+        self.assertTrue(evaluator.refresh_startup_on_same_side_signal)
+        self.assertEqual(decision.action, "place_order")
+        self.assertEqual(decision.side, "buy")
+        self.assertTrue(decision.refresh_startup_on_same_side_signal)
 
     def test_base_strategy_high_timeframe_requires_stc_color_but_not_extreme_value(self) -> None:
         evaluator = SignalEvaluator(

@@ -72,6 +72,28 @@ class BacktestExperimentTest(unittest.TestCase):
         self.assertEqual(resolved.strategy.primary_htf_duration_seconds, 86400)
         self.assertEqual(resolved.strategy.reentry_confirmation_duration_seconds, 3600)
 
+    def test_24bar_refresh_profile_is_opt_in_and_keeps_three_year_risk_settings(self) -> None:
+        spec = build_experiment_spec(
+            PROJECT_ROOT,
+            {
+                "profile": "btc_5m_range_cached_1d_1h_reentry_24bar_refresh",
+                "grid": {},
+            },
+        )
+
+        resolved = BacktestApplication(PROJECT_ROOT).resolve(spec.base_request)
+
+        self.assertEqual(
+            spec.base_request.strategy,
+            "stc_1d_1h_reentry_24bar_refresh",
+        )
+        self.assertEqual(spec.base_request.start_time, "2023-03-31 00:00:00")
+        self.assertEqual(spec.base_request.end_time, "2026-06-20 00:00:00")
+        self.assertEqual(spec.base_request.startup_current_points, -300)
+        self.assertEqual(resolved.strategy.primary_htf_duration_seconds, 86400)
+        self.assertEqual(resolved.strategy.reentry_confirmation_duration_seconds, 3600)
+        self.assertTrue(resolved.strategy.refresh_startup_on_same_side_signal)
+
     def test_unknown_or_excessive_parameter_grid_is_rejected(self) -> None:
         payload = self.payload()
         payload["grid"] = {"not_a_parameter": [1, 2]}

@@ -206,6 +206,7 @@ def main() -> None:
                         "name": evaluator.strategy.name,
                         "primary_htf_duration_seconds": evaluator.primary_htf_duration_seconds,
                         "reentry_confirmation_duration_seconds": evaluator.reentry_confirmation_duration_seconds,
+                        "refresh_startup_on_same_side_signal": evaluator.refresh_startup_on_same_side_signal,
                     },
                 },
                 ensure_ascii=False,

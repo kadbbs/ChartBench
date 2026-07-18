@@ -154,10 +154,28 @@ Bitget 请求使用双向持仓格式：
 - 第 2 次及之后均执行相同的 1H Hull/STC 同向检查；1H STC 只检查颜色，不要求 `<25` 或 `>75`。
 - 已有同方向持仓时仍然禁止加仓，`clientOid` 去重和全部风控规则保持不变。
 
+新增的可选变体 `stc_1d_1h_reentry_24bar_refresh` 保留上述入场规则，并调整
+持仓开始阶段的计时：持有本策略管理的同向仓位时，如果在当前 24 根启动窗口
+到期前又出现一个完整通过低周期、1D 和所需 1H 检查的同向信号，仍然跳过
+开仓，但把启动失败检查的 24 根计时锚点移动到该信号对应的下一根执行 K 线。它不会加仓，也
+不会修改原开仓价、仓位数量、最大浮盈/浮亏、灾难止损、保本或移动保护状态；
+第 24 根及之后的信号不刷新，其他策略仍保持“跳过且不刷新”。刷新只会发生在
+真实交易模式，并且仓位必须由这个新策略开出；观察仓位、手动仓位和旧策略仓位均不修改。
+
 在实盘 profile 中启用：
 
 ```yaml
 LIVE_TRADING_STRATEGY: stc_1d_1h_reentry
+```
+
+新变体先做真实交易预检查，再启动常驻进程：
+
+```bash
+LIVE_TRADING_STRATEGY=stc_1d_1h_reentry_24bar_refresh \
+  ./myvenv/bin/python chartbench.py live preflight --profile live_5u
+
+LIVE_TRADING_STRATEGY=stc_1d_1h_reentry_24bar_refresh \
+  ./myvenv/bin/python chartbench.py live run --profile live_5u
 ```
 
 ## 下单数量
@@ -217,7 +235,7 @@ LIVE_TRADING_RISK_CLOSE_MANAGED_SIZE_ONLY: true
 LIVE_TRADING_RISK_PRICE_SOURCE: mark_price
 LIVE_TRADING_RISK_STARTUP_CHECK_BARS_5M: 24
 LIVE_TRADING_RISK_STARTUP_MAX_FAVORABLE_POINTS: 300
-LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -120
+LIVE_TRADING_RISK_STARTUP_CURRENT_POINTS: -300
 LIVE_TRADING_RISK_DISASTER_STOP_POINTS: -1800
 LIVE_TRADING_RISK_BREAKEVEN_TRIGGER_POINTS: 800
 LIVE_TRADING_RISK_BREAKEVEN_STOP_POINTS: 100
@@ -232,7 +250,7 @@ LIVE_TRADING_RISK_TRAILING_PROTECT_3_RATIO: 0.6
 含义：
 
 - 点数按开仓价到当前标记价计算；多单是 `当前价 - 开仓价`，空单是 `开仓价 - 当前价`。
-- 启动失败止损：开仓后第 `24` 根 5m K 线检查一次，如果最大浮盈 `< 300` 点且当前点数 `< -120` 点，市价平仓。
+- 启动失败止损：开仓后第 `24` 根 5m K 线检查一次，如果最大浮盈 `< 300` 点且当前点数 `< -300` 点，市价平仓。启用 `stc_1d_1h_reentry_24bar_refresh` 时，合格的持仓内同向信号可在窗口到期前重置这项检查的计时锚点。
 - 灾难硬止损：任何时候最大浮亏或当前浮亏达到 `-1800` 点，市价平仓。
 - 保本保护：最大浮盈达到 `800` 点后，保护线抬到 `+100` 点。
 - 移动保护：最大浮盈达到 `2000 / 4000 / 8000` 点后，分别保护最大浮盈的 `40% / 50% / 60%`。
@@ -337,6 +355,9 @@ logs/live_trading_state.json
 ```
 
 状态文件使用同目录文件锁、临时文件和原子替换写入；写盘前会执行 `fsync`。如果多个进程基于不同版本的 state 同时更新，旧版本写入会失败，不会覆盖较新的 `clientOid`、仓位、高周期锁或风控状态。
+
+同一交易账户和同一个 state 文件只能运行一个真实交易常驻进程。文件锁可以防止
+旧状态覆盖新状态，但无法撤销另一个进程已经提交到交易所的开仓或风控平仓请求。
 
 如果 state 不是合法 JSON 或顶层不是 object，实盘引擎会直接报错并停止本次交易处理，不再把损坏文件当成空状态继续运行。恢复前应先核对交易所真实持仓，并保留损坏文件用于排查。
 

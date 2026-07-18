@@ -40,6 +40,8 @@ class BacktestUiContractTest(unittest.TestCase):
         self.assertIn("function effectiveStrategyName", SCRIPT)
         self.assertIn("function renderStrategyDetails", SCRIPT)
         self.assertIn('details.reentry_confirmation_duration_seconds', SCRIPT)
+        self.assertIn('details.refresh_startup_on_same_side_signal', SCRIPT)
+        self.assertIn("重置启动计时，不加仓", SCRIPT)
 
     def test_research_form_uses_full_width_progressive_layout(self) -> None:
         for class_name in {

@@ -26,3 +26,4 @@ class TradeDecision:
     htf_context: dict[str, Any] = field(default_factory=dict)
     htf_reentry_allowed: bool = False
     htf_reentry_context: dict[str, Any] = field(default_factory=dict)
+    refresh_startup_on_same_side_signal: bool = False

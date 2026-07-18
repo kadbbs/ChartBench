@@ -61,6 +61,9 @@ class SignalEvaluator:
             getattr(self.strategy, "reentry_confirmation_duration_seconds", 0) or 0
         )
         self.reentry_confirmation_duration_seconds = reentry_duration or None
+        self.refresh_startup_on_same_side_signal = bool(
+            getattr(self.strategy, "refresh_startup_on_same_side_signal", False)
+        )
 
     def evaluate(self, snapshot: dict[str, Any]) -> TradeDecision:
         candles = snapshot.get("candles") or []
@@ -127,6 +130,7 @@ class SignalEvaluator:
             "atr_value": atr_at(snapshot, bar_time, self.config.atr_period),
             "htf_reentry_allowed": htf_reentry_allowed,
             "htf_reentry_context": htf_reentry_context,
+            "refresh_startup_on_same_side_signal": self.refresh_startup_on_same_side_signal,
         }
         if side is None:
             return TradeDecision(**decision_values)

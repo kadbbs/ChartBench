@@ -88,6 +88,7 @@ class BacktestTrade:
     r_multiple: float = 0.0
     signal_reason: str = ""
     partial_exits: list[dict[str, Any]] = field(default_factory=list)
+    startup_refreshes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -96,6 +97,7 @@ class Position:
     remaining_qty: float
     risk_amount: float
     entry_index: int
+    startup_anchor_index: int
     max_favorable_points: float = 0.0
     max_adverse_points: float = 0.0
     protected_stop_points: float | None = None
@@ -125,7 +127,7 @@ class PreparedBacktestStudy:
     reentry_htf_snapshot: dict[str, Any] | None
     signals: list[BacktestSignal | None]
     bar_count: int
-    strategy_signature: tuple[str, str, int, int | None, int]
+    strategy_signature: tuple[str, str, int, int | None, bool, int]
 
 
 class BacktestEngine:
@@ -212,6 +214,38 @@ class BacktestEngine:
                     signal.side = None
                     signal.reason = detail or "同一个高周期 Hull 颜色周期内，同方向已开过仓；本周期不再重复开同向仓位。"
 
+            if (
+                position is not None
+                and signal.side == position.trade.side
+                and signal.refresh_startup_on_same_side_signal
+                and signal.htf_reentry_allowed
+                and self.config.risk_exits_enabled
+            ):
+                startup_window = self.risk_policy.config.startup_check_bars()
+                elapsed_bars = entry_index - position.startup_anchor_index
+                if 0 < elapsed_bars < startup_window:
+                    previous_anchor_index = position.startup_anchor_index
+                    position.startup_anchor_index = entry_index
+                    position.trade.startup_refreshes.append(
+                        {
+                            "signal_time": int(signal_candle["time"]),
+                            "signal_time_label": time_labels.get(str(signal_candle["time"]), ""),
+                            "previous_anchor_time": int(candles[previous_anchor_index]["time"]),
+                            "new_anchor_time": int(entry_candle["time"]),
+                            "elapsed_bars": elapsed_bars,
+                            "window_bars": startup_window,
+                            "reason": signal.reason,
+                        }
+                    )
+                    markers.append(
+                        _marker(
+                            entry_candle["time"],
+                            "belowBar" if position.trade.side == "buy" else "aboveBar",
+                            "#7aa7ff",
+                            f"REFRESH {startup_window}B",
+                        )
+                    )
+
             if position is not None and signal.side in {"buy", "sell"} and signal.side != position.trade.side:
                 realized = self._close_remaining(
                     position,
@@ -284,6 +318,9 @@ class BacktestEngine:
                 "strategy": self.strategy.signal_strategy_name,
                 "htf_hull_duration_seconds": self.strategy.primary_htf_duration_seconds,
                 "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+                "refresh_startup_on_same_side_signal": bool(
+                    getattr(self.strategy, "refresh_startup_on_same_side_signal", False)
+                ),
             }
         )
         result = BacktestResult(
@@ -300,6 +337,9 @@ class BacktestEngine:
                     else "hull_trend_segment"
                 ),
                 "htf_reentry_confirmation_duration_seconds": self.strategy.reentry_confirmation_duration_seconds,
+                "refresh_startup_on_same_side_signal": bool(
+                    getattr(self.strategy, "refresh_startup_on_same_side_signal", False)
+                ),
                 "signal_config": effective_signal_config,
                 "indicator_parameters": indicator_parameters,
                 "code_version": _code_version(self.project_root),
@@ -403,12 +443,13 @@ class BacktestEngine:
                 signals[entry_index] = signal
         return signals
 
-    def _strategy_signature(self) -> tuple[str, str, int, int | None, int]:
+    def _strategy_signature(self) -> tuple[str, str, int, int | None, bool, int]:
         return (
             self.strategy.name,
             self.strategy.signal_strategy_name,
             self.strategy.primary_htf_duration_seconds,
             self.strategy.reentry_confirmation_duration_seconds,
+            bool(getattr(self.strategy, "refresh_startup_on_same_side_signal", False)),
             self.config.warmup_bars,
         )
 
@@ -442,7 +483,13 @@ class BacktestEngine:
             signal_reason=reason,
         )
         trade.fees += abs(qty * entry_price) * self.config.fee_rate
-        return trade, Position(trade=trade, remaining_qty=qty, risk_amount=risk_amount, entry_index=entry_index)
+        return trade, Position(
+            trade=trade,
+            remaining_qty=qty,
+            risk_amount=risk_amount,
+            entry_index=entry_index,
+            startup_anchor_index=entry_index,
+        )
 
     def _order_qty(self, entry_price: float, equity: float) -> float:
         margin_amount = equity * self.config.margin_ratio_per_trade if self.config.margin_ratio_per_trade > 0 else self.config.margin_amount
@@ -473,7 +520,7 @@ class BacktestEngine:
             high=candle["high"],
             low=candle["low"],
             close=candle["close"],
-            bars_since_entry=candle_index - position.entry_index,
+            bars_since_entry=candle_index - position.startup_anchor_index,
         )
         position.max_favorable_points = float(evaluation.state.max_favorable_points)
         position.max_adverse_points = float(evaluation.state.max_adverse_points)
@@ -589,6 +636,7 @@ class BacktestEngine:
             for trade in result.trades:
                 row = asdict(trade)
                 row["partial_exits"] = json.dumps(row["partial_exits"], ensure_ascii=False)
+                row["startup_refreshes"] = json.dumps(row["startup_refreshes"], ensure_ascii=False)
                 writer.writerow(row)
 
 
@@ -664,6 +712,17 @@ def _marker(time_value: int, position: str, color: str, text: str) -> dict[str, 
 
 
 def _drop_open_marker(markers: list[dict[str, Any]], trade: BacktestTrade) -> list[dict[str, Any]]:
+    refresh_markers = {
+        (int(item.get("new_anchor_time") or 0), f"REFRESH {int(item.get('window_bars') or 0)}B")
+        for item in trade.startup_refreshes
+    }
+    if refresh_markers:
+        markers = [
+            marker
+            for marker in markers
+            if (int(marker.get("time") or 0), str(marker.get("text") or ""))
+            not in refresh_markers
+        ]
     expected_text = f"OPEN {trade.side.upper()}"
     expected_time = int(trade.entry_time)
     for index in range(len(markers) - 1, -1, -1):
@@ -819,6 +878,12 @@ def _report_analysis(result: BacktestResult, snapshot: dict[str, Any]) -> dict[s
                 "K 线内同时触发最大浮盈和保护线时，按同一根 K 线可触达保护价处理。",
             ]
         )
+        if result.config.get("refresh_startup_on_same_side_signal"):
+            assumptions.append(
+                f"持仓内再次出现完整有效的同向信号时，若距离当前启动检查锚点严格少于 {startup_bars} 根，"
+                "只把启动失败检查锚点移动到该信号对应的执行 K 线；不加仓、不重复收取开仓手续费，"
+                "也不重置真实开仓信息、浮盈浮亏极值及其他保护状态。"
+            )
     else:
         assumptions.append("未启用回测持仓风控出场；持仓只会因反向实盘信号平仓/反手。")
     assumptions.extend(

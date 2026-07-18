@@ -16,6 +16,7 @@ class BacktestSignal:
     htf_context: dict | None = None
     htf_reentry_allowed: bool = False
     htf_reentry_context: dict | None = None
+    refresh_startup_on_same_side_signal: bool = False
 
 
 class KlineStrategy(Protocol):
@@ -23,6 +24,7 @@ class KlineStrategy(Protocol):
     signal_strategy_name: str
     primary_htf_duration_seconds: int
     reentry_confirmation_duration_seconds: int | None
+    refresh_startup_on_same_side_signal: bool
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
         raise NotImplementedError
@@ -38,6 +40,7 @@ class SignalEvaluatorStrategy:
         self.signal_strategy_name = self.evaluator.strategy.name
         self.primary_htf_duration_seconds = self.evaluator.primary_htf_duration_seconds
         self.reentry_confirmation_duration_seconds = self.evaluator.reentry_confirmation_duration_seconds
+        self.refresh_startup_on_same_side_signal = self.evaluator.refresh_startup_on_same_side_signal
 
     def evaluate(self, snapshot: dict) -> BacktestSignal:
         decision = self.evaluator.evaluate(snapshot)
@@ -48,6 +51,7 @@ class SignalEvaluatorStrategy:
                 htf_context=decision.htf_context,
                 htf_reentry_allowed=decision.htf_reentry_allowed,
                 htf_reentry_context=decision.htf_reentry_context,
+                refresh_startup_on_same_side_signal=decision.refresh_startup_on_same_side_signal,
             )
         return BacktestSignal(
             side=decision.side,
@@ -56,6 +60,7 @@ class SignalEvaluatorStrategy:
             htf_context=decision.htf_context,
             htf_reentry_allowed=decision.htf_reentry_allowed,
             htf_reentry_context=decision.htf_reentry_context,
+            refresh_startup_on_same_side_signal=decision.refresh_startup_on_same_side_signal,
         )
 
 

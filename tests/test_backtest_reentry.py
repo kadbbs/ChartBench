@@ -85,7 +85,14 @@ class BacktestReentryTest(unittest.TestCase):
             reentry_htf_snapshot=None,
             signals=signals,
             bar_count=len(candles),
-            strategy_signature=(strategy.name, strategy.signal_strategy_name, 86400, 3600, 1),
+            strategy_signature=(
+                strategy.name,
+                strategy.signal_strategy_name,
+                86400,
+                3600,
+                False,
+                1,
+            ),
         )
         return engine.run(
             _bars_placeholder(len(candles)),

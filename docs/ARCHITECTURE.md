@@ -65,6 +65,22 @@ threshold.
 The full canonical name is `stc_extreme_contrarian_1d_1h_reentry`; the shorter
 `stc_1d_1h_reentry` alias is intended for profiles and commands.
 
+`stc_1d_1h_reentry_24bar_refresh` is an opt-in variant. While its own managed
+same-side position is open, a new signal that passes the complete low-timeframe,
+1D, and required 1H checks is still not allowed to add to the position. If that
+signal arrives before the current 24-bar startup window expires, it only moves
+the startup-failure timer anchor to the next execution bar for that signal. The original entry, size,
+fees, price excursions, disaster stop, breakeven state, and trailing protection
+are unchanged. A signal at or after the 24th bar does not refresh the window.
+Live refreshes require real-trading mode and a position opened by this exact
+opt-in strategy; observation, manually synchronized, and legacy positions do not qualify.
+
+The canonical name is
+`stc_extreme_contrarian_1d_1h_reentry_24bar_refresh`; profiles and commands can
+use the shorter `stc_1d_1h_reentry_24bar_refresh` alias. This behavior is a
+strategy capability carried by the decision into live trading and backtesting,
+so existing strategies keep their original same-side skip behavior.
+
 List all registered built-in and custom strategies without starting market data:
 
 ```bash

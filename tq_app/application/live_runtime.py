@@ -1424,6 +1424,10 @@ class LiveTradingEngine:
                 self.sync_local_positions_with_exchange(symbol=decision.symbol, force=True)
             same_side_position = self._same_side_position(client, decision)
             if same_side_position is not None:
+                startup_refresh = self._refresh_startup_window_on_same_side_skip(decision)
+                message = "已存在同方向仓位，跳过开仓；如刚平掉反向仓位，本次只完成平仓不反手。"
+                if startup_refresh is not None:
+                    message += f" 已刷新 {startup_refresh['window_bars']} 根启动检查计时，不加仓。"
                 result = TradeExecutionResult(
                     decision=decision,
                     dry_run=True,
@@ -1431,9 +1435,14 @@ class LiveTradingEngine:
                     request=request,
                     response={
                         "sameSidePosition": True,
-                        "message": "已存在同方向仓位，跳过开仓；如刚平掉反向仓位，本次只完成平仓不反手。",
+                        "message": message,
                         "position": same_side_position,
                         "reverseClose": reverse_close_response,
+                        **(
+                            {"startupWindowRefresh": startup_refresh}
+                            if startup_refresh is not None
+                            else {}
+                        ),
                     },
                 )
                 self._record_execution(result)
@@ -1727,6 +1736,14 @@ class LiveTradingEngine:
             "max_adverse_points": _decimal_to_string(state.max_adverse_points),
             "protected_stop_points": _decimal_to_string(state.protected_stop_points) if state.protected_stop_points is not None else None,
             "startup_checked": state.startup_checked,
+            "startup_anchor_bar_time": (
+                local_position.get("risk_startup_anchor_bar_time")
+                or local_position.get("bar_time")
+            ),
+            "startup_refresh_count": max(
+                _optional_int(local_position.get("risk_startup_refresh_count")) or 0,
+                0,
+            ),
         }
 
     def _live_risk_entry_price(
@@ -1800,6 +1817,15 @@ class LiveTradingEngine:
                 "rule": {
                     "startup_check_bars_5m": self.config.risk_startup_check_bars_5m,
                     "closed_5m_bars_since_entry": closed_bars,
+                    "closed_5m_bars_since_startup_anchor": closed_bars,
+                    "startup_anchor_bar_time": (
+                        local_position.get("risk_startup_anchor_bar_time")
+                        or local_position.get("bar_time")
+                    ),
+                    "startup_refresh_count": max(
+                        _optional_int(local_position.get("risk_startup_refresh_count")) or 0,
+                        0,
+                    ),
                     "startup_max_favorable_points": self.config.risk_startup_max_favorable_points,
                     "startup_current_points": self.config.risk_startup_current_points,
                 },
@@ -2497,6 +2523,108 @@ class LiveTradingEngine:
             }
         return None
 
+    def _refresh_startup_window_on_same_side_skip(
+        self,
+        decision: TradeDecision,
+    ) -> dict[str, Any] | None:
+        """Move only the startup-risk anchor for an eligible held-position signal."""
+        if (
+            not decision.refresh_startup_on_same_side_signal
+            or not decision.htf_reentry_allowed
+            or not self.config.risk_exits_enabled
+            or not self.config.local_position_enabled
+            or not self._is_real_trading_mode()
+            or decision.action != "place_order"
+            or decision.side not in {"buy", "sell"}
+        ):
+            return None
+
+        signal_bar_time = _optional_int(decision.bar_time)
+        if signal_bar_time is None or signal_bar_time <= 0:
+            return None
+
+        window_bars = max(int(self.config.risk_startup_check_bars_5m), 1)
+        window_seconds = window_bars * 300
+        for attempt in range(2):
+            state = self._read_state()
+            positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
+            managed_position: dict[str, Any] | None = None
+            for position in reversed(positions):
+                if str(position.get("status") or "open").lower() != "open":
+                    continue
+                if str(position.get("symbol") or "").upper() != decision.symbol.upper():
+                    continue
+                if str(position.get("side") or "").lower() != decision.side:
+                    continue
+                # Unknown/manual positions remain outside automatic strategy risk management.
+                if position.get("risk_managed") is not True:
+                    return None
+                if position.get("refresh_startup_on_same_side_signal") is not True:
+                    return None
+                if str(position.get("strategy") or "") != self.signal_evaluator.strategy.name:
+                    return None
+                managed_position = position
+                break
+            if managed_position is None or bool(managed_position.get("risk_startup_checked")):
+                return None
+
+            anchor_bar_time = _optional_int(
+                managed_position.get("risk_startup_anchor_bar_time")
+            ) or _optional_int(managed_position.get("bar_time"))
+            if anchor_bar_time is None or anchor_bar_time <= 0:
+                return None
+            next_execution_bar_time = signal_bar_time + 300
+            elapsed_seconds = next_execution_bar_time - anchor_bar_time
+            if elapsed_seconds <= 0 or elapsed_seconds >= window_seconds:
+                return None
+
+            now_ms = int(time.time() * 1000)
+            elapsed_bars = elapsed_seconds // 300
+            next_execution_bar_time_label = _display_time_label(next_execution_bar_time)
+            refresh = {
+                "applied": True,
+                "signal_bar_time": signal_bar_time,
+                "signal_bar_time_label": decision.bar_time_label,
+                "previous_anchor_bar_time": anchor_bar_time,
+                "new_anchor_bar_time": next_execution_bar_time,
+                "new_anchor_bar_time_label": next_execution_bar_time_label,
+                "elapsed_bars": elapsed_bars,
+                "window_bars": window_bars,
+                "refreshed_at": now_ms,
+                "client_oid": decision.client_oid,
+                "reason": decision.reason,
+            }
+            managed_position["risk_startup_anchor_bar_time"] = next_execution_bar_time
+            managed_position["risk_startup_anchor_bar_time_label"] = next_execution_bar_time_label
+            managed_position["risk_startup_refresh_count"] = max(
+                _optional_int(managed_position.get("risk_startup_refresh_count")) or 0,
+                0,
+            ) + 1
+            managed_position["risk_startup_last_refresh_at"] = now_ms
+            managed_position["risk_startup_last_refresh_client_oid"] = decision.client_oid
+            managed_position["risk_startup_last_refresh"] = refresh
+            refreshes = [
+                item
+                for item in managed_position.get("risk_startup_refreshes") or []
+                if isinstance(item, dict)
+            ]
+            managed_position["risk_startup_refreshes"] = [*refreshes, refresh][-100:]
+            state["local_positions"] = positions[-500:]
+            try:
+                self._write_state(state)
+            except RuntimeError as exc:
+                if attempt == 0 and "本次读写之间已被其他进程修改" in str(exc):
+                    continue
+                self.logger.warning("刷新 24 根启动检查计时失败，保留原计时锚点: %s", exc)
+                return None
+
+            self.logger.info(
+                "同向有效信号因持仓跳过，已刷新启动检查计时（不加仓）: %s",
+                json.dumps(refresh, ensure_ascii=False),
+            )
+            return refresh
+        return None
+
     @staticmethod
     def _position_size(position: dict[str, Any]) -> float:
         for key in ("total", "available", "locked", "holdVol", "pos", "positionSize", "positionAmt"):
@@ -2697,11 +2825,16 @@ class LiveTradingEngine:
         source = "live" if is_real_position and not result.dry_run and result.enabled else ("log_only" if response.get("logOnly") else "dry_run")
         exchange_stop = response.get("exchangeDisasterStop") if isinstance(response.get("exchangeDisasterStop"), dict) else {}
         exchange_stop_ref = exchange_stop.get("orderRef") if isinstance(exchange_stop.get("orderRef"), dict) else {}
+        startup_anchor_bar_time = _optional_int(decision.bar_time) or 0
+        if decision.refresh_startup_on_same_side_signal and startup_anchor_bar_time > 0:
+            startup_anchor_bar_time += 300
         positions.append(
             {
                 "status": "open",
                 "source": source,
                 "risk_managed": is_real_position,
+                "strategy": self.signal_evaluator.strategy.name,
+                "refresh_startup_on_same_side_signal": decision.refresh_startup_on_same_side_signal,
                 "symbol": decision.symbol,
                 "side": decision.side,
                 "holdSide": "long" if decision.side == "buy" else "short",
@@ -2713,6 +2846,10 @@ class LiveTradingEngine:
                 "risk_max_adverse_points": "0",
                 "risk_protected_stop_points": None,
                 "risk_startup_checked": False,
+                "risk_startup_anchor_bar_time": startup_anchor_bar_time,
+                "risk_startup_anchor_bar_time_label": _display_time_label(startup_anchor_bar_time),
+                "risk_startup_refresh_count": 0,
+                "risk_startup_refreshes": [],
                 "exchange_stop_order_id": exchange_stop_ref.get("orderId"),
                 "exchange_stop_client_oid": exchange_stop_ref.get("clientOid"),
                 "exchange_stop_trigger_price": exchange_stop.get("triggerPrice"),
@@ -2995,7 +3132,7 @@ def _position_opened_at_ms(position: dict[str, Any]) -> int | None:
 
 
 def _closed_5m_bars_since_entry(position: dict[str, Any], now_ms: int) -> int | None:
-    bar_time = position.get("bar_time")
+    bar_time = position.get("risk_startup_anchor_bar_time") or position.get("bar_time")
     if bar_time not in (None, ""):
         try:
             entry_bar = int(bar_time)
@@ -3009,6 +3146,15 @@ def _closed_5m_bars_since_entry(position: dict[str, Any], now_ms: int) -> int | 
     if opened_at is None:
         return None
     return max((now_ms - opened_at) // (300 * 1000), 0)
+
+
+def _display_time_label(timestamp_seconds: int) -> str:
+    try:
+        return datetime.fromtimestamp(int(timestamp_seconds), DISPLAY_TIMEZONE).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    except (OSError, OverflowError, TypeError, ValueError):
+        return ""
 
 
 def _ticker_price_for_entry_source(ticker: dict[str, Any], entry_price_source: str) -> Decimal:

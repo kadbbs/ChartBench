@@ -255,6 +255,44 @@ class StcExtremeContrarian1d1hReentryStrategy(StcExtremeContrarianStrategy):
     }
 
 
+class StcExtremeContrarian1d1hReentry24BarRefreshStrategy(
+    StcExtremeContrarian1d1hReentryStrategy
+):
+    """1D/1H re-entry strategy that renews startup timing on held signals."""
+
+    name = "stc_extreme_contrarian_1d_1h_reentry_24bar_refresh"
+    refresh_startup_on_same_side_signal = True
+    explanation = {
+        "title": "STC 1D/1H 再入场 · 24 根信号刷新",
+        "summary": "沿用 1D 主趋势与 1H 同向再入场；持仓前 24 根内再次出现完整有效的同向信号时，不加仓，但从该信号对应的执行 K 线重新计算 24 根启动检查。",
+        "tags": ["1D 主趋势", "1H 再入场", "24 根刷新", "不加仓"],
+        "sections": [
+            {
+                "title": "入场与再入场",
+                "items": [
+                    "首次入场、1D 主趋势过滤及平仓后的 1H 同向再入场规则，与 stc_1d_1h_reentry 完全相同。",
+                    "已有同向仓位时始终不会追加仓位，保证金和持仓数量保持不变。",
+                ],
+            },
+            {
+                "title": "24 根刷新条件",
+                "items": [
+                    "新信号必须完整通过低周期 STC/Hull、1D 主趋势及需要的 1H 同向确认，最终只能因为已有同向仓位而被跳过。",
+                    "信号对应的执行 K 线位于当前启动检查窗口第 1 至第 23 根时，启动检查计时锚点移动到该执行 K 线。",
+                    "第 24 根或更晚的信号不会回溯刷新已经到期或已经完成的启动检查。",
+                ],
+            },
+            {
+                "title": "刷新后保持不变",
+                "items": [
+                    "真实开仓价、开仓时间、持仓数量、最大浮盈、最大浮亏、保护线和交易所灾难止损都不会重置。",
+                    "只延后一次性启动失败止损的检查时间；灾难止损、保本和移动保护仍持续生效。",
+                ],
+            },
+        ],
+    }
+
+
 def hull_position_allows_side(
     side: str,
     indicator_values: dict[str, float],
@@ -359,6 +397,9 @@ def _strategy_catalog_details(factory: StrategyFactory, canonical_name: str) -> 
             "reentry_confirmation_duration_seconds": _positive_int_or_none(
                 getattr(factory, "reentry_confirmation_duration_seconds", None)
             ),
+            "refresh_startup_on_same_side_signal": bool(
+                getattr(factory, "refresh_startup_on_same_side_signal", False)
+            ),
         }
     sections = []
     for section in raw.get("sections", []):
@@ -378,6 +419,9 @@ def _strategy_catalog_details(factory: StrategyFactory, canonical_name: str) -> 
         "reentry_confirmation_duration_seconds": _positive_int_or_none(
             getattr(factory, "reentry_confirmation_duration_seconds", None)
         ),
+        "refresh_startup_on_same_side_signal": bool(
+            getattr(factory, "refresh_startup_on_same_side_signal", False)
+        ),
     }
 
 
@@ -396,6 +440,11 @@ _REGISTRY.register(
     "stc_extreme_contrarian_1d_1h_reentry",
     StcExtremeContrarian1d1hReentryStrategy,
     aliases=("stc_1d_1h_reentry",),
+)
+_REGISTRY.register(
+    "stc_extreme_contrarian_1d_1h_reentry_24bar_refresh",
+    StcExtremeContrarian1d1hReentry24BarRefreshStrategy,
+    aliases=("stc_1d_1h_reentry_24bar_refresh",),
 )
 _CUSTOM_LOAD_LOCK = threading.Lock()
 _LOADED_CUSTOM_PATHS: set[Path] = set()

@@ -175,6 +175,7 @@ function renderStrategyDetails() {
   const primarySeconds = details.primary_htf_duration_seconds
     || (htfEnabled ? Number(profileValue(profile, "htf_hull_duration_seconds", 0)) : 0);
   const reentrySeconds = details.reentry_confirmation_duration_seconds;
+  const refreshStartupOnSameSide = Boolean(details.refresh_startup_on_same_side_signal);
   const aliasNote = selectedName === "live_decision"
     ? `Profile 委托：live_decision → ${effectiveName}`
     : selectedName !== strategy.name ? `当前使用别名：${selectedName} → ${strategy.name}` : `主策略：${strategy.name}`;
@@ -195,6 +196,7 @@ function renderStrategyDetails() {
       <div><span>执行周期</span><strong>${escapeHtml(strategyDurationLabel($("duration-select").value))}</strong></div>
       <div><span>主趋势过滤</span><strong>${escapeHtml(htfEnabled ? strategyDurationLabel(primarySeconds) : "已关闭")}</strong></div>
       <div><span>重复开仓确认</span><strong>${escapeHtml(reentrySeconds ? strategyDurationLabel(reentrySeconds) : "不允许")}</strong></div>
+      <div><span>持仓内有效信号</span><strong>${refreshStartupOnSameSide ? "重置启动计时，不加仓" : "跳过，不刷新"}</strong></div>
       <div><span>信号 K 线</span><strong>${String(profileValue(profile, "use_closed_bar", "true")).toLowerCase() === "false" ? "最新 K 线" : "已收完 K 线"}</strong></div>
     </div>
     <div class="strategy-rule-list">${sections}</div>

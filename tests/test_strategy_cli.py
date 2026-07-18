@@ -37,6 +37,10 @@ class StrategyCliTest(unittest.TestCase):
             by_name["stc_extreme_contrarian_1d_1h_reentry"],
             ["stc_1d_1h_reentry"],
         )
+        self.assertEqual(
+            by_name["stc_extreme_contrarian_1d_1h_reentry_24bar_refresh"],
+            ["stc_1d_1h_reentry_24bar_refresh"],
+        )
         details_by_name = {item["name"]: item["details"] for item in live}
         self.assertIn("STC 小于 25", " ".join(details_by_name["stc_extreme_contrarian"]["sections"][0]["items"]))
         self.assertEqual(
@@ -47,6 +51,12 @@ class StrategyCliTest(unittest.TestCase):
             details_by_name["stc_extreme_contrarian_1d_1h_reentry"]["reentry_confirmation_duration_seconds"],
             3600,
         )
+        refresh_details = details_by_name[
+            "stc_extreme_contrarian_1d_1h_reentry_24bar_refresh"
+        ]
+        self.assertTrue(refresh_details["refresh_startup_on_same_side_signal"])
+        self.assertIn("不加仓", refresh_details["tags"])
+        self.assertIn("重新计算 24 根", refresh_details["summary"])
 
     def test_custom_strategy_is_grouped_with_its_alias(self) -> None:
         registry = StrategyRegistry()

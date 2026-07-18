@@ -75,6 +75,7 @@ latest_month
 btc_5m_range
 btc_5m_range_cached
 btc_5m_range_cached_1d_1h_reentry
+btc_5m_range_cached_1d_1h_reentry_24bar_refresh
 btc_5m_range_cached_legacy
 sol_5m_range_cached
 sol_5m_range_cached_legacy
@@ -124,6 +125,19 @@ BTC 1D 主趋势、1H Hull/STC 同向重复开仓回测：
 该 profile 首次开仓使用 1D Hull/STC 主方向；风控平仓后，在同一 1D Hull
 颜色段内出现后续低周期信号时，只有已收完的 1H Hull 和 STC 都与开仓方向
 同向才允许重复开仓。原 `btc_5m_range_cached` 保持历史口径不变。
+
+BTC 1D/1H 重入场，并允许持仓内有效信号刷新 24 根启动计时：
+
+```bash
+./myvenv/bin/python run_backtest.py \
+  --profile btc_5m_range_cached_1d_1h_reentry_24bar_refresh
+```
+
+该 profile 与上一项使用相同的三年范围和 `-300` 点启动失败阈值。持有同向
+仓位时，若新信号完整通过低周期、1D 和所需 1H 检查，且当前 24 根启动窗口
+尚未到期，回测只把启动失败检查锚点移动到信号对应的下一根执行 K 线，不新增仓位、不重复收取
+开仓手续费，也不重置开仓价、浮盈浮亏极值或其他保护状态。第 24 根及之后不
+刷新；原 `btc_5m_range_cached_1d_1h_reentry` 的行为不变。
 
 SOL 长区间缓存回测：
 
@@ -235,11 +249,11 @@ atr_period: 14
 确认；同一 1D Hull 同色段的第 2 次及之后开仓要求已收完的 1H Hull 和
 1H STC 颜色都同向，1H STC 不检查数值极值。
 
-默认风控出场：
+上述 1D/1H profile 的风控出场：
 
 ```text
 启动失败止损：
-开仓后第 24 根 5m K 检查，最大浮盈 < 300 且当前点数 < -150，则平仓。
+开仓后第 24 根 5m K 检查，最大浮盈 < 300 且当前点数 < -300，则平仓。
 
 灾难硬止损：
 任意 K 线内最大浮亏达到 -1800 点，则平仓。
