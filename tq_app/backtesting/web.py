@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, send_file
 
 from tq_app.config_profiles import available_backtest_profiles, load_backtest_profile
 from tq_app.domain import get_strategy_catalog
@@ -11,9 +11,11 @@ from tq_app.indicators import build_indicator_registry
 
 from .experiments import (
     MAX_EXPERIMENT_COMBINATIONS,
+    MAX_PATH_MATRIX_COMBINATIONS,
     PARAMETER_TYPES,
     BacktestExperimentManager,
     build_experiment_spec,
+    build_path_experiment_spec,
     cache_coverage,
 )
 
@@ -61,6 +63,7 @@ def create_backtest_blueprint(
                 "parameter_keys": sorted(PARAMETER_TYPES),
                 "indicators": indicator_meta,
                 "max_combinations": MAX_EXPERIMENT_COMBINATIONS,
+                "max_path_combinations": MAX_PATH_MATRIX_COMBINATIONS,
             }
         )
 
@@ -68,15 +71,28 @@ def create_backtest_blueprint(
     def estimate() -> Any:
         try:
             payload = request.get_json(force=True)
-            spec = build_experiment_spec(project_root, payload)
+            is_path = str(payload.get("workflow") or "") == "signal_path"
+            spec = (
+                build_path_experiment_spec(project_root, payload)
+                if is_path
+                else build_experiment_spec(project_root, payload)
+            )
             coverage = cache_coverage(project_root, payload)
             bars = _estimated_bars(spec.base_request.start_time, spec.base_request.end_time, spec.base_request.duration_seconds)
             return jsonify(
                 {
-                    "combinations": len(spec.combinations),
+                    "combinations": spec.combination_count if is_path else len(spec.combinations),
                     "estimated_bars": bars,
                     "cache": coverage,
-                    "execution_class": _execution_class(spec.grid),
+                    "execution_class": (
+                        "复用已有信号路径，只运行参数重放"
+                        if is_path and spec.action == "matrix" and spec.baseline_run_id
+                        else "指标与信号只计算一次，再快速重放路径"
+                        if is_path and spec.action == "matrix"
+                        else "生成无风控路径和大模型样本"
+                        if is_path
+                        else _execution_class(spec.grid)
+                    ),
                 }
             )
         except Exception as exc:
@@ -113,6 +129,20 @@ def create_backtest_blueprint(
     @blueprint.get("/api/backtests/runs/<run_id>/chart")
     def get_chart(run_id: str) -> Any:
         return _manager_response(lambda: manager.chart_preview(run_id))
+
+    @blueprint.get("/api/backtests/runs/<run_id>/artifacts")
+    def get_artifacts(run_id: str) -> Any:
+        return _manager_response(lambda: {"artifacts": manager.artifacts(run_id)})
+
+    @blueprint.get("/api/backtests/runs/<run_id>/artifacts/<path:artifact_name>")
+    def download_artifact(run_id: str, artifact_name: str) -> Any:
+        try:
+            path = manager.artifact_path(run_id, artifact_name)
+            return send_file(path, as_attachment=True, download_name=path.name)
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     return blueprint
 

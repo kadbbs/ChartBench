@@ -2,6 +2,10 @@
 
 回测模块用于按 K 线级别复现实盘信号判断、开平仓撮合、手续费、风控出场和报告生成。它不需要 Binance / Bitget API Key，只使用公共行情接口和本地 K 线缓存。
 
+如果目标是先导出完全不受止损止盈影响的 1D Hull/STC + 5m 开平仓路径，
+再做严格二维参数热力图，请使用
+[SIGNAL_PATH_RESEARCH.md](SIGNAL_PATH_RESEARCH.md) 中的工作流。
+
 ## 入口
 
 单次回测：

@@ -27,7 +27,7 @@
         <div>
           <div class="eyebrow">NEW EXPERIMENT</div>
           <h1>设计一次可复现的策略实验</h1>
-          <p>先确定数据与策略，再组合参数。提交前会检查缓存覆盖和计算规模。</p>
+          <p>先提取无风控信号路径，再研究止损、止盈和同向再入场的稳定参数区域。</p>
         </div>
         <div class="workflow-steps" aria-label="实验流程">
           <span class="is-current"><i>1</i>配置</span>
@@ -43,6 +43,18 @@
           </div>
 
           <div class="config-grid">
+            <label class="field span-3"><span>研究工作流</span>
+              <select id="workflow-select">
+                <option value="signal_path">信号路径与热力图</option>
+                <option value="standard">常规策略回测</option>
+              </select>
+            </label>
+            <label id="path-action-field" class="field span-3"><span>本次操作</span>
+              <select id="path-action-select">
+                <option value="baseline">① 生成无风控样本</option>
+                <option value="matrix">② 运行止损止盈矩阵</option>
+              </select>
+            </label>
             <label class="field span-5"><span>实验名称</span><input id="experiment-name" placeholder="例如：BTC 三年风控稳定性" /></label>
             <label class="field span-7"><span>回测 Profile</span><select id="profile-select"></select></label>
             <label class="field span-2"><span>数据源</span><select id="provider-select"><option>bitget</option><option>binance</option></select></label>
@@ -65,10 +77,48 @@
             </div>
 
             <div id="data-estimate" class="estimate-box span-12 muted"><span class="loading-dot"></span>正在检查数据与缓存…</div>
+            <details class="advanced-panel common-execution-panel span-12">
+              <summary><span><strong>资金、成本与缓存</strong><small>路径研究和常规回测共用</small></span><b>展开设置</b></summary>
+              <div class="field-grid five compact detail-fields">
+                <label class="field"><span>初始权益（USDT）</span><input id="initial-equity-input" type="number" /></label>
+                <label class="field"><span>手续费率</span><input id="fee-rate-input" type="number" step="0.00001" /></label>
+                <label class="field"><span>滑点率</span><input id="slippage-rate-input" type="number" step="0.00001" /></label>
+                <label class="check-field"><input id="cache-enabled-input" type="checkbox" checked /><span><strong>优先本地缓存</strong><small>缺失区间自动补齐</small></span></label>
+              </div>
+            </details>
           </div>
         </section>
 
-        <section class="config-section parameter-config-section">
+        <section id="path-parameters-section" class="config-section parameter-config-section">
+          <div class="section-heading">
+            <div><span class="section-number">02</span><div><h2>路径研究设置</h2><p>基准不做任何风险退出；矩阵只在同一份路径上快速重放。</p></div></div>
+            <div class="range-guide"><code>0.5:3:0.25</code><span>ATR 范围</span><code>1,1.5,2,3</code><span>离散候选</span></div>
+          </div>
+
+          <div class="path-workflow-guide">
+            <article><i>1</i><div><strong>生成基准样本</strong><span>导出 5m K 线、开平节点、同向信号和仅含研究段的大模型 JSONL。</span></div></article>
+            <article><i>2</i><div><strong>分析后填写范围</strong><span>将模型结论转成明确的止损/止盈候选，不让模型直接决定交易。</span></div></article>
+            <article><i>3</i><div><strong>寻找连续盈利区</strong><span>验证集参与选择；最终测试段默认隐藏，不参与排名。</span></div></article>
+          </div>
+
+          <div class="field-grid five compact path-fields">
+            <label class="field"><span>入场前 5m 上下文</span><input id="path-context-bars-input" type="number" min="12" max="2016" value="288" /></label>
+            <label class="field matrix-only-field path-baseline-source"><span>复用基准样本</span><select id="path-baseline-run-select"><option value="">重新生成（不复用）</option></select></label>
+            <label class="field"><span>距离单位</span><select id="path-stop-unit-select"><option value="atr">ATR 倍数</option><option value="percent">百分比</option><option value="points">价格点数</option></select></label>
+            <label class="field matrix-only-field"><span>止损 X 轴</span><input id="path-stop-values-input" value="0.5:3:0.25" /></label>
+            <label class="field matrix-only-field"><span>止盈 Y 轴</span><input id="path-take-values-input" value="0.75:6:0.25" /></label>
+            <label class="field matrix-only-field"><span>同 K 线双触发</span><select id="path-intrabar-policy-select"><option value="stop_first">止损优先（保守）</option><option value="take_first">止盈优先（对照）</option></select></label>
+            <label class="field matrix-only-field"><span>最多同向再入场</span><input id="path-max-reentries-input" type="number" min="0" max="10" value="0" /></label>
+            <label class="field matrix-only-field"><span>再入场冷却（5m 根）</span><input id="path-reentry-cooldown-input" type="number" min="0" max="2016" value="0" /></label>
+            <label class="check-field matrix-only-field"><input id="path-reveal-test-input" type="checkbox" /><span><strong>揭盲最终测试段</strong><small>选参数前保持关闭</small></span></label>
+          </div>
+          <div id="path-semantics-note" class="semantics-note">
+            <strong>固定信号口径</strong>
+            <span>闭合 1D Hull 与 STC 同向过滤；5m 收线确认、下一根开盘执行；日线不匹配的反向信号忽略；基准只在有效反向信号处平仓并反手。</span>
+          </div>
+        </section>
+
+        <section id="standard-parameters-section" class="config-section parameter-config-section is-hidden">
           <div class="section-heading">
             <div><span class="section-number">02</span><div><h2>参数空间</h2><p>单值代表固定参数；多个候选值会自动生成组合。</p></div></div>
             <div class="range-guide"><code>600:1000:100</code><span>范围与步进</span><code>-120:-180:-30</code><span>支持倒序</span></div>
@@ -110,7 +160,7 @@
           </div>
 
           <details class="advanced-panel">
-            <summary><span><strong>高级风控与交易成本</strong><small>移动保护、初始资金、手续费与滑点</small></span><b>展开设置</b></summary>
+            <summary><span><strong>高级风控</strong><small>移动保护和启动检查的扩展参数</small></span><b>展开设置</b></summary>
             <div class="field-grid five compact detail-fields">
               <label class="field"><span>启动最大浮盈</span><input data-grid-key="startup_max_favorable_points" /></label>
               <label class="field"><span>首档保护比例</span><input data-grid-key="trailing_protect_1_ratio" /></label>
@@ -118,10 +168,6 @@
               <label class="field"><span>二档保护比例</span><input data-grid-key="trailing_protect_2_ratio" /></label>
               <label class="field"><span>三档移动触发</span><input data-grid-key="trailing_trigger_3_points" /></label>
               <label class="field"><span>三档保护比例</span><input data-grid-key="trailing_protect_3_ratio" /></label>
-              <label class="field"><span>初始权益（USDT）</span><input id="initial-equity-input" type="number" /></label>
-              <label class="field"><span>手续费率</span><input id="fee-rate-input" type="number" step="0.00001" /></label>
-              <label class="field"><span>滑点率</span><input id="slippage-rate-input" type="number" step="0.00001" /></label>
-              <label class="check-field"><input id="cache-enabled-input" type="checkbox" checked /><span><strong>优先本地缓存</strong><small>缺失区间自动补齐</small></span></label>
             </div>
           </details>
         </section>
@@ -156,13 +202,31 @@
         <div id="split-grid" class="split-grid"></div>
 
         <div id="heatmap-section" class="analysis-block is-hidden">
-          <div class="block-heading"><h3>参数稳定区</h3><span>颜色越亮代表稳健分越高；优先选择连续良好区域</span></div>
+          <div class="block-heading heatmap-heading">
+            <div><h3>参数稳定区</h3><span>每格对应唯一一组 X/Y 参数，不再聚合隐藏维度</span></div>
+            <label class="heatmap-metric"><span>显示指标</span>
+              <select id="heatmap-metric-select">
+                <option value="validation_return_pct">验证段收益</option>
+                <option value="research_return_pct">研究段收益</option>
+                <option value="return_pct">当前可见区间收益</option>
+                <option value="max_drawdown_pct">最大回撤</option>
+                <option value="profit_factor">盈利因子</option>
+                <option value="positive_neighbor_ratio">邻域盈利比例</option>
+              </select>
+            </label>
+          </div>
+          <div id="heatmap-summary" class="heatmap-summary"></div>
           <div id="heatmap" class="heatmap"></div>
         </div>
 
-        <div class="analysis-block">
+        <div id="result-table-section" class="analysis-block">
           <div class="block-heading"><h3>参数组合排行</h3><span>点击“复测”可将该组合带回左侧</span></div>
           <div class="table-wrap"><table id="result-table"></table></div>
+        </div>
+
+        <div id="artifact-section" class="analysis-block is-hidden">
+          <div class="block-heading"><h3>研究数据下载</h3><span>模型样本只包含研究段；验证和测试数据不会写入 LLM JSONL</span></div>
+          <div id="artifact-list" class="artifact-list"></div>
         </div>
 
         <div id="chart-section" class="analysis-block is-hidden">

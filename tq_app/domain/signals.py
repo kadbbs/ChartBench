@@ -310,7 +310,11 @@ def indicator_context_at(snapshot: dict[str, Any], bar_time: int) -> tuple[dict[
                 value = point.get("value")
                 if isinstance(value, (int, float)):
                     values[f"{indicator_id}.{series_id}"] = float(value)
-                color = str(point.get("color") or "").strip()
+                # Some rendered series color a line segment using the next
+                # point. Prefer an explicit causal color for strategy logic so
+                # a full-history snapshot and a live prefix produce the same
+                # decision at the same bar.
+                color = str(point.get("signal_color") or point.get("color") or "").strip()
                 if color:
                     colors[f"{indicator_id}.{series_id}"] = color
                 break

@@ -16,6 +16,7 @@ ChartBench 是一个轻量行情、实盘和回测项目，当前 provider 边�
 docs/CHART.md          # 图表展示和行情服务
 docs/LIVE_TRADING.md   # 实盘/观察/dry-run/预检查
 docs/BACKTESTING.md    # 回测、缓存、legacy 模型、参数矩阵
+docs/SIGNAL_PATH_RESEARCH.md # 无风控信号路径、模型样本和稳定区热力图
 docs/ARCHITECTURE.md   # 领域核心、共享风控和自定义策略注册
 docs/CLI.md            # 统一命令行、参数规范和配置检查
 ```
@@ -25,7 +26,8 @@ docs/CLI.md            # 统一命令行、参数规范和配置检查
 1. 只看图表：读 [docs/CHART.md](docs/CHART.md)。
 2. 准备实盘：读 [docs/LIVE_TRADING.md](docs/LIVE_TRADING.md)，先跑 `email` 和 `dry_run_5u`。
 3. 做策略复盘：读 [docs/BACKTESTING.md](docs/BACKTESTING.md)，优先使用缓存 profile。
-4. 扩展策略或领域能力：读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+4. 做止损止盈研究：读 [docs/SIGNAL_PATH_RESEARCH.md](docs/SIGNAL_PATH_RESEARCH.md)。
+5. 扩展策略或领域能力：读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 项目结构
 
@@ -36,6 +38,7 @@ docs/CLI.md            # 统一命令行、参数规范和配置检查
 ├── run_live_trading.py             # 实盘/观察模式入口
 ├── run_backtest.py                 # 单次回测入口
 ├── run_backtest_matrix.py          # 参数矩阵回测入口
+├── run_signal_path_research.py     # 无风控样本与稳定区热力图入口
 ├── custom_indicators.py            # 自定义指标：merged_dkx_hull_ut 等
 ├── custom_strategies.py            # 可选的自定义 Strategy 注册入口
 ├── config/
@@ -120,12 +123,14 @@ LIVE_TRADING_EMAIL_TO=
 显式启用回测研究工作台：
 
 ```bash
-./myvenv/bin/python chartbench.py chart run --backtest-ui
+./myvenv/bin/python chartbench.py chart run --backtest-ui --host 127.0.0.1
 # 浏览器打开 http://127.0.0.1:8050/backtests
 ```
 
 工作台支持三年缓存覆盖检查、指标/风控参数组合、后台单任务执行、稳健排名、
-参数热力图和候选组合复测。回测运行接口默认关闭；启用后如果服务监听
+参数热力图、无风控信号路径、大模型样本导出和候选组合复测。默认打开
+“信号路径与热力图”工作流：先生成基准样本，完成分析后切换到矩阵，并
+直接复用之前的基准任务。回测运行接口默认关闭；启用后如果服务监听
 `0.0.0.0`，请通过防火墙或带认证的反向代理限制访问。
 
 临时看 Binance / Bitget 图表：
@@ -194,6 +199,21 @@ legacy 回测，也就是不使用持仓风控出场，只按反向信号换仓�
 ```
 
 旧 `--dry-run` 等价于统一命令中的 `--plan`。
+
+无风控信号路径和止损止盈热力图：
+
+```bash
+./myvenv/bin/python chartbench.py backtest baseline \
+  --profile btc_5m_signal_path
+
+./myvenv/bin/python chartbench.py backtest heatmap \
+  --profile btc_5m_signal_path \
+  --stop-unit atr \
+  --stop-values 0.5:3:0.25 \
+  --take-values 0.75:6:0.25
+```
+
+推荐通过 `/backtests` 页面操作。CLI 主要用于自动化、服务器批处理和复现实验。
 
 ## 当前默认交易模型
 

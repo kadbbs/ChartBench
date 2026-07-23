@@ -21,6 +21,11 @@ class BacktestUiContractTest(unittest.TestCase):
     def test_research_workflow_controls_are_present(self) -> None:
         for element_id in {
             "profile-select",
+            "workflow-select",
+            "path-action-select",
+            "path-baseline-run-select",
+            "path-stop-values-input",
+            "path-take-values-input",
             "start-time-input",
             "end-time-input",
             "combination-estimate",
@@ -31,6 +36,8 @@ class BacktestUiContractTest(unittest.TestCase):
             "strategy-details-close",
             "result-table",
             "heatmap",
+            "heatmap-metric-select",
+            "artifact-list",
             "backtest-chart",
         }:
             self.assertIn(f'id="{element_id}"', TEMPLATE)
@@ -56,6 +63,12 @@ class BacktestUiContractTest(unittest.TestCase):
         self.assertNotIn('<aside class="builder-card"', TEMPLATE)
         self.assertIn("function profileDisplayName", SCRIPT)
         self.assertIn('class="estimate-item"', SCRIPT)
+
+    def test_path_heatmap_does_not_collapse_hidden_dimensions(self) -> None:
+        self.assertIn("function renderPathHeatmap", SCRIPT)
+        self.assertIn("byCoordinate.get", SCRIPT)
+        self.assertIn("positive_neighbor_ratio", SCRIPT)
+        self.assertIn("最终测试 20%", SCRIPT)
 
 
 if __name__ == "__main__":

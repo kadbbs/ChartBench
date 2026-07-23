@@ -21,6 +21,17 @@ from tq_app.config_profiles import load_backtest_profile
 
 from .application import BacktestApplication, BacktestRunRequest
 from .engine import BacktestResult
+from .path_research import (
+    PATH_INTRABAR_POLICIES,
+    PATH_STOP_UNITS,
+    artifact_catalog,
+    baseline_summary,
+    build_signal_path_dataset,
+    load_signal_path_dataset,
+    run_path_matrix,
+    write_path_matrix_csv,
+    write_signal_path_artifacts,
+)
 
 
 RISK_PARAMETER_TYPES: dict[str, type] = {
@@ -55,6 +66,7 @@ PARAMETER_TYPES = {**RISK_PARAMETER_TYPES, **INDICATOR_PARAMETER_TYPES}
 MAX_EXPERIMENT_COMBINATIONS = 256
 MAX_EXPERIMENT_BARS = 1_200_000
 MAX_PARAMETER_VALUES = 256
+MAX_PATH_MATRIX_COMBINATIONS = 2_500
 
 
 @dataclass(slots=True)
@@ -64,6 +76,29 @@ class ExperimentSpec:
     base_request: BacktestRunRequest
     grid: dict[str, list[Any]]
     combinations: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class PathExperimentSpec:
+    name: str
+    action: str
+    profile: str
+    base_request: BacktestRunRequest
+    context_bars: int
+    stop_unit: str
+    stop_values: list[float]
+    take_values: list[float]
+    max_reentries: int
+    reentry_cooldown_bars: int
+    intrabar_policy: str
+    reveal_test: bool
+    baseline_run_id: str | None
+
+    @property
+    def combination_count(self) -> int:
+        if self.action == "baseline":
+            return 1
+        return len(self.stop_values) * len(self.take_values)
 
 
 class BacktestExperimentManager:
@@ -81,7 +116,17 @@ class BacktestExperimentManager:
         self._thread.start()
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        spec = build_experiment_spec(self.project_root, payload)
+        is_path_research = str(payload.get("workflow") or "") == "signal_path"
+        spec = (
+            build_path_experiment_spec(self.project_root, payload)
+            if is_path_research
+            else build_experiment_spec(self.project_root, payload)
+        )
+        total_combinations = (
+            spec.combination_count
+            if isinstance(spec, PathExperimentSpec)
+            else len(spec.combinations)
+        )
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"{now}_{uuid.uuid4().hex[:8]}"
         run_dir = self.root / run_id
@@ -94,11 +139,13 @@ class BacktestExperimentManager:
             "run_id": run_id,
             "name": spec.name,
             "profile": spec.profile,
+            "workflow": "signal_path" if is_path_research else "standard",
+            "action": spec.action if isinstance(spec, PathExperimentSpec) else "backtest",
             "status": "queued",
             "phase": "等待执行",
             "progress": 0,
             "completed_combinations": 0,
-            "total_combinations": len(spec.combinations),
+            "total_combinations": total_combinations,
             "created_at": _now_iso(),
             "started_at": None,
             "finished_at": None,
@@ -151,6 +198,19 @@ class BacktestExperimentManager:
 
     def request_payload(self, run_id: str) -> dict[str, Any]:
         return _read_json(self._safe_run_dir(run_id) / "request.json")
+
+    def artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        return artifact_catalog(self._safe_run_dir(run_id))
+
+    def artifact_path(self, run_id: str, artifact_name: str) -> Path:
+        run_dir = self._safe_run_dir(run_id).resolve()
+        relative = Path(str(artifact_name or ""))
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("无效产物名称。")
+        path = (run_dir / relative).resolve()
+        if run_dir not in path.parents or not path.is_file():
+            raise FileNotFoundError("研究产物不存在。")
+        return path
 
     def shutdown(self) -> None:
         self._shutdown.set()
@@ -300,6 +360,83 @@ def build_experiment_spec(project_root: Path, payload: dict[str, Any]) -> Experi
     return ExperimentSpec(name=name, profile=profile_name, base_request=request, grid=grid, combinations=combinations)
 
 
+def build_path_experiment_spec(project_root: Path, payload: dict[str, Any]) -> PathExperimentSpec:
+    if not isinstance(payload, dict):
+        raise ValueError("信号路径研究请求必须是 JSON 对象。")
+    if str(payload.get("workflow") or "") != "signal_path":
+        raise ValueError("workflow 必须为 signal_path。")
+    action = str(payload.get("action") or "baseline").strip().lower()
+    if action not in {"baseline", "matrix"}:
+        raise ValueError("信号路径研究 action 只能是 baseline 或 matrix。")
+    base = build_experiment_spec(project_root, {**payload, "grid": {}})
+    profile_values = load_backtest_profile(project_root, base.profile)
+    indicator_params: dict[str, dict[str, Any]] = {}
+    for full_key, kind in INDICATOR_PARAMETER_TYPES.items():
+        if full_key not in profile_values:
+            continue
+        _prefix, indicator_id, parameter_name = full_key.split(".", 2)
+        indicator_params.setdefault(indicator_id, {})[parameter_name] = _coerce_parameter(
+            kind,
+            profile_values[full_key],
+        )
+    request = replace(
+        base.base_request,
+        risk_exits_enabled=False,
+        indicator_params=indicator_params,
+    )
+    context_bars = _as_int(payload.get("context_bars"), 288)
+    if not 12 <= context_bars <= 2_016:
+        raise ValueError("入场前上下文必须在 12 到 2016 根 5m K 线之间。")
+    stop_unit = str(payload.get("stop_unit") or "atr").strip().lower()
+    if stop_unit not in PATH_STOP_UNITS:
+        raise ValueError("距离单位只能是 atr、percent 或 points。")
+    intrabar_policy = str(payload.get("intrabar_policy") or "stop_first").strip().lower()
+    if intrabar_policy not in PATH_INTRABAR_POLICIES:
+        raise ValueError("同 K 线优先规则只能是 stop_first 或 take_first。")
+    stop_values = _path_axis_values(
+        "stop_values",
+        payload.get("stop_values"),
+        default=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0],
+    )
+    take_values = _path_axis_values(
+        "take_values",
+        payload.get("take_values"),
+        default=[0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
+    )
+    if action == "matrix" and len(stop_values) * len(take_values) > MAX_PATH_MATRIX_COMBINATIONS:
+        raise ValueError(
+            f"路径矩阵共 {len(stop_values) * len(take_values)} 组，"
+            f"单次最多允许 {MAX_PATH_MATRIX_COMBINATIONS} 组。"
+        )
+    max_reentries = _as_int(payload.get("max_reentries"), 0)
+    reentry_cooldown_bars = _as_int(payload.get("reentry_cooldown_bars"), 0)
+    if not 0 <= max_reentries <= 10:
+        raise ValueError("同向再入场次数必须在 0 到 10 之间。")
+    if not 0 <= reentry_cooldown_bars <= 2_016:
+        raise ValueError("同向再入场冷却必须在 0 到 2016 根之间。")
+    baseline_run_id = str(payload.get("baseline_run_id") or "").strip() or None
+    if baseline_run_id is not None and (
+        action != "matrix"
+        or any(item in baseline_run_id for item in ("/", "\\", ".."))
+    ):
+        raise ValueError("基准任务编号无效。")
+    return PathExperimentSpec(
+        name=str(payload.get("name") or f"{request.symbol} 信号路径研究").strip()[:80],
+        action=action,
+        profile=base.profile,
+        base_request=request,
+        context_bars=context_bars,
+        stop_unit=stop_unit,
+        stop_values=stop_values,
+        take_values=take_values,
+        max_reentries=max_reentries,
+        reentry_cooldown_bars=reentry_cooldown_bars,
+        intrabar_policy=intrabar_policy,
+        reveal_test=_as_bool(payload.get("reveal_test", False)),
+        baseline_run_id=baseline_run_id,
+    )
+
+
 def cache_coverage(project_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     spec = build_experiment_spec(project_root, {**payload, "grid": {}})
     request = spec.base_request
@@ -344,6 +481,16 @@ def _execute_experiment_process(project_root_raw: str, run_id: str) -> None:
     _write_json(status_path, status)
     try:
         payload = _read_json(run_dir / "request.json")
+        if str(payload.get("workflow") or "") == "signal_path":
+            _execute_path_experiment(
+                project_root=project_root,
+                run_id=run_id,
+                run_dir=run_dir,
+                status_path=status_path,
+                status=status,
+                payload=payload,
+            )
+            return
         spec = build_experiment_spec(project_root, payload)
         application = BacktestApplication(project_root)
         resolved = application.resolve(spec.base_request)
@@ -431,6 +578,126 @@ def _execute_experiment_process(project_root_raw: str, run_id: str) -> None:
             error=str(exc),
         )
         _write_json(status_path, status)
+
+
+def _execute_path_experiment(
+    *,
+    project_root: Path,
+    run_id: str,
+    run_dir: Path,
+    status_path: Path,
+    status: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    spec = build_path_experiment_spec(project_root, payload)
+    if spec.baseline_run_id is not None:
+        source_dir = (
+            project_root / "backtest_outputs" / "ui" / spec.baseline_run_id
+        ).resolve()
+        ui_root = (project_root / "backtest_outputs" / "ui").resolve()
+        if ui_root not in source_dir.parents:
+            raise ValueError("基准任务路径无效。")
+        dataset_path = source_dir / "dataset" / "internal.json.gz"
+        if not dataset_path.is_file():
+            raise FileNotFoundError("所选基准任务没有可复用的信号路径数据。")
+        status.update(phase="加载已有无风控信号路径", progress=38)
+        _write_json(status_path, status)
+        dataset = load_signal_path_dataset(dataset_path)
+        if (
+            str(dataset.manifest.get("symbol") or "").upper()
+            != spec.base_request.symbol.upper()
+            or int(dataset.manifest.get("duration_seconds") or 0)
+            != spec.base_request.duration_seconds
+        ):
+            raise ValueError("所选基准样本与当前品种或执行周期不一致。")
+        execution = dict(dataset.manifest.get("execution") or {})
+        execution.update(
+            initial_equity=spec.base_request.initial_equity,
+            margin_amount=spec.base_request.margin_amount,
+            margin_ratio_per_trade=spec.base_request.margin_ratio_per_trade,
+            leverage=spec.base_request.leverage,
+            fee_rate=spec.base_request.fee_rate,
+            slippage_rate=spec.base_request.slippage_rate,
+        )
+        dataset.manifest["execution"] = execution
+        _write_json(
+            run_dir / "dataset_reference.json",
+            {
+                "baseline_run_id": spec.baseline_run_id,
+                "dataset_id": dataset.manifest.get("dataset_id"),
+                "source": str(dataset_path.relative_to(project_root)),
+            },
+        )
+    else:
+        application = BacktestApplication(project_root)
+        resolved = application.resolve(spec.base_request)
+        status.update(phase="准备 5m 与 1D 行情", progress=3)
+        _write_json(status_path, status)
+        prepared = application.prepare_market(resolved)
+        status.update(phase="计算因果指标与有效信号", progress=12)
+        _write_json(status_path, status)
+        study = application.prepare_study(resolved, prepared)
+        status.update(phase="提取无风控开平仓路径", progress=28)
+        _write_json(status_path, status)
+        dataset = build_signal_path_dataset(
+            resolved,
+            prepared,
+            study,
+            context_bars=spec.context_bars,
+        )
+        del study, prepared
+        status.update(phase="导出 K 线、节点与模型样本", progress=42)
+        _write_json(status_path, status)
+        write_signal_path_artifacts(dataset, run_dir)
+
+    if spec.action == "baseline":
+        summary = baseline_summary(dataset)
+        status.update(completed_combinations=1, progress=94)
+    else:
+        total = spec.combination_count
+
+        def report_progress(completed: int, _total: int) -> None:
+            report_every = max(total // 100, 1)
+            if completed != total and completed % report_every:
+                return
+            progress = 45 + int(completed / max(total, 1) * 49)
+            status.update(
+                phase=f"重放止损止盈组合 {completed}/{total}",
+                progress=progress,
+                completed_combinations=completed,
+            )
+            _write_json(status_path, status)
+
+        summary = run_path_matrix(
+            dataset,
+            stop_unit=spec.stop_unit,
+            stop_values=spec.stop_values,
+            take_values=spec.take_values,
+            max_reentries=spec.max_reentries,
+            reentry_cooldown_bars=spec.reentry_cooldown_bars,
+            intrabar_policy=spec.intrabar_policy,
+            reveal_test=spec.reveal_test,
+            progress_callback=report_progress,
+        )
+        write_path_matrix_csv(run_dir / "matrix.csv", summary["rows"])
+
+    summary.update(
+        run_id=run_id,
+        name=spec.name,
+        profile=spec.profile,
+        baseline_run_id=spec.baseline_run_id,
+        artifacts=artifact_catalog(run_dir),
+    )
+    _write_json(run_dir / "summary.json", summary)
+    status.update(
+        status="succeeded",
+        phase="完成",
+        progress=100,
+        completed_combinations=spec.combination_count,
+        finished_at=_now_iso(),
+        error=None,
+    )
+    _write_json(status_path, status)
 
 
 def _request_for_combination(
@@ -634,6 +901,34 @@ def _expand_parameter_values(key: str, raw_values: list[Any]) -> list[Any]:
         if len(expanded) > MAX_PARAMETER_VALUES:
             raise ValueError(f"参数 {key} 展开后超过 {MAX_PARAMETER_VALUES} 个候选值。")
     return expanded
+
+
+def _path_axis_values(key: str, raw: Any, *, default: list[float]) -> list[float]:
+    if raw in (None, "", []):
+        return list(default)
+    raw_values = raw if isinstance(raw, list) else [raw]
+    tokens: list[Any] = []
+    for value in raw_values:
+        if isinstance(value, str) and "," in value:
+            tokens.extend(item.strip() for item in value.split(",") if item.strip())
+        elif str(value).strip():
+            tokens.append(value)
+    values: list[float] = []
+    for token in tokens:
+        text = str(token).strip()
+        if text.count(":") == 2:
+            values.extend(float(item) for item in _numeric_parameter_range(key, float, text))
+        else:
+            try:
+                values.append(float(token))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{key} 包含无效数值: {token!r}") from exc
+        if len(values) > MAX_PARAMETER_VALUES:
+            raise ValueError(f"{key} 展开后超过 {MAX_PARAMETER_VALUES} 个候选值。")
+    unique = list(dict.fromkeys(values))
+    if not unique or any(not math.isfinite(value) or value <= 0 for value in unique):
+        raise ValueError(f"{key} 必须由大于 0 的有限数值组成。")
+    return unique
 
 
 def _numeric_parameter_range(key: str, kind: type, expression: str) -> list[int | float]:

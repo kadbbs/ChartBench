@@ -48,6 +48,23 @@
 主高周期和重入确认周期均由策略注册信息决定。`--plan` 只输出矩阵组合；
 旧参数 `--dry-run` 仍可使用。
 
+无风控信号路径与严格二维热力图：
+
+```bash
+./myvenv/bin/python chartbench.py backtest baseline \
+  --profile btc_5m_signal_path
+
+./myvenv/bin/python chartbench.py backtest heatmap \
+  --profile btc_5m_signal_path \
+  --stop-unit atr \
+  --stop-values 0.5:3:0.25 \
+  --take-values 0.75:6:0.25
+```
+
+第二次矩阵可以通过 `--baseline-dataset .../dataset/internal.json.gz` 复用
+第一次生成的信号路径。完整方法见
+[SIGNAL_PATH_RESEARCH.md](SIGNAL_PATH_RESEARCH.md)。
+
 ## 查询与配置检查
 
 ```bash

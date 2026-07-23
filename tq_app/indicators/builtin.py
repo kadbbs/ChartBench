@@ -70,6 +70,11 @@ def _colored_segment_points(df: pd.DataFrame, column: str, trend_column: str, up
                 "time": int(row.time),
                 "value": value,
                 "color": up_color if bool(trend) else down_color,
+                # Lightweight Charts colors the segment ending at this point,
+                # so the display color intentionally follows the next point.
+                # Trading decisions must use the causal color calculated from
+                # the current and previous values instead.
+                "signal_color": up_color if bool(row.trend) else down_color,
             }
         )
     return points

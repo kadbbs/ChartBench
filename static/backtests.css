@@ -104,6 +104,17 @@ input::placeholder { color: #52616c; }
 @keyframes pulse { to { opacity: .25; } }
 
 .parameter-layout { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.path-workflow-guide { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-bottom: 14px; }
+.path-workflow-guide article { display: flex; gap: 11px; min-width: 0; padding: 13px; border: 1px solid rgba(98,223,177,.14); border-radius: 12px; background: rgba(98,223,177,.035); }
+.path-workflow-guide i { flex: 0 0 auto; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 8px; color: #07120e; background: var(--accent); font-style: normal; font-size: 10px; font-weight: 900; }
+.path-workflow-guide article div { display: grid; gap: 5px; }
+.path-workflow-guide strong { color: var(--text-soft); font-size: 11px; }
+.path-workflow-guide span { color: var(--muted); font-size: 9px; line-height: 1.55; }
+.field-grid.path-fields { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.matrix-only-field { transition: opacity .18s ease; }
+.matrix-only-field.is-disabled { opacity: .34; }
+.semantics-note { display: flex; gap: 13px; margin-top: 14px; padding: 12px 14px; border-left: 2px solid var(--accent); border-radius: 0 9px 9px 0; color: var(--muted); background: rgba(98,223,177,.035); font-size: 10px; line-height: 1.65; }
+.semantics-note strong { flex: 0 0 auto; color: var(--accent); }
 .parameter-section { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.015); }
 .parameter-title { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
 .parameter-title > div { display: grid; gap: 2px; }
@@ -190,6 +201,13 @@ input::placeholder { color: #52616c; }
 .split-item strong { float: right; color: var(--text-soft); }
 .analysis-block { margin-top: 25px; padding-top: 21px; border-top: 1px solid var(--line); }
 .block-heading { margin-bottom: 12px; }
+.heatmap-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.heatmap-heading > div { display: grid; gap: 4px; }
+.heatmap-metric { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 9px; }
+.heatmap-metric select { width: 150px; height: 34px; }
+.heatmap-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.heatmap-summary span { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: rgba(255,255,255,.018); font-size: 9px; }
+.heatmap-summary strong { color: var(--text-soft); }
 .table-wrap { max-height: 560px; border: 1px solid var(--line); border-radius: 11px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 10px; }
 th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: right; }
@@ -198,8 +216,22 @@ th { position: sticky; top: 0; z-index: 1; color: var(--muted); background: #131
 tr:hover td { background: rgba(98,223,177,.025); }
 .mini-button { border: 1px solid rgba(98,223,177,.28); border-radius: 7px; color: var(--accent); background: transparent; padding: 5px 8px; font-size: 10px; cursor: pointer; }
 .heatmap { display: grid; gap: 5px; padding-bottom: 6px; overflow: auto; }
-.heat-cell { min-width: 88px; padding: 10px 8px; border-radius: 7px; color: #fff; text-align: center; font-size: 9px; }
+.heat-cell { display: grid; gap: 3px; min-width: 88px; min-height: 43px; place-content: center; padding: 8px; border: 1px solid transparent; border-radius: 7px; color: #fff; text-align: center; font-size: 9px; }
+.heat-cell strong { font-size: 10px; }
+.heat-cell small { min-height: 9px; color: rgba(255,255,255,.72); font-size: 8px; }
+.heat-cell.is-plateau { border-color: rgba(255,255,255,.66); box-shadow: inset 0 0 0 1px rgba(98,223,177,.25), 0 0 14px rgba(98,223,177,.08); }
 .heat-axis { min-width: 88px; padding: 7px; color: var(--muted); font-size: 8px; }
+.heat-axis small { display: block; margin-top: 2px; opacity: .72; }
+.heat-corner { color: var(--text-soft); }
+.plateau-row td { background: rgba(98,223,177,.035); }
+.artifact-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.artifact-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 10px; color: inherit; background: rgba(255,255,255,.018); text-decoration: none; transition: .16s ease; }
+.artifact-item:hover { border-color: rgba(98,223,177,.28); background: rgba(98,223,177,.045); }
+.artifact-item span { display: grid; min-width: 0; gap: 4px; }
+.artifact-item strong { color: var(--text-soft); font-size: 10px; }
+.artifact-item small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-item b { flex: 0 0 auto; color: var(--accent); font-size: 9px; }
+.run-kind { margin-top: 7px; color: rgba(122,167,255,.72); font-size: 8px; letter-spacing: .12em; }
 .chart { height: 500px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .workspace-link { display: inline-block; margin-top: 12px; color: var(--accent); text-decoration: none; font-size: 10px; }
 
@@ -228,6 +260,8 @@ tr:hover td { background: rgba(98,223,177,.025); }
 
 @media (max-width: 1180px) {
   .builder-body { grid-template-columns: 1fr; }
+  .field-grid.path-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .artifact-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .config-section + .config-section { border-left: 0; border-top: 1px solid var(--line); }
   .field-grid.five { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .run-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -258,6 +292,8 @@ tr:hover td { background: rgba(98,223,177,.025); }
   .run-list { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .card-heading { align-items: flex-start; }
+  .path-workflow-guide, .field-grid.path-fields, .artifact-list { grid-template-columns: 1fr; }
+  .heatmap-heading { align-items: stretch; display: grid; }
 }
 
 @media (max-width: 480px) {

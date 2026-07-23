@@ -36,6 +36,12 @@ class _FakeManager:
     def request_payload(self, run_id):
         return {"profile": "latest_month"}
 
+    def artifacts(self, run_id):
+        return [{"name": "matrix.csv", "label": "矩阵完整结果", "size_bytes": 10}]
+
+    def artifact_path(self, run_id, artifact_name):
+        raise FileNotFoundError("研究产物不存在。")
+
 
 class BacktestExperimentTest(unittest.TestCase):
     def payload(self):
@@ -156,6 +162,22 @@ class BacktestExperimentTest(unittest.TestCase):
         estimate = client.post("/api/backtests/estimate", json=self.payload())
         self.assertEqual(estimate.status_code, 200)
         self.assertEqual(estimate.get_json()["combinations"], 4)
+        path_estimate = client.post(
+            "/api/backtests/estimate",
+            json={
+                "workflow": "signal_path",
+                "action": "matrix",
+                "profile": "btc_5m_signal_path",
+                "stop_values": [1, 2],
+                "take_values": [1, 2, 3],
+            },
+        )
+        self.assertEqual(path_estimate.status_code, 200)
+        self.assertEqual(path_estimate.get_json()["combinations"], 6)
+        self.assertEqual(
+            client.get("/api/backtests/runs/test/artifacts").get_json()["artifacts"][0]["name"],
+            "matrix.csv",
+        )
         self.assertEqual(client.get("/").status_code, 404)
 
     def test_chart_app_does_not_enable_backtest_routes_by_default(self) -> None:
