@@ -26,10 +26,28 @@ class BacktestUiContractTest(unittest.TestCase):
             "path-baseline-run-select",
             "path-stop-values-input",
             "path-take-values-input",
+            "path-hard-stop-pct-input",
+            "path-trailing-activation-pct-input",
+            "path-trailing-drawdown-pct-input",
+            "percent-trailing-rule-card",
+            "percent-hard-stop-summary",
+            "percent-activation-summary",
+            "percent-drawdown-summary",
             "start-time-input",
             "end-time-input",
             "combination-estimate",
             "run-button",
+            "toggle-hidden-runs-button",
+            "run-history-message",
+            "run-delete-modal",
+            "run-delete-name",
+            "run-delete-details",
+            "run-delete-dependencies",
+            "run-delete-confirm-input",
+            "run-delete-confirm",
+            "run-delete-cancel",
+            "run-delete-back",
+            "run-delete-error",
             "strategy-details-button",
             "strategy-details-modal",
             "strategy-details-content",
@@ -86,11 +104,31 @@ class BacktestUiContractTest(unittest.TestCase):
         self.assertIn("deflated_sharpe_ratio_pct", SCRIPT)
         self.assertIn("矩阵 PBO", SCRIPT)
 
+    def test_percent_trailing_overlay_has_distinct_price_bases(self) -> None:
+        self.assertIn('value="percent_trailing"', TEMPLATE)
+        self.assertIn("硬止损（开仓价 %）", TEMPLATE)
+        self.assertIn("移动止盈启动（开仓价 %）", TEMPLATE)
+        self.assertIn("移动回撤（最佳价 %）", TEMPLATE)
+        self.assertIn("按标的价格，不按保证金收益", TEMPLATE)
+        self.assertIn("function updatePercentTrailingSummary", SCRIPT)
+        self.assertIn("signal_path_percent_trailing", SCRIPT)
+        self.assertIn("移动回撤退出", SCRIPT)
+        self.assertIn("K 线内顺序不确定", SCRIPT)
+
     def test_path_downloads_prioritize_prompt_ready_indicator_sample(self) -> None:
         self.assertIn("① 给大模型：研究样本（推荐）", SCRIPT)
         self.assertIn("全量 5m K 线与完整指标", SCRIPT)
         self.assertIn("完整 5m + 已闭合 1D", SCRIPT)
         self.assertIn("因果对齐的已闭合日线指标", TEMPLATE)
+
+    def test_experiment_history_has_reversible_hide_and_permanent_delete(self) -> None:
+        self.assertIn("function toggleRunVisibility", SCRIPT)
+        self.assertIn("HIDDEN_RUNS_STORAGE_KEY", SCRIPT)
+        self.assertIn("function openRunDeleteDialog", SCRIPT)
+        self.assertIn("method: \"DELETE\"", SCRIPT)
+        self.assertIn("confirm_run_id", SCRIPT)
+        self.assertIn("共享行情缓存不会删除", TEMPLATE)
+        self.assertIn("删除后无法恢复", TEMPLATE)
 
 
 if __name__ == "__main__":

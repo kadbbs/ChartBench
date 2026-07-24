@@ -7,6 +7,7 @@ import json
 import math
 import multiprocessing
 import queue
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass, replace
@@ -29,7 +30,9 @@ from .path_research import (
     build_signal_path_dataset,
     load_signal_path_dataset,
     run_path_matrix,
+    run_percent_trailing_strategy,
     write_path_matrix_csv,
+    write_path_strategy_trades,
     write_signal_path_artifacts,
 )
 from .performance import (
@@ -95,6 +98,9 @@ class PathExperimentSpec:
     stop_unit: str
     stop_values: list[float]
     take_values: list[float]
+    hard_stop_pct: float
+    trailing_activation_pct: float
+    trailing_drawdown_pct: float
     max_reentries: int
     reentry_cooldown_bars: int
     intrabar_policy: str
@@ -103,7 +109,7 @@ class PathExperimentSpec:
 
     @property
     def combination_count(self) -> int:
-        if self.action == "baseline":
+        if self.action != "matrix":
             return 1
         return len(self.stop_values) * len(self.take_values)
 
@@ -118,6 +124,8 @@ class BacktestExperimentManager:
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._shutdown = threading.Event()
         self._process: multiprocessing.Process | None = None
+        self._active_run_id: str | None = None
+        self._mutation_lock = threading.RLock()
         self._recover_interrupted_jobs()
         self._thread = threading.Thread(target=self._coordinate, name="backtest-experiment-manager", daemon=True)
         self._thread.start()
@@ -211,6 +219,66 @@ class BacktestExperimentManager:
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         return artifact_catalog(self._safe_run_dir(run_id))
 
+    def deletion_info(self, run_id: str) -> dict[str, Any]:
+        run_dir = self._safe_run_dir(run_id)
+        status = _read_json(run_dir / "status.json")
+        file_count, size_bytes = _directory_usage(run_dir)
+        dependent_run_ids = self._dependent_run_ids(run_id)
+        run_status = str(status.get("status") or "")
+        can_delete = (
+            run_status not in {"queued", "running"}
+            and run_id != self._active_run_id
+        )
+        return {
+            "run_id": run_id,
+            "name": status.get("name") or run_id,
+            "status": run_status,
+            "can_delete": can_delete,
+            "blocked_reason": (
+                None
+                if can_delete
+                else "排队中或运行中的任务不能删除，请等待任务结束。"
+            ),
+            "file_count": file_count,
+            "size_bytes": size_bytes,
+            "dependent_run_ids": dependent_run_ids,
+            "dependent_run_count": len(dependent_run_ids),
+            "shared_market_cache_deleted": False,
+        }
+
+    def delete_files(
+        self,
+        run_id: str,
+        *,
+        confirm_run_id: str,
+        confirm_permanent: bool,
+        confirm_dependencies: bool = False,
+    ) -> dict[str, Any]:
+        if confirm_run_id != run_id or not confirm_permanent:
+            raise ValueError("彻底删除确认信息不匹配。")
+        with self._mutation_lock:
+            info = self.deletion_info(run_id)
+            if not info["can_delete"]:
+                raise ValueError(str(info["blocked_reason"]))
+            if info["dependent_run_count"] and not confirm_dependencies:
+                raise ValueError(
+                    "该任务仍被其他实验引用，请确认依赖关系后再删除。"
+                )
+            run_dir = self._safe_run_dir(run_id).resolve()
+            root = self.root.resolve()
+            if root not in run_dir.parents or run_dir.parent != root:
+                raise ValueError("实验目录超出允许的删除范围。")
+            shutil.rmtree(run_dir)
+        return {
+            "deleted": True,
+            "run_id": run_id,
+            "deleted_file_count": info["file_count"],
+            "freed_bytes": info["size_bytes"],
+            "dependent_run_ids": info["dependent_run_ids"],
+            "recoverable": False,
+            "shared_market_cache_deleted": False,
+        }
+
     def artifact_path(self, run_id: str, artifact_name: str) -> Path:
         run_dir = self._safe_run_dir(run_id).resolve()
         relative = Path(str(artifact_name or ""))
@@ -246,6 +314,7 @@ class BacktestExperimentManager:
                 daemon=True,
             )
             self._process = process
+            self._active_run_id = run_id
             process.start()
             while process.is_alive() and not self._shutdown.wait(0.5):
                 process.join(timeout=0.1)
@@ -253,6 +322,7 @@ class BacktestExperimentManager:
                 process.terminate()
             process.join(timeout=3)
             self._process = None
+            self._active_run_id = None
             status_path = self.root / run_id / "status.json"
             try:
                 status = _read_json(status_path)
@@ -291,6 +361,23 @@ class BacktestExperimentManager:
         if not path.is_dir():
             raise FileNotFoundError("实验不存在。")
         return path
+
+    def _dependent_run_ids(self, run_id: str) -> list[str]:
+        dependents: set[str] = set()
+        for candidate in self.root.iterdir():
+            if not candidate.is_dir() or candidate.name == run_id:
+                continue
+            for filename in ("request.json", "dataset_reference.json"):
+                path = candidate / filename
+                if not path.is_file():
+                    continue
+                try:
+                    payload = _read_json(path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if str(payload.get("baseline_run_id") or "") == run_id:
+                    dependents.add(candidate.name)
+        return sorted(dependents)
 
 
 def build_experiment_spec(project_root: Path, payload: dict[str, Any]) -> ExperimentSpec:
@@ -375,8 +462,10 @@ def build_path_experiment_spec(project_root: Path, payload: dict[str, Any]) -> P
     if str(payload.get("workflow") or "") != "signal_path":
         raise ValueError("workflow 必须为 signal_path。")
     action = str(payload.get("action") or "baseline").strip().lower()
-    if action not in {"baseline", "matrix"}:
-        raise ValueError("信号路径研究 action 只能是 baseline 或 matrix。")
+    if action not in {"baseline", "matrix", "percent_trailing"}:
+        raise ValueError(
+            "信号路径研究 action 只能是 baseline、matrix 或 percent_trailing。"
+        )
     base = build_experiment_spec(project_root, {**payload, "grid": {}})
     profile_values = load_backtest_profile(project_root, base.profile)
     indicator_params: dict[str, dict[str, Any]] = {}
@@ -402,21 +491,45 @@ def build_path_experiment_spec(project_root: Path, payload: dict[str, Any]) -> P
     intrabar_policy = str(payload.get("intrabar_policy") or "stop_first").strip().lower()
     if intrabar_policy not in PATH_INTRABAR_POLICIES:
         raise ValueError("同 K 线优先规则只能是 stop_first 或 take_first。")
-    stop_values = _path_axis_values(
-        "stop_values",
-        payload.get("stop_values"),
-        default=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0],
-    )
-    take_values = _path_axis_values(
-        "take_values",
-        payload.get("take_values"),
-        default=[0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
-    )
-    if action == "matrix" and len(stop_values) * len(take_values) > MAX_PATH_MATRIX_COMBINATIONS:
-        raise ValueError(
-            f"路径矩阵共 {len(stop_values) * len(take_values)} 组，"
-            f"单次最多允许 {MAX_PATH_MATRIX_COMBINATIONS} 组。"
+    if action == "matrix":
+        stop_values = _path_axis_values(
+            "stop_values",
+            payload.get("stop_values"),
+            default=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0],
         )
+        take_values = _path_axis_values(
+            "take_values",
+            payload.get("take_values"),
+            default=[0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
+        )
+        if len(stop_values) * len(take_values) > MAX_PATH_MATRIX_COMBINATIONS:
+            raise ValueError(
+                f"路径矩阵共 {len(stop_values) * len(take_values)} 组，"
+                f"单次最多允许 {MAX_PATH_MATRIX_COMBINATIONS} 组。"
+            )
+    else:
+        stop_values = [1.0]
+        take_values = [1.0]
+    if action == "percent_trailing":
+        hard_stop_pct = _path_percent_value(
+            "硬止损百分比",
+            payload.get("hard_stop_pct"),
+            3.0,
+        )
+        trailing_activation_pct = _path_percent_value(
+            "移动止盈启动百分比",
+            payload.get("trailing_activation_pct"),
+            8.0,
+        )
+        trailing_drawdown_pct = _path_percent_value(
+            "最佳价回撤百分比",
+            payload.get("trailing_drawdown_pct"),
+            10.0,
+        )
+    else:
+        hard_stop_pct = 3.0
+        trailing_activation_pct = 8.0
+        trailing_drawdown_pct = 10.0
     max_reentries = _as_int(payload.get("max_reentries"), 0)
     reentry_cooldown_bars = _as_int(payload.get("reentry_cooldown_bars"), 0)
     if not 0 <= max_reentries <= 10:
@@ -425,12 +538,21 @@ def build_path_experiment_spec(project_root: Path, payload: dict[str, Any]) -> P
         raise ValueError("同向再入场冷却必须在 0 到 2016 根之间。")
     baseline_run_id = str(payload.get("baseline_run_id") or "").strip() or None
     if baseline_run_id is not None and (
-        action != "matrix"
+        action == "baseline"
         or any(item in baseline_run_id for item in ("/", "\\", ".."))
     ):
         raise ValueError("基准任务编号无效。")
+    default_name = {
+        "baseline": f"{request.symbol} 无风控信号路径",
+        "matrix": f"{request.symbol} 止损止盈矩阵",
+        "percent_trailing": (
+            f"{request.symbol} {hard_stop_pct:g}%硬止损 + "
+            f"{trailing_activation_pct:g}%启动 / "
+            f"{trailing_drawdown_pct:g}%回撤"
+        ),
+    }[action]
     return PathExperimentSpec(
-        name=str(payload.get("name") or f"{request.symbol} 信号路径研究").strip()[:80],
+        name=str(payload.get("name") or default_name).strip()[:80],
         action=action,
         profile=base.profile,
         base_request=request,
@@ -438,6 +560,9 @@ def build_path_experiment_spec(project_root: Path, payload: dict[str, Any]) -> P
         stop_unit=stop_unit,
         stop_values=stop_values,
         take_values=take_values,
+        hard_stop_pct=hard_stop_pct,
+        trailing_activation_pct=trailing_activation_pct,
+        trailing_drawdown_pct=trailing_drawdown_pct,
         max_reentries=max_reentries,
         reentry_cooldown_bars=reentry_cooldown_bars,
         intrabar_policy=intrabar_policy,
@@ -678,7 +803,7 @@ def _execute_path_experiment(
     if spec.action == "baseline":
         summary = baseline_summary(dataset)
         status.update(completed_combinations=1, progress=94)
-    else:
+    elif spec.action == "matrix":
         total = spec.combination_count
 
         def report_progress(completed: int, _total: int) -> None:
@@ -705,6 +830,31 @@ def _execute_path_experiment(
             progress_callback=report_progress,
         )
         write_path_matrix_csv(run_dir / "matrix.csv", summary["rows"])
+    else:
+        status.update(
+            phase=(
+                f"重放 {spec.hard_stop_pct:g}%硬止损 + "
+                f"{spec.trailing_activation_pct:g}%启动 / "
+                f"{spec.trailing_drawdown_pct:g}%回撤"
+            ),
+            progress=72,
+        )
+        _write_json(status_path, status)
+        summary = run_percent_trailing_strategy(
+            dataset,
+            hard_stop_pct=spec.hard_stop_pct,
+            trailing_activation_pct=spec.trailing_activation_pct,
+            trailing_drawdown_pct=spec.trailing_drawdown_pct,
+            max_reentries=spec.max_reentries,
+            reentry_cooldown_bars=spec.reentry_cooldown_bars,
+            reveal_test=spec.reveal_test,
+        )
+        trade_records = list(summary.pop("_trade_records", []))
+        write_path_matrix_csv(run_dir / "strategy.csv", summary["rows"])
+        write_path_strategy_trades(
+            run_dir / "strategy_trades.csv",
+            trade_records,
+        )
 
     summary.update(
         run_id=run_id,
@@ -985,6 +1135,17 @@ def _path_axis_values(key: str, raw: Any, *, default: list[float]) -> list[float
     return unique
 
 
+def _path_percent_value(label: str, raw: Any, default: float) -> float:
+    source = default if raw in (None, "") else raw
+    try:
+        value = float(source)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}必须是数值。") from exc
+    if not math.isfinite(value) or not 0 < value < 100:
+        raise ValueError(f"{label}必须大于 0 且小于 100。")
+    return value
+
+
 def _numeric_parameter_range(key: str, kind: type, expression: str) -> list[int | float]:
     parts = [item.strip() for item in expression.split(":")]
     try:
@@ -1064,6 +1225,20 @@ def _csv_time_bounds(path: Path) -> tuple[int, int]:
         else:
             last_line = first_line.strip()
     return int(first_line.split(b",", 1)[0]), int(last_line.split(b",", 1)[0])
+
+
+def _directory_usage(path: Path) -> tuple[int, int]:
+    file_count = 0
+    size_bytes = 0
+    for item in path.rglob("*"):
+        if not item.is_file() and not item.is_symlink():
+            continue
+        try:
+            size_bytes += item.lstat().st_size
+            file_count += 1
+        except OSError:
+            continue
+    return file_count, size_bytes
 
 
 def _time_label(timestamp_ms: int) -> str:

@@ -24,6 +24,7 @@ Usage:
   chartbench.py backtest matrix [options]
   chartbench.py backtest baseline [options]
   chartbench.py backtest heatmap [options]
+  chartbench.py backtest trailing [options]
   chartbench.py list strategies|providers|profiles [--scope live|backtest|matrix]
   chartbench.py config show|validate --scope chart|live|backtest [--profile NAME] [--explain]
 
@@ -76,10 +77,18 @@ def main(argv: list[str] | None = None) -> None:
 
         _invoke(command, forwarded)
         return
-    if route in {("backtest", "baseline"), ("backtest", "heatmap")}:
+    if route in {
+        ("backtest", "baseline"),
+        ("backtest", "heatmap"),
+        ("backtest", "trailing"),
+    }:
         from run_signal_path_research import main as command
 
-        action = "baseline" if route[1] == "baseline" else "matrix"
+        action = {
+            "baseline": "baseline",
+            "heatmap": "matrix",
+            "trailing": "percent_trailing",
+        }[route[1]]
         _invoke(command, [action, *forwarded])
         return
     raise SystemExit(f"未知命令: {' '.join(args[:2])}\n\n{HELP}")

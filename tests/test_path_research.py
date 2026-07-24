@@ -20,6 +20,7 @@ from tq_app.backtesting.path_research import (
     baseline_summary,
     replay_signal_paths,
     run_path_matrix,
+    run_percent_trailing_strategy,
     write_path_matrix_csv,
     write_signal_path_artifacts,
 )
@@ -63,6 +64,39 @@ class PathExperimentSpecTest(unittest.TestCase):
                     "profile": "btc_5m_signal_path",
                     "stop_values": [0, 1],
                     "take_values": [1],
+                },
+            )
+
+    def test_percent_trailing_action_uses_three_distinct_price_bases(self) -> None:
+        spec = build_path_experiment_spec(
+            PROJECT_ROOT,
+            {
+                "workflow": "signal_path",
+                "action": "percent_trailing",
+                "profile": "btc_5m_signal_path",
+                "hard_stop_pct": 3,
+                "trailing_activation_pct": 8,
+                "trailing_drawdown_pct": 10,
+                "baseline_run_id": "baseline_1",
+            },
+        )
+
+        self.assertEqual(spec.action, "percent_trailing")
+        self.assertEqual(spec.combination_count, 1)
+        self.assertEqual(spec.hard_stop_pct, 3.0)
+        self.assertEqual(spec.trailing_activation_pct, 8.0)
+        self.assertEqual(spec.trailing_drawdown_pct, 10.0)
+        self.assertEqual(spec.baseline_run_id, "baseline_1")
+
+    def test_percent_trailing_action_rejects_invalid_percentages(self) -> None:
+        with self.assertRaisesRegex(ValueError, "小于 100"):
+            build_path_experiment_spec(
+                PROJECT_ROOT,
+                {
+                    "workflow": "signal_path",
+                    "action": "percent_trailing",
+                    "profile": "btc_5m_signal_path",
+                    "trailing_drawdown_pct": 100,
                 },
             )
 
@@ -280,6 +314,127 @@ class PathReplayTest(unittest.TestCase):
         self.assertEqual(result["take_profit_count"], 1)
         self.assertEqual(result["ambiguous_bar_count"], 0)
 
+    def test_percent_trailing_long_stop_only_moves_with_best_price(self) -> None:
+        dataset = _risk_dataset(
+            "buy",
+            [
+                (100.0, 107.0, 99.0, 106.0),
+                (107.0, 108.0, 100.0, 107.0),
+                (110.0, 120.0, 109.0, 118.0),
+                (140.0, 150.0, 136.0, 145.0),
+                (140.0, 145.0, 134.0, 136.0),
+                (142.0, 143.0, 140.0, 141.0),
+            ],
+        )
+
+        result = run_percent_trailing_strategy(
+            dataset,
+            reveal_test=True,
+        )
+        candidate = result["best"]
+        trade = result["_trade_records"][0]
+
+        self.assertEqual(result["type"], "signal_path_percent_trailing")
+        self.assertEqual(candidate["hard_stop_count"], 0)
+        self.assertEqual(candidate["trailing_activation_count"], 1)
+        self.assertEqual(candidate["trailing_stop_count"], 1)
+        self.assertAlmostEqual(candidate["net_profit"], 3_500.0)
+        self.assertAlmostEqual(trade["hard_stop_price"], 97.0)
+        self.assertAlmostEqual(trade["trailing_activation_price"], 108.0)
+        self.assertAlmostEqual(trade["best_price"], 150.0)
+        self.assertAlmostEqual(trade["effective_stop_price"], 135.0)
+        self.assertAlmostEqual(trade["exit_price"], 135.0)
+
+    def test_percent_trailing_short_uses_lowest_price_as_best(self) -> None:
+        dataset = _risk_dataset(
+            "sell",
+            [
+                (100.0, 100.0, 92.0, 94.0),
+                (90.0, 92.0, 85.0, 88.0),
+                (87.0, 94.0, 86.0, 93.0),
+                (92.0, 93.0, 90.0, 91.0),
+            ],
+        )
+
+        result = run_percent_trailing_strategy(
+            dataset,
+            reveal_test=True,
+        )
+        candidate = result["best"]
+        trade = result["_trade_records"][0]
+
+        self.assertEqual(candidate["trailing_stop_count"], 1)
+        self.assertAlmostEqual(candidate["net_profit"], 650.0)
+        self.assertAlmostEqual(trade["hard_stop_price"], 103.0)
+        self.assertAlmostEqual(trade["trailing_activation_price"], 92.0)
+        self.assertAlmostEqual(trade["best_price"], 85.0)
+        self.assertAlmostEqual(trade["effective_stop_price"], 93.5)
+
+    def test_percent_trailing_same_bar_hard_stop_has_priority(self) -> None:
+        dataset = _risk_dataset(
+            "buy",
+            [
+                (100.0, 110.0, 96.0, 105.0),
+                (105.0, 106.0, 104.0, 105.0),
+            ],
+        )
+
+        result = run_percent_trailing_strategy(
+            dataset,
+            reveal_test=True,
+        )
+        candidate = result["best"]
+
+        self.assertEqual(candidate["hard_stop_count"], 1)
+        self.assertEqual(candidate["trailing_stop_count"], 0)
+        self.assertEqual(candidate["trailing_activation_count"], 0)
+        self.assertEqual(candidate["ambiguous_bar_count"], 1)
+        self.assertAlmostEqual(candidate["net_profit"], -300.0)
+
+    def test_percent_trailing_same_bar_activation_is_reported_ambiguous(self) -> None:
+        dataset = _risk_dataset(
+            "buy",
+            [
+                (100.0, 108.0, 97.1, 104.0),
+                (104.0, 105.0, 103.0, 104.0),
+            ],
+        )
+
+        result = run_percent_trailing_strategy(
+            dataset,
+            reveal_test=True,
+        )
+        candidate = result["best"]
+        trade = result["_trade_records"][0]
+
+        self.assertEqual(candidate["trailing_stop_count"], 1)
+        self.assertEqual(candidate["hard_stop_count"], 0)
+        self.assertEqual(candidate["ambiguous_bar_count"], 1)
+        self.assertAlmostEqual(trade["exit_price"], 97.2)
+        self.assertAlmostEqual(candidate["net_profit"], -280.0)
+
+    def test_percent_trailing_gap_fills_at_open_not_stale_stop(self) -> None:
+        dataset = _risk_dataset(
+            "buy",
+            [
+                (100.0, 108.0, 100.0, 107.0),
+                (90.0, 92.0, 89.0, 91.0),
+                (91.0, 92.0, 90.0, 91.0),
+            ],
+        )
+
+        result = run_percent_trailing_strategy(
+            dataset,
+            reveal_test=True,
+        )
+        candidate = result["best"]
+        trade = result["_trade_records"][0]
+
+        self.assertEqual(candidate["trailing_stop_count"], 1)
+        self.assertAlmostEqual(trade["effective_stop_price"], 97.2)
+        self.assertAlmostEqual(trade["exit_price"], 90.0)
+        self.assertAlmostEqual(candidate["net_profit"], -1_000.0)
+
     def test_artifacts_export_research_only_llm_samples(self) -> None:
         dataset = _dataset()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -483,6 +638,74 @@ def _dataset() -> SignalPathDataset:
         signals=signals,
         episodes=[episode],
     )
+
+
+def _risk_dataset(
+    side: str,
+    prices: list[tuple[float, float, float, float]],
+) -> SignalPathDataset:
+    if len(prices) < 2:
+        raise ValueError("风险测试数据至少需要两根 K 线。")
+    dataset = _dataset()
+    bars = [
+        {
+            "index": index,
+            "time": 1_700_000_000 + index * 300,
+            "time_label": f"risk-{index}",
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1.0,
+            "atr": 1.0,
+        }
+        for index, (open_price, high, low, close) in enumerate(prices)
+    ]
+    reverse_side = "sell" if side == "buy" else "buy"
+    exit_index = len(bars) - 1
+    dataset.bars = bars
+    dataset.signals = [
+        {
+            "id": 1,
+            "side": side,
+            "relation": "entry",
+            "signal_index": 0,
+            "execution_index": 0,
+            "signal_time": bars[0]["time"],
+            "execution_time": bars[0]["time"],
+        },
+        {
+            "id": 2,
+            "side": reverse_side,
+            "relation": "reverse",
+            "signal_index": max(exit_index - 1, 0),
+            "execution_index": exit_index,
+            "signal_time": bars[max(exit_index - 1, 0)]["time"],
+            "execution_time": bars[exit_index]["time"],
+        },
+    ]
+    dataset.episodes = [
+        {
+            "id": 1,
+            "side": side,
+            "status": "closed",
+            "split": "validation",
+            "entry_signal_id": 1,
+            "signal_index": 0,
+            "signal_time": bars[0]["time"],
+            "entry_index": 0,
+            "entry_time": bars[0]["time"],
+            "entry_price": bars[0]["open"],
+            "exit_index": exit_index,
+            "exit_time": bars[exit_index]["time"],
+            "exit_price": bars[exit_index]["open"],
+            "holding_bars": exit_index,
+            "mfe_atr": 0.0,
+            "mae_atr": 0.0,
+            "same_side_signal_ids": [],
+        }
+    ]
+    return dataset
 
 
 if __name__ == "__main__":

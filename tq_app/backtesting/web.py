@@ -86,9 +86,11 @@ def create_backtest_blueprint(
                     "cache": coverage,
                     "execution_class": (
                         "复用已有信号路径，只运行参数重放"
-                        if is_path and spec.action == "matrix" and spec.baseline_run_id
+                        if is_path and spec.action != "baseline" and spec.baseline_run_id
                         else "指标与信号只计算一次，再快速重放路径"
                         if is_path and spec.action == "matrix"
+                        else "指标与信号只计算一次，再重放固定百分比移动风控"
+                        if is_path and spec.action == "percent_trailing"
                         else "生成无风控路径和大模型样本"
                         if is_path
                         else _execution_class(spec.grid)
@@ -133,6 +135,22 @@ def create_backtest_blueprint(
     @blueprint.get("/api/backtests/runs/<run_id>/artifacts")
     def get_artifacts(run_id: str) -> Any:
         return _manager_response(lambda: {"artifacts": manager.artifacts(run_id)})
+
+    @blueprint.get("/api/backtests/runs/<run_id>/deletion")
+    def get_deletion_info(run_id: str) -> Any:
+        return _manager_response(lambda: manager.deletion_info(run_id))
+
+    @blueprint.delete("/api/backtests/runs/<run_id>")
+    def delete_run(run_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        return _manager_response(
+            lambda: manager.delete_files(
+                run_id,
+                confirm_run_id=str(payload.get("confirm_run_id") or ""),
+                confirm_permanent=payload.get("confirm_permanent") is True,
+                confirm_dependencies=payload.get("confirm_dependencies") is True,
+            )
+        )
 
     @blueprint.get("/api/backtests/runs/<run_id>/artifacts/<path:artifact_name>")
     def download_artifact(run_id: str, artifact_name: str) -> Any:

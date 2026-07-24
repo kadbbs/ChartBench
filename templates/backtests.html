@@ -27,7 +27,7 @@
         <div>
           <div class="eyebrow">NEW EXPERIMENT</div>
           <h1>设计一次可复现的策略实验</h1>
-          <p>先提取无风控信号路径，再研究止损、止盈和同向再入场的稳定参数区域。</p>
+          <p>先提取无风控信号路径，再比较固定移动风控，并研究止损、止盈和同向再入场的稳定参数区域。</p>
         </div>
         <div class="workflow-steps" aria-label="实验流程">
           <span class="is-current"><i>1</i>配置</span>
@@ -53,6 +53,7 @@
               <select id="path-action-select">
                 <option value="baseline">① 生成无风控样本</option>
                 <option value="matrix">② 运行止损止盈矩阵</option>
+                <option value="percent_trailing">③ 回测百分比移动风控</option>
               </select>
             </label>
             <label class="field span-5"><span>实验名称</span><input id="experiment-name" placeholder="例如：BTC 三年风控稳定性" /></label>
@@ -91,7 +92,7 @@
 
         <section id="path-parameters-section" class="config-section parameter-config-section">
           <div class="section-heading">
-            <div><span class="section-number">02</span><div><h2>路径研究设置</h2><p>基准不做任何风险退出；矩阵只在同一份路径上快速重放。</p></div></div>
+            <div><span class="section-number">02</span><div><h2>路径研究设置</h2><p>基准不做任何风险退出；固定策略与矩阵都在同一份路径上快速重放。</p></div></div>
             <div class="range-guide"><code>0.5:3:0.25</code><span>ATR 范围</span><code>1,1.5,2,3</code><span>离散候选</span></div>
           </div>
 
@@ -103,14 +104,24 @@
 
           <div class="field-grid five compact path-fields">
             <label class="field"><span>入场前 5m 上下文</span><input id="path-context-bars-input" type="number" min="12" max="2016" value="288" /></label>
-            <label class="field matrix-only-field path-baseline-source"><span>复用基准样本</span><select id="path-baseline-run-select"><option value="">重新生成（不复用）</option></select></label>
-            <label class="field"><span>距离单位</span><select id="path-stop-unit-select"><option value="atr">ATR 倍数</option><option value="percent">百分比</option><option value="points">价格点数</option></select></label>
+            <label class="field replay-only-field path-baseline-source"><span>复用基准样本</span><select id="path-baseline-run-select"><option value="">重新生成（不复用）</option></select></label>
+            <label class="field matrix-only-field"><span>距离单位</span><select id="path-stop-unit-select"><option value="atr">ATR 倍数</option><option value="percent">百分比</option><option value="points">价格点数</option></select></label>
             <label class="field matrix-only-field"><span>止损 X 轴</span><input id="path-stop-values-input" value="0.5:3:0.25" /></label>
             <label class="field matrix-only-field"><span>止盈 Y 轴</span><input id="path-take-values-input" value="0.75:6:0.25" /></label>
             <label class="field matrix-only-field"><span>同 K 线双触发</span><select id="path-intrabar-policy-select"><option value="stop_first">止损优先（保守）</option><option value="take_first">止盈优先（对照）</option></select></label>
-            <label class="field matrix-only-field"><span>最多同向再入场</span><input id="path-max-reentries-input" type="number" min="0" max="10" value="0" /></label>
-            <label class="field matrix-only-field"><span>再入场冷却（5m 根）</span><input id="path-reentry-cooldown-input" type="number" min="0" max="2016" value="0" /></label>
-            <label class="check-field matrix-only-field"><input id="path-reveal-test-input" type="checkbox" /><span><strong>揭盲最终测试段</strong><small>选参数前保持关闭</small></span></label>
+            <label class="field percent-trailing-only-field"><span>硬止损（开仓价 %）</span><input id="path-hard-stop-pct-input" type="number" min="0.01" max="99.99" step="0.1" value="3" /></label>
+            <label class="field percent-trailing-only-field"><span>移动止盈启动（开仓价 %）</span><input id="path-trailing-activation-pct-input" type="number" min="0.01" max="99.99" step="0.1" value="8" /></label>
+            <label class="field percent-trailing-only-field"><span>移动回撤（最佳价 %）</span><input id="path-trailing-drawdown-pct-input" type="number" min="0.01" max="99.99" step="0.1" value="10" /></label>
+            <label class="field replay-only-field"><span>最多同向再入场</span><input id="path-max-reentries-input" type="number" min="0" max="10" value="0" /></label>
+            <label class="field replay-only-field"><span>再入场冷却（5m 根）</span><input id="path-reentry-cooldown-input" type="number" min="0" max="2016" value="0" /></label>
+            <label class="check-field replay-only-field"><input id="path-reveal-test-input" type="checkbox" /><span><strong>揭盲最终测试段</strong><small>选参数前保持关闭</small></span></label>
+          </div>
+          <div id="percent-trailing-rule-card" class="percent-trailing-rule-card is-hidden">
+            <div><span>立即保护</span><strong>开仓价 ± <b id="percent-hard-stop-summary">3%</b></strong><small>多单向下、空单向上</small></div>
+            <i>→</i>
+            <div><span>启动门槛</span><strong>开仓价浮盈 <b id="percent-activation-summary">8%</b></strong><small>按标的价格，不按保证金收益</small></div>
+            <i>→</i>
+            <div><span>动态保护</span><strong>最佳价回撤 <b id="percent-drawdown-summary">10%</b></strong><small>保护线只前进，不后退</small></div>
           </div>
           <div id="path-semantics-note" class="semantics-note">
             <strong>固定信号口径</strong>
@@ -187,8 +198,12 @@
       <section class="content-card">
         <div class="card-heading">
           <div><div class="eyebrow">EXPERIMENT HISTORY</div><h2>实验任务</h2><p>查看运行进度，并重新打开历史实验结果。</p></div>
-          <button id="refresh-runs-button" class="text-button" type="button"><span>↻</span> 刷新状态</button>
+          <div class="history-actions">
+            <button id="toggle-hidden-runs-button" class="text-button is-hidden" type="button"><span>◌</span> 已隐藏 0</button>
+            <button id="refresh-runs-button" class="text-button" type="button"><span>↻</span> 刷新状态</button>
+          </div>
         </div>
+        <p id="run-history-message" class="history-message" aria-live="polite"></p>
         <div id="run-list" class="run-list"><div class="empty-state"><span>↗</span><strong>还没有实验任务</strong><small>完成上方配置后，点击“开始回测实验”。</small></div></div>
       </section>
 
@@ -267,6 +282,32 @@
       </section>
     </section>
   </main>
+
+  <div id="run-delete-modal" class="run-delete-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="run-delete-title" tabindex="-1">
+    <section class="run-delete-dialog">
+      <header>
+        <div>
+          <div class="eyebrow">PERMANENT DELETE</div>
+          <h2 id="run-delete-title">彻底删除实验文件</h2>
+        </div>
+        <button id="run-delete-cancel" class="strategy-close-button" type="button" aria-label="取消删除">×</button>
+      </header>
+      <div class="run-delete-content">
+        <p>即将删除 <strong id="run-delete-name">--</strong> 的整个任务目录，包括报告、矩阵、信号路径和模型样本。共享行情缓存不会删除。</p>
+        <div id="run-delete-details" class="delete-details"></div>
+        <p id="run-delete-dependencies" class="delete-dependencies is-hidden"></p>
+        <label class="delete-confirm-field">
+          <span>请输入“彻底删除”确认；删除后无法恢复</span>
+          <input id="run-delete-confirm-input" type="text" autocomplete="off" placeholder="彻底删除" />
+        </label>
+        <p id="run-delete-error" class="delete-error" aria-live="polite"></p>
+        <div class="delete-actions">
+          <button id="run-delete-back" class="text-button" type="button">取消</button>
+          <button id="run-delete-confirm" class="danger-button" type="button" disabled>永久删除文件</button>
+        </div>
+      </div>
+    </section>
+  </div>
 
   <div id="strategy-details-modal" class="strategy-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="strategy-details-title" tabindex="-1">
     <section class="strategy-drawer">

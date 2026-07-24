@@ -31,8 +31,10 @@ from .runtime import PreparedBacktestMarket
 
 PATH_DATASET_SCHEMA_VERSION = 2
 PATH_MATRIX_SCHEMA_VERSION = 3
+PATH_PERCENT_TRAILING_SCHEMA_VERSION = 1
 PATH_STOP_UNITS = {"atr", "percent", "points"}
 PATH_INTRABAR_POLICIES = {"stop_first", "take_first"}
+PATH_REPLAY_RISK_MODES = {"fixed_barriers", "percent_trailing"}
 PATH_REPLAY_BAR_COLUMNS = (
     "time",
     "open",
@@ -191,9 +193,13 @@ class SignalPathDataset:
 
 @dataclass(frozen=True, slots=True)
 class PathReplayConfig:
+    risk_mode: str = "fixed_barriers"
     stop_unit: str = "atr"
     stop_value: float | None = None
     take_value: float | None = None
+    hard_stop_pct: float | None = None
+    trailing_activation_pct: float | None = None
+    trailing_drawdown_pct: float | None = None
     max_reentries: int = 0
     reentry_cooldown_bars: int = 0
     intrabar_policy: str = "stop_first"
@@ -205,6 +211,20 @@ class PreparedPathReplay:
     arrays: dict[str, np.ndarray]
     bar_times: list[int]
     bar_duration: int
+
+
+@dataclass(frozen=True, slots=True)
+class PathRiskOutcome:
+    exit_index: int | None = None
+    raw_exit: float | None = None
+    exit_reason: str | None = None
+    ambiguous: bool = False
+    intrabar_ambiguity_count: int = 0
+    trailing_activated: bool = False
+    best_price: float | None = None
+    hard_stop_price: float | None = None
+    trailing_activation_price: float | None = None
+    effective_stop_price: float | None = None
 
 
 def _prepare_path_replay(dataset: SignalPathDataset) -> PreparedPathReplay:
@@ -625,13 +645,138 @@ def run_path_matrix(
     }
 
 
+def run_percent_trailing_strategy(
+    dataset: SignalPathDataset,
+    *,
+    hard_stop_pct: float = 3.0,
+    trailing_activation_pct: float = 8.0,
+    trailing_drawdown_pct: float = 10.0,
+    max_reentries: int = 0,
+    reentry_cooldown_bars: int = 0,
+    reveal_test: bool = False,
+) -> dict[str, Any]:
+    """Replay one pre-declared percentage hard-stop and trailing-stop overlay."""
+
+    _validate_percent_trailing_values(
+        hard_stop_pct=hard_stop_pct,
+        trailing_activation_pct=trailing_activation_pct,
+        trailing_drawdown_pct=trailing_drawdown_pct,
+    )
+    prepared_replay = _prepare_path_replay(dataset)
+    baseline = replay_signal_paths(
+        dataset,
+        PathReplayConfig(reveal_test=reveal_test),
+        include_performance_series=True,
+        _prepared=prepared_replay,
+    )
+    metrics = replay_signal_paths(
+        dataset,
+        PathReplayConfig(
+            risk_mode="percent_trailing",
+            hard_stop_pct=float(hard_stop_pct),
+            trailing_activation_pct=float(trailing_activation_pct),
+            trailing_drawdown_pct=float(trailing_drawdown_pct),
+            max_reentries=max(int(max_reentries), 0),
+            reentry_cooldown_bars=max(int(reentry_cooldown_bars), 0),
+            reveal_test=reveal_test,
+        ),
+        include_performance_series=True,
+        include_trade_records=True,
+        _prepared=prepared_replay,
+    )
+    trade_records = list(metrics.pop("_trade_records", []))
+    parameters = {
+        "risk_strategy": "percent_trailing",
+        "hard_stop_pct": float(hard_stop_pct),
+        "trailing_activation_pct": float(trailing_activation_pct),
+        "trailing_drawdown_pct": float(trailing_drawdown_pct),
+        "price_basis": "underlying_price",
+        "max_reentries": int(max_reentries),
+        "reentry_cooldown_bars": int(reentry_cooldown_bars),
+    }
+    candidate: dict[str, Any] = {
+        "rank": 1,
+        "parameters": parameters,
+        "robust_score": _selection_score(metrics),
+        "verdict": _fixed_strategy_verdict(metrics, baseline),
+        **metrics,
+    }
+    candidate.update(_comparison_fields(candidate, baseline))
+    statistical_validation = attach_deflated_sharpe([baseline, candidate])
+    overfitting = cscv_probability_of_backtest_overfitting(
+        [
+            list(item.get("_daily_returns") or [])
+            for item in (baseline, candidate)
+        ]
+    )
+    candidate["strategy_trial_count"] = int(
+        statistical_validation.get("trial_count") or 0
+    )
+    candidate["strategy_pbo_pct"] = overfitting.get("pbo_pct")
+    strip_private_performance_fields(candidate)
+    strip_private_performance_fields(baseline)
+
+    return {
+        "schema_version": PATH_PERCENT_TRAILING_SCHEMA_VERSION,
+        "type": "signal_path_percent_trailing",
+        "name": (
+            f"{dataset.manifest['symbol']} "
+            f"{float(hard_stop_pct):g}%硬止损 + "
+            f"{float(trailing_activation_pct):g}%启动 / "
+            f"{float(trailing_drawdown_pct):g}%回撤"
+        ),
+        "dataset": dataset.manifest,
+        "strategy": {
+            "name": "percent_trailing",
+            "hard_stop_pct": float(hard_stop_pct),
+            "hard_stop_basis": "entry_price",
+            "trailing_activation_pct": float(trailing_activation_pct),
+            "trailing_activation_basis": "entry_price",
+            "trailing_drawdown_pct": float(trailing_drawdown_pct),
+            "trailing_drawdown_basis": "best_price_since_entry",
+            "percentage_subject": "underlying_price",
+            "same_bar_policy": "hard_stop_then_dynamic_trailing",
+        },
+        "visibility": {
+            "test_revealed": bool(reveal_test),
+        },
+        "combination_count": 1,
+        "statistical_validation": {
+            **statistical_validation,
+            **overfitting,
+            "scope": (
+                "all"
+                if reveal_test
+                else "research_and_validation_only"
+            ),
+            "note": "这是一个预先指定的固定参数候选，不构成参数稳定区检验。",
+        },
+        "baseline": baseline,
+        "best": candidate,
+        "best_comparison": _comparison_fields(candidate, baseline),
+        "rows": [candidate],
+        "_trade_records": trade_records,
+        "score_explanation": (
+            "开仓信号与无风控基准完全相同。硬止损按实际开仓成交价计算；"
+            "价格相对开仓价达到浮盈门槛后，保护线按持仓最佳价格回撤计算，"
+            "只会向盈利方向移动。百分比均指 BTC 标的价格，不乘杠杆。"
+            "若同一根 5m K 线既形成新的最佳价又回撤触线，结果按保守口径记为"
+            "动态保护退出并计入 K 线内顺序不确定数；若同根同时触及尚未启动前的"
+            "硬止损，则硬止损优先。固定参数结果只能用于和基准比较，不能替代热力图"
+            "稳定区与最终盲测。"
+        ),
+    }
+
+
 def replay_signal_paths(
     dataset: SignalPathDataset,
     config: PathReplayConfig,
     *,
     include_performance_series: bool = False,
+    include_trade_records: bool = False,
     _prepared: PreparedPathReplay | None = None,
 ) -> dict[str, Any]:
+    _validate_path_replay_config(config)
     execution = dataset.manifest.get("execution") or {}
     initial_equity = float(execution.get("initial_equity") or 20_000.0)
     margin_amount = float(execution.get("margin_amount") or 1_000.0)
@@ -695,28 +840,28 @@ def replay_signal_paths(
             atr = _optional_float(
                 bars[int(candidate["signal_index"])].get("atr")
             )
-            risk_exit = _barrier_exit(
+            risk_outcome = _path_risk_outcome(
                 arrays,
+                config=config,
                 entry_index=entry_index,
                 end_exclusive=boundary_index,
                 side=side,
                 entry_price=entry_price,
                 atr=atr,
-                stop_unit=config.stop_unit,
-                stop_value=config.stop_value,
-                take_value=config.take_value,
-                intrabar_policy=config.intrabar_policy,
             )
-            if risk_exit is None:
+            if risk_outcome.exit_index is None:
                 if episode["status"] != "closed":
                     break
                 exit_index = int(episode["exit_index"])
                 raw_exit = float(arrays["open"][exit_index])
                 exit_reason = "reverse_signal"
-                ambiguous = False
+                ambiguous = risk_outcome.ambiguous
                 mark_end_exclusive = exit_index
             else:
-                exit_index, raw_exit, exit_reason, ambiguous = risk_exit
+                exit_index = int(risk_outcome.exit_index)
+                raw_exit = float(risk_outcome.raw_exit)
+                exit_reason = str(risk_outcome.exit_reason)
+                ambiguous = risk_outcome.ambiguous
                 mark_end_exclusive = exit_index
 
             notional = (
@@ -773,6 +918,16 @@ def replay_signal_paths(
                     "fees": entry_fee + exit_fee,
                     "net_pnl": net_pnl,
                     "ambiguous_bar": ambiguous,
+                    "intrabar_ambiguity_count": int(
+                        risk_outcome.intrabar_ambiguity_count
+                    ),
+                    "trailing_activated": risk_outcome.trailing_activated,
+                    "best_price": risk_outcome.best_price,
+                    "hard_stop_price": risk_outcome.hard_stop_price,
+                    "trailing_activation_price": (
+                        risk_outcome.trailing_activation_price
+                    ),
+                    "effective_stop_price": risk_outcome.effective_stop_price,
                     "path_drawdown_pct": max(trade_drawdown, realized_drawdown) * 100,
                 }
             )
@@ -851,7 +1006,8 @@ def replay_signal_paths(
         )
     )
     metrics["ambiguous_bar_count"] = sum(
-        1 for item in visible_records if item["ambiguous_bar"]
+        int(item.get("intrabar_ambiguity_count") or bool(item["ambiguous_bar"]))
+        for item in visible_records
     )
     metrics["reentry_trade_count"] = sum(
         1 for item in visible_records if int(item["entry_number"]) > 1
@@ -873,8 +1029,13 @@ def replay_signal_paths(
             "profit_factor",
         ):
             metrics[f"test_{key}"] = None
+    if include_trade_records:
+        metrics["_trade_records"] = visible_records
     if not include_performance_series:
+        trade_records = metrics.get("_trade_records")
         strip_private_performance_fields(metrics)
+        if include_trade_records:
+            metrics["_trade_records"] = trade_records
     return metrics
 
 
@@ -914,6 +1075,13 @@ def write_path_matrix_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         flat.update(row.get("parameters") or {})
         flattened.append(flat)
     _write_csv(path, flattened)
+
+
+def write_path_strategy_trades(
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    _write_csv(path, records)
 
 
 def load_signal_path_dataset(path: Path) -> SignalPathDataset:
@@ -958,6 +1126,8 @@ def artifact_catalog(run_dir: Path) -> list[dict[str, Any]]:
         "dataset/README.txt": "数据说明",
         "dataset_reference.json": "复用基准数据说明",
         "matrix.csv": "矩阵完整结果",
+        "strategy.csv": "固定风控策略结果",
+        "strategy_trades.csv": "固定风控逐笔交易",
     }
     artifacts: list[dict[str, Any]] = []
     for relative, label in labels.items():
@@ -1344,6 +1514,332 @@ def _attach_excursions(episode: dict[str, Any], bars: list[dict[str, Any]]) -> N
         episode["gross_return_pct"] = gross / entry * 100 if entry else None
 
 
+def _validate_path_replay_config(config: PathReplayConfig) -> None:
+    if config.risk_mode not in PATH_REPLAY_RISK_MODES:
+        raise ValueError(f"未知路径风控模式: {config.risk_mode}")
+    if config.risk_mode == "percent_trailing":
+        _validate_percent_trailing_values(
+            hard_stop_pct=config.hard_stop_pct,
+            trailing_activation_pct=config.trailing_activation_pct,
+            trailing_drawdown_pct=config.trailing_drawdown_pct,
+        )
+
+
+def _validate_percent_trailing_values(
+    *,
+    hard_stop_pct: float | None,
+    trailing_activation_pct: float | None,
+    trailing_drawdown_pct: float | None,
+) -> None:
+    values = {
+        "硬止损百分比": hard_stop_pct,
+        "移动止盈启动百分比": trailing_activation_pct,
+        "最佳价回撤百分比": trailing_drawdown_pct,
+    }
+    for label, raw_value in values.items():
+        if raw_value is None:
+            raise ValueError(f"{label}不能为空。")
+        value = float(raw_value)
+        if not math.isfinite(value) or not 0 < value < 100:
+            raise ValueError(f"{label}必须大于 0 且小于 100。")
+
+
+def _path_risk_outcome(
+    arrays: dict[str, np.ndarray],
+    *,
+    config: PathReplayConfig,
+    entry_index: int,
+    end_exclusive: int,
+    side: str,
+    entry_price: float,
+    atr: float | None,
+) -> PathRiskOutcome:
+    if config.risk_mode == "percent_trailing":
+        assert config.hard_stop_pct is not None
+        assert config.trailing_activation_pct is not None
+        assert config.trailing_drawdown_pct is not None
+        return _percent_trailing_outcome(
+            arrays,
+            entry_index=entry_index,
+            end_exclusive=end_exclusive,
+            side=side,
+            entry_price=entry_price,
+            hard_stop_pct=float(config.hard_stop_pct),
+            trailing_activation_pct=float(config.trailing_activation_pct),
+            trailing_drawdown_pct=float(config.trailing_drawdown_pct),
+        )
+    barrier = _barrier_exit(
+        arrays,
+        entry_index=entry_index,
+        end_exclusive=end_exclusive,
+        side=side,
+        entry_price=entry_price,
+        atr=atr,
+        stop_unit=config.stop_unit,
+        stop_value=config.stop_value,
+        take_value=config.take_value,
+        intrabar_policy=config.intrabar_policy,
+    )
+    if barrier is None:
+        return PathRiskOutcome()
+    exit_index, raw_exit, exit_reason, ambiguous = barrier
+    return PathRiskOutcome(
+        exit_index=exit_index,
+        raw_exit=raw_exit,
+        exit_reason=exit_reason,
+        ambiguous=ambiguous,
+        intrabar_ambiguity_count=int(ambiguous),
+    )
+
+
+def _percent_trailing_outcome(
+    arrays: dict[str, np.ndarray],
+    *,
+    entry_index: int,
+    end_exclusive: int,
+    side: str,
+    entry_price: float,
+    hard_stop_pct: float,
+    trailing_activation_pct: float,
+    trailing_drawdown_pct: float,
+) -> PathRiskOutcome:
+    """Resolve the 3/8/10-style overlay against 5-minute OHLC bars.
+
+    A stop already active before the bar is checked before a new intrabar best
+    price. If a newly activated or raised trailing line is also touched inside
+    the same bar, the replay records an ambiguity and exits at the conservative
+    protection line. An opening gap through an existing stop fills at the open.
+    """
+
+    direction = _direction(side)
+    hard_fraction = hard_stop_pct / 100.0
+    activation_fraction = trailing_activation_pct / 100.0
+    drawdown_fraction = trailing_drawdown_pct / 100.0
+    hard_stop_price = entry_price * (
+        1.0 - hard_fraction
+        if side == "buy"
+        else 1.0 + hard_fraction
+    )
+    activation_price = entry_price * (
+        1.0 + activation_fraction
+        if side == "buy"
+        else 1.0 - activation_fraction
+    )
+    best_price = entry_price
+    trailing_activated = False
+    ambiguity_count = 0
+    effective_stop_price = hard_stop_price
+
+    for index in range(entry_index, end_exclusive):
+        raw_open = float(arrays["open"][index])
+        high = float(arrays["high"][index])
+        low = float(arrays["low"][index])
+        prior_trailing_price = _percent_trailing_stop_price(
+            side,
+            best_price,
+            drawdown_fraction,
+        ) if trailing_activated else None
+        prior_stop = _more_protective_stop(
+            side,
+            hard_stop_price,
+            prior_trailing_price,
+        )
+        if _opening_gap_through_stop(side, raw_open, prior_stop):
+            return PathRiskOutcome(
+                exit_index=index,
+                raw_exit=raw_open,
+                exit_reason=_percent_stop_reason(
+                    side,
+                    hard_stop_price,
+                    prior_trailing_price,
+                    prior_stop,
+                ),
+                intrabar_ambiguity_count=ambiguity_count,
+                trailing_activated=trailing_activated,
+                best_price=best_price,
+                hard_stop_price=hard_stop_price,
+                trailing_activation_price=activation_price,
+                effective_stop_price=prior_stop,
+            )
+
+        best_at_open = _more_favorable_price(
+            side,
+            best_price,
+            raw_open,
+        )
+        active_at_open = trailing_activated or (
+            direction * (best_at_open - activation_price) >= 0
+        )
+        open_trailing_price = _percent_trailing_stop_price(
+            side,
+            best_at_open,
+            drawdown_fraction,
+        ) if active_at_open else None
+        open_stop = _more_protective_stop(
+            side,
+            hard_stop_price,
+            open_trailing_price,
+        )
+
+        bar_best = high if side == "buy" else low
+        final_best = _more_favorable_price(side, best_at_open, bar_best)
+        final_active = active_at_open or (
+            direction * (final_best - activation_price) >= 0
+        )
+        final_trailing_price = _percent_trailing_stop_price(
+            side,
+            final_best,
+            drawdown_fraction,
+        ) if final_active else None
+        final_stop = _more_protective_stop(
+            side,
+            hard_stop_price,
+            final_trailing_price,
+        )
+        stop_improved_intrabar = _stop_is_more_protective(
+            side,
+            final_stop,
+            open_stop,
+        )
+        open_stop_touched = _bar_touches_price(side, high, low, open_stop)
+        final_stop_touched = _bar_touches_price(side, high, low, final_stop)
+        sequence_ambiguous = (
+            stop_improved_intrabar
+            and final_stop_touched
+        )
+
+        if open_stop_touched:
+            if sequence_ambiguous:
+                ambiguity_count += 1
+            return PathRiskOutcome(
+                exit_index=index,
+                raw_exit=open_stop,
+                exit_reason=_percent_stop_reason(
+                    side,
+                    hard_stop_price,
+                    open_trailing_price,
+                    open_stop,
+                ),
+                ambiguous=sequence_ambiguous,
+                intrabar_ambiguity_count=ambiguity_count,
+                trailing_activated=active_at_open,
+                best_price=best_at_open,
+                hard_stop_price=hard_stop_price,
+                trailing_activation_price=activation_price,
+                effective_stop_price=open_stop,
+            )
+
+        if sequence_ambiguous:
+            ambiguity_count += 1
+            return PathRiskOutcome(
+                exit_index=index,
+                raw_exit=final_stop,
+                exit_reason=_percent_stop_reason(
+                    side,
+                    hard_stop_price,
+                    final_trailing_price,
+                    final_stop,
+                ),
+                ambiguous=True,
+                intrabar_ambiguity_count=ambiguity_count,
+                trailing_activated=final_active,
+                best_price=final_best,
+                hard_stop_price=hard_stop_price,
+                trailing_activation_price=activation_price,
+                effective_stop_price=final_stop,
+            )
+
+        best_price = final_best
+        trailing_activated = final_active
+        effective_stop_price = final_stop
+
+    return PathRiskOutcome(
+        intrabar_ambiguity_count=ambiguity_count,
+        trailing_activated=trailing_activated,
+        best_price=best_price,
+        hard_stop_price=hard_stop_price,
+        trailing_activation_price=activation_price,
+        effective_stop_price=effective_stop_price,
+    )
+
+
+def _percent_trailing_stop_price(
+    side: str,
+    best_price: float,
+    drawdown_fraction: float,
+) -> float:
+    return best_price * (
+        1.0 - drawdown_fraction
+        if side == "buy"
+        else 1.0 + drawdown_fraction
+    )
+
+
+def _more_favorable_price(side: str, left: float, right: float) -> float:
+    return max(left, right) if side == "buy" else min(left, right)
+
+
+def _more_protective_stop(
+    side: str,
+    hard_stop_price: float,
+    trailing_stop_price: float | None,
+) -> float:
+    if trailing_stop_price is None:
+        return hard_stop_price
+    return (
+        max(hard_stop_price, trailing_stop_price)
+        if side == "buy"
+        else min(hard_stop_price, trailing_stop_price)
+    )
+
+
+def _stop_is_more_protective(
+    side: str,
+    candidate: float,
+    previous: float,
+) -> bool:
+    tolerance = max(abs(previous), 1.0) * 1e-12
+    return (
+        candidate > previous + tolerance
+        if side == "buy"
+        else candidate < previous - tolerance
+    )
+
+
+def _opening_gap_through_stop(
+    side: str,
+    raw_open: float,
+    stop_price: float,
+) -> bool:
+    return raw_open <= stop_price if side == "buy" else raw_open >= stop_price
+
+
+def _bar_touches_price(
+    side: str,
+    high: float,
+    low: float,
+    stop_price: float,
+) -> bool:
+    return low <= stop_price if side == "buy" else high >= stop_price
+
+
+def _percent_stop_reason(
+    side: str,
+    hard_stop_price: float,
+    trailing_stop_price: float | None,
+    effective_stop_price: float,
+) -> str:
+    if trailing_stop_price is None:
+        return "hard_stop"
+    tolerance = max(abs(effective_stop_price), 1.0) * 1e-12
+    trailing_is_effective = (
+        trailing_stop_price >= hard_stop_price - tolerance
+        if side == "buy"
+        else trailing_stop_price <= hard_stop_price + tolerance
+    )
+    return "trailing_stop" if trailing_is_effective else "hard_stop"
+
+
 def _barrier_exit(
     arrays: dict[str, np.ndarray],
     *,
@@ -1558,6 +2054,10 @@ def _marked_record(
         net_pnl=net_pnl,
         equity_after=float(record["equity_before"]) + net_pnl,
         ambiguous_bar=False,
+        intrabar_ambiguity_count=0,
+        trailing_activated=False,
+        best_price=None,
+        effective_stop_price=None,
     )
     return marked
 
@@ -1946,7 +2446,20 @@ def _replay_metrics(
         "total_fees": total_fees,
         "long_trade_count": sum(1 for item in visible if item["side"] == "buy"),
         "short_trade_count": sum(1 for item in visible if item["side"] == "sell"),
-        "stop_loss_count": sum(1 for item in visible if item["exit_reason"] == "stop_loss"),
+        "stop_loss_count": sum(
+            1
+            for item in visible
+            if item["exit_reason"] in {"stop_loss", "hard_stop", "trailing_stop"}
+        ),
+        "hard_stop_count": sum(
+            1 for item in visible if item["exit_reason"] == "hard_stop"
+        ),
+        "trailing_stop_count": sum(
+            1 for item in visible if item["exit_reason"] == "trailing_stop"
+        ),
+        "trailing_activation_count": sum(
+            1 for item in visible if bool(item.get("trailing_activated"))
+        ),
         "take_profit_count": sum(1 for item in visible if item["exit_reason"] == "take_profit"),
         "reverse_exit_count": sum(1 for item in visible if item["exit_reason"] == "reverse_signal"),
         "visible_window": "all" if reveal_test else "research_and_validation",
@@ -2031,6 +2544,9 @@ def _comparison_fields(
         "winning_trade_count",
         "losing_trade_count",
         "stop_loss_count",
+        "hard_stop_count",
+        "trailing_stop_count",
+        "trailing_activation_count",
         "take_profit_count",
         "reverse_exit_count",
         "reentry_trade_count",
@@ -2069,6 +2585,31 @@ def _selection_score(metrics: dict[str, Any]) -> float:
     if validation_trades < 5:
         score -= (5 - validation_trades) * 5.0
     return round(score, 6)
+
+
+def _fixed_strategy_verdict(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+) -> str:
+    validation = float(candidate.get("validation_return_pct") or 0.0)
+    baseline_validation = float(baseline.get("validation_return_pct") or 0.0)
+    visible_return = float(candidate.get("return_pct") or 0.0)
+    drawdown = float(candidate.get("max_drawdown_pct") or 0.0)
+    baseline_drawdown = float(baseline.get("max_drawdown_pct") or 0.0)
+    validation_profit_factor = float(
+        candidate.get("validation_profit_factor") or 0.0
+    )
+    if (
+        validation > 0
+        and validation > baseline_validation
+        and validation_profit_factor > 1.0
+        and visible_return > 0
+        and drawdown <= baseline_drawdown
+    ):
+        return "固定候选改善"
+    if validation > 0 and visible_return > 0:
+        return "固定候选待验证"
+    return "固定候选不通过"
 
 
 def _attach_neighborhood_stability(

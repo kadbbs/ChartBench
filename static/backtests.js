@@ -1,3 +1,5 @@
+const HIDDEN_RUNS_STORAGE_KEY = "chartbench.hiddenBacktestRunIds.v1";
+
 const state = {
   catalog: null,
   profiles: new Map(),
@@ -10,10 +12,34 @@ const state = {
   activeResult: null,
   workflow: "signal_path",
   strategyDetailsReturnFocus: null,
+  hiddenRunIds: loadHiddenRunIds(),
+  showHiddenRuns: false,
+  pendingRunDeletion: null,
+  autoExperimentName: "",
 };
 
 const $ = (id) => document.getElementById(id);
 const gridInputs = () => [...document.querySelectorAll("[data-grid-key]")];
+
+function loadHiddenRunIds() {
+  try {
+    const values = JSON.parse(localStorage.getItem(HIDDEN_RUNS_STORAGE_KEY) || "[]");
+    return new Set(Array.isArray(values) ? values.map(String) : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function saveHiddenRunIds() {
+  try {
+    localStorage.setItem(
+      HIDDEN_RUNS_STORAGE_KEY,
+      JSON.stringify([...state.hiddenRunIds]),
+    );
+  } catch (_) {
+    // Hiding still works for this page session if browser storage is unavailable.
+  }
+}
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { cache: "no-store", ...options });
@@ -34,9 +60,7 @@ function localInputValue(value) {
 function populateProfile(name) {
   const profile = state.profiles.get(name);
   if (!profile) return;
-  $("experiment-name").value ||= state.workflow === "signal_path"
-    ? `${profileValue(profile, "symbol", "策略")} 无风控信号路径`
-    : `${profileValue(profile, "symbol", "策略")} 三年参数研究`;
+  syncAutomaticExperimentName(profile);
   $("provider-select").value = profileValue(profile, "provider", "bitget");
   $("symbol-input").value = profileValue(profile, "symbol", "BTCUSDT");
   $("duration-select").value = profileValue(profile, "duration", 300);
@@ -120,6 +144,9 @@ function buildPayload() {
       stop_unit: $("path-stop-unit-select").value,
       stop_values: $("path-stop-values-input").value.trim(),
       take_values: $("path-take-values-input").value.trim(),
+      hard_stop_pct: Number($("path-hard-stop-pct-input").value),
+      trailing_activation_pct: Number($("path-trailing-activation-pct-input").value),
+      trailing_drawdown_pct: Number($("path-trailing-drawdown-pct-input").value),
       max_reentries: Number($("path-max-reentries-input").value),
       reentry_cooldown_bars: Number($("path-reentry-cooldown-input").value),
       intrabar_policy: $("path-intrabar-policy-select").value,
@@ -141,7 +168,7 @@ function buildPayload() {
 
 function combinationCount() {
   if (state.workflow === "signal_path") {
-    if ($("path-action-select").value === "baseline") return 1;
+    if ($("path-action-select").value !== "matrix") return 1;
     return Math.max(parseAxisInput($("path-stop-values-input").value).length, 1)
       * Math.max(parseAxisInput($("path-take-values-input").value).length, 1);
   }
@@ -161,32 +188,106 @@ function parseAxisInput(value) {
 function scheduleEstimate() {
   clearTimeout(state.estimateTimer);
   const count = combinationCount();
-  const baseline = state.workflow === "signal_path" && $("path-action-select").value === "baseline";
+  const action = state.workflow === "signal_path" ? $("path-action-select").value : "standard";
+  const baseline = action === "baseline";
+  const percentTrailing = action === "percent_trailing";
+  updatePercentTrailingSummary();
+  if (percentTrailing) {
+    syncAutomaticExperimentName(state.profiles.get($("profile-select").value));
+  }
   $("combination-estimate").innerHTML = `
     <span>本次实验</span>
-    <strong>${baseline ? "无风控基准样本" : `${formatNumber(count, 0)} 个组合`}</strong>
-    <small>${baseline ? "导出 K 线、节点和大模型 JSONL" : count === 1 ? "生成完整报告和图表" : "同一份信号路径快速重放"}</small>
+    <strong>${baseline ? "无风控基准样本" : percentTrailing ? "1 个固定移动风控候选" : `${formatNumber(count, 0)} 个组合`}</strong>
+    <small>${baseline ? "导出 K 线、节点和大模型 JSONL" : percentTrailing ? "与同一无风控路径逐项比较" : count === 1 ? "生成完整报告和图表" : "同一份信号路径快速重放"}</small>
   `;
-  $("run-button").querySelector("span").textContent = baseline ? "生成基准样本" : state.workflow === "signal_path" ? "开始路径矩阵" : "开始回测实验";
+  $("run-button").querySelector("span").textContent = baseline
+    ? "生成基准样本"
+    : percentTrailing
+      ? "回测百分比移动风控"
+      : state.workflow === "signal_path"
+        ? "开始路径矩阵"
+        : "开始回测实验";
   state.estimateTimer = setTimeout(refreshEstimate, 350);
 }
 
 function applyWorkflow() {
   state.workflow = $("workflow-select").value;
   const pathMode = state.workflow === "signal_path";
+  const pathAction = pathMode ? $("path-action-select").value : "";
   $("path-action-field").classList.toggle("is-hidden", !pathMode);
   $("path-parameters-section").classList.toggle("is-hidden", !pathMode);
   $("standard-parameters-section").classList.toggle("is-hidden", pathMode);
-  const matrixMode = pathMode && $("path-action-select").value === "matrix";
+  const matrixMode = pathMode && pathAction === "matrix";
+  const replayMode = pathMode && pathAction !== "baseline";
+  const percentTrailingMode = pathMode && pathAction === "percent_trailing";
   document.querySelectorAll(".matrix-only-field").forEach((item) => item.classList.toggle("is-disabled", !matrixMode));
   document.querySelectorAll(".matrix-only-field input, .matrix-only-field select").forEach((item) => { item.disabled = !matrixMode; });
+  document.querySelectorAll(".replay-only-field").forEach((item) => item.classList.toggle("is-disabled", !replayMode));
+  document.querySelectorAll(".replay-only-field input, .replay-only-field select").forEach((item) => { item.disabled = !replayMode; });
+  document.querySelectorAll(".percent-trailing-only-field").forEach((item) => item.classList.toggle("is-disabled", !percentTrailingMode));
+  document.querySelectorAll(".percent-trailing-only-field input").forEach((item) => { item.disabled = !percentTrailingMode; });
+  $("percent-trailing-rule-card").classList.toggle("is-hidden", !percentTrailingMode);
+  updatePathSemantics(pathAction);
   if (pathMode && state.profiles.has("btc_5m_signal_path") && $("profile-select").value !== "btc_5m_signal_path") {
     $("profile-select").value = "btc_5m_signal_path";
     $("experiment-name").value = "";
     populateProfile("btc_5m_signal_path");
   }
+  syncAutomaticExperimentName(state.profiles.get($("profile-select").value));
   refreshBaselineOptions();
   scheduleEstimate();
+}
+
+function syncAutomaticExperimentName(profile) {
+  if (!profile) return;
+  const symbol = profileValue(profile, "symbol", "策略");
+  const action = state.workflow === "signal_path" ? $("path-action-select").value : "standard";
+  const nextName = action === "baseline"
+    ? `${symbol} 无风控信号路径`
+    : action === "matrix"
+      ? `${symbol} 止损止盈矩阵`
+      : action === "percent_trailing"
+        ? `${symbol} ${formatNumber(Number($("path-hard-stop-pct-input").value))}%硬止损 + ${formatNumber(Number($("path-trailing-activation-pct-input").value))}%启动 / ${formatNumber(Number($("path-trailing-drawdown-pct-input").value))}%回撤`
+        : `${symbol} 三年参数研究`;
+  const input = $("experiment-name");
+  if (!input.value.trim() || input.value === state.autoExperimentName) {
+    input.value = nextName;
+  }
+  state.autoExperimentName = nextName;
+}
+
+function updatePercentTrailingSummary() {
+  const values = [
+    ["percent-hard-stop-summary", "path-hard-stop-pct-input"],
+    ["percent-activation-summary", "path-trailing-activation-pct-input"],
+    ["percent-drawdown-summary", "path-trailing-drawdown-pct-input"],
+  ];
+  values.forEach(([summaryId, inputId]) => {
+    const value = Number($(inputId).value);
+    $(summaryId).textContent = Number.isFinite(value) ? `${formatNumber(value)}%` : "--";
+  });
+}
+
+function updatePathSemantics(action) {
+  const note = $("path-semantics-note");
+  if (action === "percent_trailing") {
+    note.innerHTML = `
+      <strong>百分比移动风控</strong>
+      <span>开仓信号不变；硬止损和启动门槛相对实际开仓成交价，移动回撤相对持仓最佳价。保护线只向盈利方向移动。百分比作用于 BTC 标的价格，不乘杠杆；未触发风控时仍在有效反向信号处平仓反手。</span>
+    `;
+    return;
+  }
+  if (action === "matrix") {
+    note.innerHTML = `
+      <strong>矩阵重放口径</strong>
+      <span>闭合 1D Hull 与 STC 同向过滤；5m 收线确认、下一根开盘执行；每格使用固定止损和固定止盈，日线不匹配的反向信号忽略。</span>
+    `;
+    return;
+  }
+  note.innerHTML = `
+    <strong>无风控基准口径</strong>
+    <span>闭合 1D Hull 与 STC 同向过滤；5m 收线确认、下一根开盘执行；日线不匹配的反向信号忽略；只在有效反向信号处平仓并反手。</span>
+  `;
 }
 
 function updateStrategyHint() {
@@ -319,7 +420,7 @@ async function submitRun() {
 
 async function refreshRuns() {
   try {
-    const payload = await fetchJson("/api/backtests/runs?limit=30");
+    const payload = await fetchJson("/api/backtests/runs?limit=100");
     state.runs = payload.runs;
     refreshBaselineOptions();
     renderRuns();
@@ -333,25 +434,95 @@ async function refreshRuns() {
 function refreshBaselineOptions() {
   const select = $("path-baseline-run-select");
   const current = select.value;
-  const baselines = state.runs.filter((run) => run.workflow === "signal_path" && run.action === "baseline" && run.status === "succeeded");
+  const baselines = state.runs.filter((run) => (
+    run.workflow === "signal_path"
+    && run.action === "baseline"
+    && run.status === "succeeded"
+    && !state.hiddenRunIds.has(run.run_id)
+  ));
   select.innerHTML = '<option value="">重新生成（不复用）</option>' + baselines.map((run) => `<option value="${escapeHtml(run.run_id)}">${escapeHtml(run.name || run.run_id)} · ${escapeHtml(String(run.created_at || "").slice(0,19))}</option>`).join("");
   if (baselines.some((run) => run.run_id === current)) select.value = current;
-  else if (baselines.length && $("path-action-select").value === "matrix") select.value = baselines[0].run_id;
+  else if (baselines.length && $("path-action-select").value !== "baseline") select.value = baselines[0].run_id;
 }
 
 function renderRuns() {
-  if (!state.runs.length) {
-    $("run-list").innerHTML = '<div class="empty-state"><span>↗</span><strong>还没有实验任务</strong><small>完成上方配置后，点击“开始回测实验”。</small></div>';
+  const hiddenCount = state.runs.filter((run) => state.hiddenRunIds.has(run.run_id)).length;
+  const hiddenToggle = $("toggle-hidden-runs-button");
+  hiddenToggle.classList.toggle("is-hidden", hiddenCount === 0);
+  hiddenToggle.innerHTML = state.showHiddenRuns
+    ? `<span>◉</span> 收起已隐藏 ${hiddenCount}`
+    : `<span>◌</span> 已隐藏 ${hiddenCount}`;
+  const displayedRuns = state.showHiddenRuns
+    ? state.runs
+    : state.runs.filter((run) => !state.hiddenRunIds.has(run.run_id));
+  if (!displayedRuns.length) {
+    const hiddenHint = hiddenCount
+      ? `<small>${hiddenCount} 个任务已在本浏览器隐藏，可点击右上角恢复。</small>`
+      : '<small>完成上方配置后，点击“开始回测实验”。</small>';
+    $("run-list").innerHTML = `<div class="empty-state"><span>↗</span><strong>${hiddenCount ? "当前列表已清空" : "还没有实验任务"}</strong>${hiddenHint}</div>`;
     return;
   }
-  $("run-list").innerHTML = state.runs.map((run) => `
-    <button class="run-item ${run.run_id === state.activeRunId ? "is-active" : ""}" data-run-id="${escapeHtml(run.run_id)}">
-      <div class="run-title"><span>${escapeHtml(run.name || run.run_id)}</span><span class="status-dot status-${run.status}">${statusLabel(run.status)}</span></div>
-      <div class="run-kind">${run.workflow === "signal_path" ? run.action === "matrix" ? "PATH · HEATMAP" : "PATH · DATASET" : "STANDARD BACKTEST"}</div>
-      <div class="run-meta"><span>${escapeHtml(run.phase || "--")}</span><span>${run.completed_combinations || 0}/${run.total_combinations || 1} 组 · ${escapeHtml(run.created_at || "")}</span></div>
-      <div class="progress-track"><i style="width:${Number(run.progress || 0)}%"></i></div>
-    </button>`).join("");
-  document.querySelectorAll(".run-item").forEach((item) => item.addEventListener("click", () => selectRun(item.dataset.runId)));
+  $("run-list").innerHTML = displayedRuns.map((run) => {
+    const hidden = state.hiddenRunIds.has(run.run_id);
+    const deleteBlocked = ["queued", "running"].includes(run.status);
+    const runKind = run.workflow === "signal_path"
+      ? run.action === "matrix"
+        ? "PATH · HEATMAP"
+        : run.action === "percent_trailing"
+          ? "PATH · PERCENT TRAILING"
+          : "PATH · DATASET"
+      : "STANDARD BACKTEST";
+    return `
+      <article class="run-item ${run.run_id === state.activeRunId ? "is-active" : ""} ${hidden ? "is-history-hidden" : ""}" data-run-id="${escapeHtml(run.run_id)}">
+        <button class="run-open-button" type="button" data-run-open="${escapeHtml(run.run_id)}">
+          <div class="run-title"><span>${escapeHtml(run.name || run.run_id)}</span><span class="status-dot status-${run.status}">${statusLabel(run.status)}</span></div>
+          <div class="run-kind">${runKind}</div>
+          <div class="run-meta"><span>${escapeHtml(run.phase || "--")}</span><span>${run.completed_combinations || 0}/${run.total_combinations || 1} 组 · ${escapeHtml(run.created_at || "")}</span></div>
+          <div class="progress-track"><i style="width:${Number(run.progress || 0)}%"></i></div>
+        </button>
+        <div class="run-item-actions">
+          <button type="button" data-run-visibility="${escapeHtml(run.run_id)}">${hidden ? "恢复显示" : "从列表隐藏"}</button>
+          <button class="run-delete-files-button" type="button" data-run-delete="${escapeHtml(run.run_id)}" ${deleteBlocked ? 'disabled title="任务结束后才能彻底删除"' : 'title="删除该任务目录及全部结果文件"'}>彻底删除文件</button>
+        </div>
+      </article>`;
+  }).join("");
+  document.querySelectorAll("[data-run-open]").forEach((item) => item.addEventListener("click", () => selectRun(item.dataset.runOpen)));
+  document.querySelectorAll("[data-run-visibility]").forEach((item) => item.addEventListener("click", () => toggleRunVisibility(item.dataset.runVisibility)));
+  document.querySelectorAll("[data-run-delete]").forEach((item) => item.addEventListener("click", () => openRunDeleteDialog(item.dataset.runDelete)));
+}
+
+function toggleRunVisibility(runId) {
+  const wasHidden = state.hiddenRunIds.has(runId);
+  if (wasHidden) state.hiddenRunIds.delete(runId);
+  else state.hiddenRunIds.add(runId);
+  saveHiddenRunIds();
+  if (!wasHidden && state.activeRunId === runId) clearSelectedRun();
+  setHistoryMessage(
+    wasHidden
+      ? "任务已恢复到实验历史列表。"
+      : "任务已从本浏览器列表隐藏，磁盘文件没有删除。",
+    "success",
+  );
+  refreshBaselineOptions();
+  renderRuns();
+}
+
+function clearSelectedRun() {
+  state.activeRunId = null;
+  state.activeResult = null;
+  state.loadedResultRunId = null;
+  $("result-section").classList.add("is-hidden");
+  $("chart-section").classList.add("is-hidden");
+  if (state.chart) {
+    state.chart.remove();
+    state.chart = null;
+  }
+}
+
+function setHistoryMessage(message, kind = "") {
+  const element = $("run-history-message");
+  element.textContent = message || "";
+  element.className = `history-message ${kind}`.trim();
 }
 
 async function selectRun(runId) {
@@ -379,10 +550,103 @@ async function loadResult(runId) {
   $("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+async function openRunDeleteDialog(runId) {
+  const run = state.runs.find((item) => item.run_id === runId);
+  if (!run || ["queued", "running"].includes(run.status)) return;
+  const modal = $("run-delete-modal");
+  const input = $("run-delete-confirm-input");
+  state.pendingRunDeletion = {
+    runId,
+    info: null,
+    returnFocus: document.activeElement,
+  };
+  $("run-delete-name").textContent = run.name || runId;
+  $("run-delete-details").innerHTML = '<span>正在检查任务目录…</span>';
+  $("run-delete-dependencies").classList.add("is-hidden");
+  $("run-delete-dependencies").textContent = "";
+  $("run-delete-error").textContent = "";
+  input.value = "";
+  input.disabled = true;
+  $("run-delete-confirm").disabled = true;
+  modal.classList.remove("is-hidden");
+  modal.focus();
+  try {
+    const info = await fetchJson(`/api/backtests/runs/${encodeURIComponent(runId)}/deletion`);
+    if (state.pendingRunDeletion?.runId !== runId) return;
+    state.pendingRunDeletion.info = info;
+    $("run-delete-details").innerHTML = `
+      <span>任务编号<strong>${escapeHtml(runId)}</strong></span>
+      <span>文件数量<strong>${formatNumber(info.file_count, 0)} 个</strong></span>
+      <span>占用空间<strong>${formatBytes(info.size_bytes)}</strong></span>
+    `;
+    if (Number(info.dependent_run_count || 0) > 0) {
+      const dependencies = (info.dependent_run_ids || []).map(escapeHtml).join("、");
+      $("run-delete-dependencies").innerHTML = `注意：另有 <strong>${formatNumber(info.dependent_run_count, 0)}</strong> 个矩阵引用这个基准（${dependencies}）。删除后已有矩阵结果仍保留，但不能再复用该基准数据。`;
+      $("run-delete-dependencies").classList.remove("is-hidden");
+    }
+    if (!info.can_delete) {
+      $("run-delete-error").textContent = info.blocked_reason || "当前任务不能删除。";
+      return;
+    }
+    input.disabled = false;
+    input.focus();
+  } catch (error) {
+    $("run-delete-error").textContent = error.message;
+  }
+}
+
+function closeRunDeleteDialog() {
+  const pending = state.pendingRunDeletion;
+  state.pendingRunDeletion = null;
+  $("run-delete-modal").classList.add("is-hidden");
+  $("run-delete-confirm-input").value = "";
+  $("run-delete-error").textContent = "";
+  pending?.returnFocus?.focus?.();
+}
+
+async function confirmRunDeletion() {
+  const pending = state.pendingRunDeletion;
+  const input = $("run-delete-confirm-input");
+  if (!pending?.info || input.value.trim() !== "彻底删除") return;
+  const button = $("run-delete-confirm");
+  button.disabled = true;
+  button.textContent = "正在删除…";
+  $("run-delete-error").textContent = "";
+  try {
+    const deleted = await fetchJson(
+      `/api/backtests/runs/${encodeURIComponent(pending.runId)}`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          confirm_run_id: pending.runId,
+          confirm_permanent: true,
+          confirm_dependencies: Number(pending.info.dependent_run_count || 0) > 0,
+        }),
+      },
+    );
+    const deletedRunId = pending.runId;
+    if (state.activeRunId === deletedRunId) clearSelectedRun();
+    state.hiddenRunIds.delete(deletedRunId);
+    saveHiddenRunIds();
+    closeRunDeleteDialog();
+    await refreshRuns();
+    setHistoryMessage(
+      `已彻底删除任务 ${deletedRunId}，释放 ${formatBytes(deleted.freed_bytes)}；此操作无法恢复。`,
+      "success",
+    );
+  } catch (error) {
+    $("run-delete-error").textContent = error.message;
+  } finally {
+    button.textContent = "永久删除文件";
+    button.disabled = $("run-delete-confirm-input").value.trim() !== "彻底删除";
+  }
+}
+
 function renderResult(result) {
   renderArtifacts(result);
   $("path-comparison-section").classList.add("is-hidden");
-  if (result.type === "signal_path_baseline" || result.type === "signal_path_matrix") {
+  if (["signal_path_baseline", "signal_path_matrix", "signal_path_percent_trailing"].includes(result.type)) {
     renderPathResult(result);
     return;
   }
@@ -413,12 +677,14 @@ function renderResult(result) {
 }
 
 function renderPathResult(result) {
-  document.querySelector(".heatmap-metric").classList.remove("is-hidden");
+  const isMatrix = result.type === "signal_path_matrix";
+  const isPercentTrailing = result.type === "signal_path_percent_trailing";
+  document.querySelector(".heatmap-metric").classList.toggle("is-hidden", !isMatrix);
   const best = result.best || {};
   $("result-title").textContent = result.name || "信号路径研究";
   const badge = $("result-verdict");
   badge.textContent = best.verdict || (result.type === "signal_path_baseline" ? "基准完成" : "--");
-  badge.className = `verdict-badge ${String(best.verdict || "").includes("孤点") ? "caution" : String(best.verdict || "").includes("不通过") ? "fail" : ""}`;
+  badge.className = `verdict-badge ${String(best.verdict || "").includes("不通过") ? "fail" : String(best.verdict || "").includes("孤点") || String(best.verdict || "").includes("待验证") ? "caution" : ""}`;
   $("score-explanation").textContent = result.score_explanation || "";
 
   if (result.type === "signal_path_baseline") {
@@ -449,6 +715,40 @@ function renderPathResult(result) {
     $("split-grid").innerHTML = pathSplitItems(best, result.dataset, false);
     renderPerformanceDiagnostics(result, best);
     $("path-comparison-section").classList.add("is-hidden");
+    $("heatmap-section").classList.add("is-hidden");
+    $("result-table-section").classList.add("is-hidden");
+    return;
+  }
+
+  if (isPercentTrailing) {
+    const parameters = best.parameters || result.strategy || {};
+    const testRevealed = Boolean(result.visibility?.test_revealed);
+    const metrics = [
+      ["硬止损", `${formatNumber(parameters.hard_stop_pct)}% 开仓价`],
+      ["启动门槛", `${formatNumber(parameters.trailing_activation_pct)}% 开仓价`],
+      ["移动回撤", `${formatNumber(parameters.trailing_drawdown_pct)}% 最佳价`],
+      [testRevealed ? "总收益" : "研究+验证收益", formatPct(best.return_pct)],
+      ["最终权益", formatMoney(best.final_equity)],
+      ["净利润", formatMoney(best.net_profit)],
+      ["总盈利", formatMoney(best.gross_profit)],
+      ["总亏损", formatMoney(best.gross_loss)],
+      ["最大回撤", formatPct(best.max_drawdown_pct)],
+      ["盈利因子", formatNumber(best.profit_factor)],
+      ["胜率", formatPct(best.win_rate_pct)],
+      ["盈利 / 亏损", `${formatNumber(best.winning_trade_count, 0)} / ${formatNumber(best.losing_trade_count, 0)}`],
+      ["交易数", formatNumber(best.trade_count, 0)],
+      ["硬止损退出", formatNumber(best.hard_stop_count, 0)],
+      ["移动止盈启动", formatNumber(best.trailing_activation_count, 0)],
+      ["移动回撤退出", formatNumber(best.trailing_stop_count, 0)],
+      ["反向信号退出", formatNumber(best.reverse_exit_count, 0)],
+      ["再入场交易", formatNumber(best.reentry_trade_count, 0)],
+      ["K 线内顺序不确定", formatNumber(best.ambiguous_bar_count, 0)],
+      ["手续费", formatMoney(best.total_fees)],
+    ];
+    $("metric-grid").innerHTML = metrics.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
+    $("split-grid").innerHTML = pathSplitItems(best, result.dataset, testRevealed);
+    renderPerformanceDiagnostics(result, best);
+    renderPathComparison(result);
     $("heatmap-section").classList.add("is-hidden");
     $("result-table-section").classList.add("is-hidden");
     return;
@@ -601,15 +901,21 @@ function renderPathComparison(result) {
     return;
   }
   section.classList.remove("is-hidden");
-  const unit = ({atr:"ATR",percent:"%",points:"点"})[candidate.parameters?.unit] || candidate.parameters?.unit || "";
+  const parameters = candidate.parameters || {};
+  const isPercentTrailing = result.type === "signal_path_percent_trailing";
+  const unit = ({atr:"ATR",percent:"%",points:"点"})[parameters.unit] || parameters.unit || "";
+  const candidateDescription = isPercentTrailing
+    ? `硬止损 ${formatNumber(parameters.hard_stop_pct)}% 开仓价 · 浮盈 ${formatNumber(parameters.trailing_activation_pct)}% 启动 · 最佳价回撤 ${formatNumber(parameters.trailing_drawdown_pct)}%`
+    : `止损 ${formatNumber(parameters.stop_loss)} ${escapeHtml(unit)} · 止盈 ${formatNumber(parameters.take_profit)} ${escapeHtml(unit)}`;
+  const testRevealed = Boolean(result.heatmap?.test_revealed || result.visibility?.test_revealed);
   $("path-comparison-summary").innerHTML = `
     <span><strong>无风控基准</strong>：持有到有效反向信号</span>
-    <span><strong>当前候选</strong>：止损 ${formatNumber(candidate.parameters?.stop_loss)} ${escapeHtml(unit)} · 止盈 ${formatNumber(candidate.parameters?.take_profit)} ${escapeHtml(unit)}</span>
-    <span>同向再入场 <strong>${formatNumber(candidate.parameters?.max_reentries, 0)}</strong> 次</span>
+    <span><strong>当前候选</strong>：${candidateDescription}</span>
+    <span>同向再入场 <strong>${formatNumber(parameters.max_reentries, 0)}</strong> 次</span>
     <span>净利润变化 <strong class="${comparisonDeltaClass(candidate.net_profit - baseline.net_profit, "higher")}">${formatComparisonDelta(candidate.net_profit - baseline.net_profit, "money")}</strong></span>
     <span>回撤变化 <strong class="${comparisonDeltaClass(candidate.max_drawdown_pct - baseline.max_drawdown_pct, "lower")}">${formatComparisonDelta(candidate.max_drawdown_pct - baseline.max_drawdown_pct, "pct")}</strong></span>
     <span>验证收益变化 <strong class="${comparisonDeltaClass(candidate.validation_return_pct - baseline.validation_return_pct, "higher")}">${formatComparisonDelta(candidate.validation_return_pct - baseline.validation_return_pct, "pct")}</strong></span>
-    <span>比较范围：<strong>${result.heatmap?.test_revealed ? "研究 + 验证 + 已揭盲测试" : "研究 + 验证，测试隐藏"}</strong></span>
+    <span>比较范围：<strong>${testRevealed ? "研究 + 验证 + 已揭盲测试" : "研究 + 验证，测试隐藏"}</strong></span>
   `;
   const rows = [
     ["初始权益", "initial_equity", "money", "neutral"],
@@ -654,15 +960,25 @@ function renderPathComparison(result) {
       </tr>`;
     }).join("")}</tbody>
   `;
-  $("path-exit-summary").innerHTML = [
+  const exitItems = [
     ["基准反向退出", baseline.reverse_exit_count],
-    ["候选止损退出", candidate.stop_loss_count],
-    ["候选止盈退出", candidate.take_profit_count],
+    ...(isPercentTrailing
+      ? [
+          ["硬止损退出", candidate.hard_stop_count],
+          ["移动止盈启动", candidate.trailing_activation_count],
+          ["移动回撤退出", candidate.trailing_stop_count],
+          ["K 线内顺序不确定", candidate.ambiguous_bar_count],
+        ]
+      : [
+          ["候选止损退出", candidate.stop_loss_count],
+          ["候选止盈退出", candidate.take_profit_count],
+        ]),
     ["候选反向退出", candidate.reverse_exit_count],
     ["候选再入场交易", candidate.reentry_trade_count],
     ["边界估值持仓", candidate.window_mark_count],
     ["候选平均持仓", `${formatNumber(candidate.average_holding_bars)} 根`],
-  ].map(([label, value]) => `<span>${label}<strong>${typeof value === "string" ? value : formatNumber(value, 0)}</strong></span>`).join("");
+  ];
+  $("path-exit-summary").innerHTML = exitItems.map(([label, value]) => `<span>${label}<strong>${typeof value === "string" ? value : formatNumber(value, 0)}</strong></span>`).join("");
 }
 
 function renderArtifacts(result) {
@@ -680,6 +996,8 @@ function renderArtifacts(result) {
     "dataset/bars.csv.gz": "全量 5m K 线与完整指标",
     "dataset/README.txt": "数据文件使用说明",
     "matrix.csv": "热力图矩阵完整结果",
+    "strategy.csv": "百分比移动风控汇总",
+    "strategy_trades.csv": "百分比移动风控逐笔交易",
   };
   const priority = {
     "dataset/llm_research_samples.jsonl.gz": 1,
@@ -688,6 +1006,8 @@ function renderArtifacts(result) {
     "dataset/episodes.csv": 4,
     "dataset/bars.csv.gz": 5,
     "dataset/README.txt": 6,
+    "strategy.csv": 7,
+    "strategy_trades.csv": 8,
   };
   const ordered = [...artifacts].sort(
     (left, right) => (priority[left.name] || 99) - (priority[right.name] || 99),
@@ -973,7 +1293,7 @@ async function boot() {
   $("profile-select").addEventListener("change", () => populateProfile($("profile-select").value));
   $("workflow-select").addEventListener("change", applyWorkflow);
   $("path-action-select").addEventListener("change", applyWorkflow);
-  ["path-context-bars-input","path-baseline-run-select","path-stop-unit-select","path-stop-values-input","path-take-values-input","path-max-reentries-input","path-reentry-cooldown-input","path-intrabar-policy-select","path-reveal-test-input"].forEach((id) => {
+  ["path-context-bars-input","path-baseline-run-select","path-stop-unit-select","path-stop-values-input","path-take-values-input","path-hard-stop-pct-input","path-trailing-activation-pct-input","path-trailing-drawdown-pct-input","path-max-reentries-input","path-reentry-cooldown-input","path-intrabar-policy-select","path-reveal-test-input"].forEach((id) => {
     $(id).addEventListener("input", scheduleEstimate);
     $(id).addEventListener("change", scheduleEstimate);
   });
@@ -987,8 +1307,26 @@ async function boot() {
   $("strategy-details-modal").addEventListener("click", (event) => {
     if (event.target === $("strategy-details-modal")) closeStrategyDetails();
   });
+  $("toggle-hidden-runs-button").addEventListener("click", () => {
+    state.showHiddenRuns = !state.showHiddenRuns;
+    renderRuns();
+  });
+  $("run-delete-cancel").addEventListener("click", closeRunDeleteDialog);
+  $("run-delete-back").addEventListener("click", closeRunDeleteDialog);
+  $("run-delete-confirm").addEventListener("click", confirmRunDeletion);
+  $("run-delete-confirm-input").addEventListener("input", () => {
+    const input = $("run-delete-confirm-input");
+    $("run-delete-confirm").disabled = !(
+      !input.disabled
+      && input.value.trim() === "彻底删除"
+    );
+  });
+  $("run-delete-modal").addEventListener("click", (event) => {
+    if (event.target === $("run-delete-modal")) closeRunDeleteDialog();
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !$("strategy-details-modal").classList.contains("is-hidden")) closeStrategyDetails();
+    if (event.key === "Escape" && !$("run-delete-modal").classList.contains("is-hidden")) closeRunDeleteDialog();
   });
   gridInputs().forEach((input) => input.addEventListener("input", scheduleEstimate));
   gridInputs().forEach((input) => { input.placeholder ||= "单值或 起始:结束:步长"; });

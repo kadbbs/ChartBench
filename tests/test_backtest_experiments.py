@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from flask import Flask
 
 from tq_app.backtesting.application import BacktestApplication
-from tq_app.backtesting.experiments import build_experiment_spec, cache_coverage
+from tq_app.backtesting.experiments import (
+    BacktestExperimentManager,
+    build_experiment_spec,
+    cache_coverage,
+)
 from tq_app.backtesting.web import create_backtest_blueprint
 from tq_app.web import create_app
 
@@ -38,6 +44,22 @@ class _FakeManager:
 
     def artifacts(self, run_id):
         return [{"name": "matrix.csv", "label": "矩阵完整结果", "size_bytes": 10}]
+
+    def deletion_info(self, run_id):
+        return {
+            "run_id": run_id,
+            "can_delete": True,
+            "file_count": 3,
+            "size_bytes": 100,
+            "dependent_run_ids": [],
+        }
+
+    def delete_files(self, run_id, **confirmation):
+        return {
+            "deleted": True,
+            "run_id": run_id,
+            "confirmation": confirmation,
+        }
 
     def artifact_path(self, run_id, artifact_name):
         raise FileNotFoundError("研究产物不存在。")
@@ -174,11 +196,135 @@ class BacktestExperimentTest(unittest.TestCase):
         )
         self.assertEqual(path_estimate.status_code, 200)
         self.assertEqual(path_estimate.get_json()["combinations"], 6)
+        trailing_estimate = client.post(
+            "/api/backtests/estimate",
+            json={
+                "workflow": "signal_path",
+                "action": "percent_trailing",
+                "profile": "btc_5m_signal_path",
+                "hard_stop_pct": 3,
+                "trailing_activation_pct": 8,
+                "trailing_drawdown_pct": 10,
+            },
+        )
+        self.assertEqual(trailing_estimate.status_code, 200)
+        self.assertEqual(trailing_estimate.get_json()["combinations"], 1)
+        self.assertIn(
+            "固定百分比移动风控",
+            trailing_estimate.get_json()["execution_class"],
+        )
         self.assertEqual(
             client.get("/api/backtests/runs/test/artifacts").get_json()["artifacts"][0]["name"],
             "matrix.csv",
         )
+        self.assertTrue(
+            client.get("/api/backtests/runs/test/deletion")
+            .get_json()["can_delete"]
+        )
+        deleted = client.delete(
+            "/api/backtests/runs/test",
+            json={
+                "confirm_run_id": "test",
+                "confirm_permanent": True,
+            },
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.get_json()["deleted"])
         self.assertEqual(client.get("/").status_code, 404)
+
+    def test_completed_run_files_require_exact_confirmation_and_dependency_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            manager = BacktestExperimentManager(project_root)
+            try:
+                run_dir = manager.root / "baseline"
+                run_dir.mkdir()
+                (run_dir / "status.json").write_text(
+                    json.dumps(
+                        {
+                            "run_id": "baseline",
+                            "name": "基准",
+                            "status": "succeeded",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (run_dir / "artifact.bin").write_bytes(b"12345")
+                dependent_dir = manager.root / "matrix"
+                dependent_dir.mkdir()
+                (dependent_dir / "status.json").write_text(
+                    json.dumps(
+                        {
+                            "run_id": "matrix",
+                            "name": "矩阵",
+                            "status": "succeeded",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (dependent_dir / "request.json").write_text(
+                    json.dumps({"baseline_run_id": "baseline"}),
+                    encoding="utf-8",
+                )
+
+                info = manager.deletion_info("baseline")
+
+                self.assertTrue(info["can_delete"])
+                self.assertEqual(info["dependent_run_ids"], ["matrix"])
+                self.assertGreaterEqual(info["file_count"], 2)
+                with self.assertRaisesRegex(ValueError, "确认信息不匹配"):
+                    manager.delete_files(
+                        "baseline",
+                        confirm_run_id="wrong",
+                        confirm_permanent=True,
+                    )
+                with self.assertRaisesRegex(ValueError, "仍被其他实验引用"):
+                    manager.delete_files(
+                        "baseline",
+                        confirm_run_id="baseline",
+                        confirm_permanent=True,
+                    )
+
+                deleted = manager.delete_files(
+                    "baseline",
+                    confirm_run_id="baseline",
+                    confirm_permanent=True,
+                    confirm_dependencies=True,
+                )
+
+                self.assertTrue(deleted["deleted"])
+                self.assertFalse(deleted["recoverable"])
+                self.assertFalse(run_dir.exists())
+                self.assertTrue(dependent_dir.exists())
+            finally:
+                manager.shutdown()
+
+    def test_running_run_cannot_be_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = BacktestExperimentManager(Path(temp_dir))
+            try:
+                run_dir = manager.root / "running"
+                run_dir.mkdir()
+                (run_dir / "status.json").write_text(
+                    json.dumps(
+                        {
+                            "run_id": "running",
+                            "name": "运行中",
+                            "status": "running",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                self.assertFalse(manager.deletion_info("running")["can_delete"])
+                with self.assertRaisesRegex(ValueError, "不能删除"):
+                    manager.delete_files(
+                        "running",
+                        confirm_run_id="running",
+                        confirm_permanent=True,
+                    )
+            finally:
+                manager.shutdown()
 
     def test_chart_app_does_not_enable_backtest_routes_by_default(self) -> None:
         app = create_app(object(), PROJECT_ROOT)
