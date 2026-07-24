@@ -171,6 +171,13 @@ class SignalEvaluator:
             "trend_start_time": detail.get("trend_start_time"),
             "trend_start_time_label": detail.get("trend_start_time_label"),
             "trend": trend,
+            "red_band": list(detail.get("red_band") or []),
+            "green_band": list(detail.get("green_band") or []),
+            "stc_value": detail.get("stc_value"),
+            "stc_color": detail.get("stc_color"),
+            "stc_trend": detail.get("stc_trend"),
+            "indicator_values": dict(detail.get("indicator_values") or {}),
+            "indicator_colors": dict(detail.get("indicator_colors") or {}),
         }
         if detail.get("trend_start_time") is not None:
             context["lock_key"] = htf_entry_lock_key(symbol, side, duration, int(detail["trend_start_time"]))
@@ -250,7 +257,10 @@ class SignalEvaluator:
             "bar_time_label": bar_time_label(snapshot, bar_time),
             "red_band": red_band,
             "green_band": green_band,
+            "stc_value": values.get("stc.stc"),
             "stc_color": stc_color,
+            "indicator_values": values,
+            "indicator_colors": colors,
         }
         if red_band and not green_band:
             self._attach_hull_trend_start(snapshot, candles, actual_index, "buy", detail)

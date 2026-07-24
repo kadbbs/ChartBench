@@ -20,6 +20,7 @@ class IndicatorResult:
     name: str
     pane: str
     series: list[SeriesDefinition]
+    features: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

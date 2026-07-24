@@ -201,6 +201,37 @@ input::placeholder { color: #52616c; }
 .split-item strong { float: right; color: var(--text-soft); }
 .analysis-block { margin-top: 25px; padding-top: 21px; border-top: 1px solid var(--line); }
 .block-heading { margin-bottom: 12px; }
+.performance-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.performance-heading > div { display: grid; gap: 4px; }
+.method-badge { flex: 0 0 auto; padding: 6px 9px; border: 1px solid rgba(122,167,255,.2); border-radius: 999px; color: #9bbcff; background: rgba(122,167,255,.07); font-size: 9px; }
+.method-note { margin: -2px 0 13px; padding: 10px 12px; border-left: 2px solid rgba(122,167,255,.5); color: var(--muted); background: rgba(122,167,255,.035); font-size: 9px; line-height: 1.65; }
+.performance-diagnostics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.diagnostic-group { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0,0,0,.12); }
+.diagnostic-group header { margin-bottom: 12px; }
+.diagnostic-group h4 { margin: 0 0 4px; color: var(--text-soft); font-size: 11px; }
+.diagnostic-group header span { color: var(--muted); font-size: 8px; line-height: 1.5; }
+.diagnostic-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+.diagnostic-item { min-width: 0; padding: 10px; border: 1px solid rgba(184,205,224,.08); border-radius: 9px; background: rgba(255,255,255,.014); }
+.diagnostic-item > span { display: block; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.diagnostic-item strong { display: block; margin: 5px 0 4px; color: var(--text-soft); font-size: 15px; letter-spacing: -.02em; }
+.diagnostic-item small { display: block; min-height: 24px; color: rgba(127,145,159,.78); font-size: 7px; line-height: 1.55; }
+.diagnostic-item.good strong { color: var(--accent); }
+.diagnostic-item.caution strong { color: var(--warning); }
+.diagnostic-item.bad strong { color: var(--danger); }
+.comparison-summary, .exit-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.comparison-summary span, .exit-summary span { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: rgba(255,255,255,.018); font-size: 9px; }
+.comparison-summary strong, .exit-summary strong { color: var(--text-soft); }
+.exit-summary { margin: 12px 0 0; }
+.exit-summary span { display: grid; gap: 4px; min-width: 118px; }
+.exit-summary strong { font-size: 12px; }
+.table-wrap.comparison-table-wrap { max-height: none; }
+.comparison-table-wrap table th:not(:first-child), .comparison-table-wrap table td:not(:first-child) { text-align: right; }
+.comparison-table-wrap th:first-child, .comparison-table-wrap td:first-child { text-align: left; }
+.delta-good { color: var(--accent); font-weight: 700; }
+.delta-bad { color: #ff7777; font-weight: 700; }
+.delta-neutral { color: var(--muted); }
+.comparison-summary strong.delta-good { color: var(--accent); }
+.comparison-summary strong.delta-bad { color: #ff7777; }
 .heatmap-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
 .heatmap-heading > div { display: grid; gap: 4px; }
 .heatmap-metric { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 9px; }
@@ -265,6 +296,8 @@ tr:hover td { background: rgba(98,223,177,.025); }
   .config-section + .config-section { border-left: 0; border-top: 1px solid var(--line); }
   .field-grid.five { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .run-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .performance-diagnostics { grid-template-columns: 1fr; }
+  .diagnostic-list { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -294,6 +327,8 @@ tr:hover td { background: rgba(98,223,177,.025); }
   .card-heading { align-items: flex-start; }
   .path-workflow-guide, .field-grid.path-fields, .artifact-list { grid-template-columns: 1fr; }
   .heatmap-heading { align-items: stretch; display: grid; }
+  .performance-heading { align-items: stretch; display: grid; }
+  .diagnostic-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 
 @media (max-width: 480px) {
@@ -309,6 +344,7 @@ tr:hover td { background: rgba(98,223,177,.025); }
   .strategy-details-content { padding: 20px 19px 30px; }
   .strategy-context-grid { grid-template-columns: 1fr; }
   .block-heading { align-items: flex-start; display: grid; }
+  .diagnostic-list { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

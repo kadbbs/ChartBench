@@ -381,6 +381,7 @@ async function loadResult(runId) {
 
 function renderResult(result) {
   renderArtifacts(result);
+  $("path-comparison-section").classList.add("is-hidden");
   if (result.type === "signal_path_baseline" || result.type === "signal_path_matrix") {
     renderPathResult(result);
     return;
@@ -406,6 +407,7 @@ function renderResult(result) {
     ...Object.entries(best.yearly_returns_pct || {}).map(([year, value]) => [`${year} 年`, value]),
   ];
   $("split-grid").innerHTML = splits.map(([label, value]) => `<div class="split-item">${label}<strong>${formatPct(value)}</strong></div>`).join("");
+  renderPerformanceDiagnostics(result, best);
   renderTable(result.rows || []);
   renderHeatmap(result);
 }
@@ -421,20 +423,32 @@ function renderPathResult(result) {
 
   if (result.type === "signal_path_baseline") {
     const metrics = [
-      ["闭合路径", formatNumber(best.closed_episode_count, 0)],
-      ["有效信号", formatNumber(best.qualified_signal_count, 0)],
-      ["同向信号", formatNumber(best.same_side_signal_count, 0)],
-      ["模型样本", formatNumber(best.llm_research_episode_count, 0)],
-      ["研究+验证基准收益", formatPct(best.return_pct)],
+      ["初始权益", formatMoney(best.initial_equity)],
+      ["最终权益", formatMoney(best.final_equity)],
+      ["净利润", formatMoney(best.net_profit)],
+      ["总盈利", formatMoney(best.gross_profit)],
+      ["总亏损", formatMoney(best.gross_loss)],
+      ["研究+验证收益", formatPct(best.return_pct)],
       ["最大回撤", formatPct(best.max_drawdown_pct)],
       ["盈利因子", formatNumber(best.profit_factor)],
-      ["中位持仓", `${formatNumber(best.median_holding_bars, 0)} 根`],
-      ["中位 MFE", best.median_mfe_atr == null ? "--" : `${formatNumber(best.median_mfe_atr)} ATR`],
-      ["中位 MAE", best.median_mae_atr == null ? "--" : `${formatNumber(best.median_mae_atr)} ATR`],
-      ["未闭合路径", formatNumber(best.open_episode_count, 0)],
+      ["胜率", formatPct(best.win_rate_pct)],
+      ["盈利 / 亏损", `${formatNumber(best.winning_trade_count, 0)} / ${formatNumber(best.losing_trade_count, 0)}`],
+      ["当前可见交易", formatNumber(best.trade_count, 0)],
+      ["手续费", formatMoney(best.total_fees)],
+      ["全样本闭合路径", formatNumber(best.closed_episode_count, 0)],
+      ["全样本有效信号", formatNumber(best.qualified_signal_count, 0)],
+      ["全样本同向信号", formatNumber(best.same_side_signal_count, 0)],
+      ["研究段模型样本", formatNumber(best.llm_research_episode_count, 0)],
+      ["可见中位持仓", `${formatNumber(best.median_holding_bars, 0)} 根`],
+      ["可见中位 MFE", best.median_mfe_atr == null ? "--" : `${formatNumber(best.median_mfe_atr)} ATR`],
+      ["可见中位 MAE", best.median_mae_atr == null ? "--" : `${formatNumber(best.median_mae_atr)} ATR`],
+      ["边界估值持仓", formatNumber(best.window_mark_count, 0)],
+      ["全样本未闭合", formatNumber(best.open_episode_count, 0)],
     ];
     $("metric-grid").innerHTML = metrics.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
-    $("split-grid").innerHTML = datasetSplitItems(result.dataset);
+    $("split-grid").innerHTML = pathSplitItems(best, result.dataset, false);
+    renderPerformanceDiagnostics(result, best);
+    $("path-comparison-section").classList.add("is-hidden");
     $("heatmap-section").classList.add("is-hidden");
     $("result-table-section").classList.add("is-hidden");
     return;
@@ -445,11 +459,19 @@ function renderPathResult(result) {
     ["验证段收益", formatPct(best.validation_return_pct)],
     ["研究段收益", formatPct(best.research_return_pct)],
     [result.heatmap?.test_revealed ? "总收益" : "研究+验证收益", formatPct(best.return_pct)],
+    ["净利润", formatMoney(best.net_profit)],
+    ["总盈利", formatMoney(best.gross_profit)],
+    ["总亏损", formatMoney(best.gross_loss)],
     ["最大回撤", formatPct(best.max_drawdown_pct)],
     ["盈利因子", formatNumber(best.profit_factor)],
+    ["胜率", formatPct(best.win_rate_pct)],
+    ["盈利 / 亏损", `${formatNumber(best.winning_trade_count, 0)} / ${formatNumber(best.losing_trade_count, 0)}`],
+    ["手续费", formatMoney(best.total_fees)],
     ["邻域盈利", formatPct(Number(best.positive_neighbor_ratio || 0) * 100)],
     ["稳定区大小", formatNumber(best.region_size, 0)],
     ["交易数", formatNumber(best.trade_count, 0)],
+    ["再入场交易", formatNumber(best.reentry_trade_count, 0)],
+    ["边界估值持仓", formatNumber(best.window_mark_count, 0)],
     ["双触发 K 线", formatNumber(best.ambiguous_bar_count, 0)],
   ];
   $("metric-grid").innerHTML = metrics.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
@@ -461,19 +483,186 @@ function renderPathResult(result) {
     ["邻域最差验证收益", formatPct(best.neighbor_min_validation_return_pct)],
     ...Object.entries(best.yearly_returns_pct || {}).map(([year, value]) => [`${year} 年`, formatPct(value)]),
   ].map(([label, value]) => `<div class="split-item">${label}<strong>${value}</strong></div>`).join("");
+  renderPerformanceDiagnostics(result, best);
+  renderPathComparison(result);
   $("result-table-section").classList.remove("is-hidden");
   renderPathTable(result.rows || [], Boolean(result.heatmap?.test_revealed));
   renderPathHeatmap(result);
 }
 
-function datasetSplitItems(dataset = {}) {
+function pathSplitItems(best = {}, dataset = {}, testRevealed = false) {
   const splits = dataset.splits || {};
   return [
+    ["研究段 60%", formatMetricWithProfit(best.research_return_pct, best.research_net_profit)],
+    ["验证段 20%", formatMetricWithProfit(best.validation_return_pct, best.validation_net_profit)],
+    ["最终测试 20%", testRevealed ? formatMetricWithProfit(best.test_return_pct, best.test_net_profit) : "未揭盲"],
+    ...Object.entries(best.yearly_returns_pct || {}).map(([year, value]) => [`${year} 年`, formatPct(value)]),
     ["数据集编号", escapeHtml(dataset.dataset_id || "--")],
+    ["指标记录", Number(dataset.schema_version || 0) >= 2 ? "完整 5m + 已闭合 1D" : "旧版基础字段"],
     ["K 线数量", formatNumber(dataset.bar_count, 0)],
     ["研究段结束", formatTimestamp(splits.research_end)],
     ["验证段结束", formatTimestamp(splits.validation_end)],
   ].map(([label, value]) => `<div class="split-item">${label}<strong>${value}</strong></div>`).join("");
+}
+
+function renderPerformanceDiagnostics(result, best = {}) {
+  const section = $("performance-diagnostics-section");
+  if (best.sharpe_ratio == null && best.daily_expected_shortfall_95_pct == null) {
+    section.classList.add("is-hidden");
+    $("performance-diagnostics").innerHTML = "";
+    return;
+  }
+  section.classList.remove("is-hidden");
+  const validation = result.statistical_validation || {};
+  const basisLabels = {
+    daily_mark_to_market_utc: "UTC 日末逐日盯市",
+    daily_realized_utc: "UTC 日末已实现权益",
+  };
+  const basis = basisLabels[best.performance_return_basis] || "等间隔日收益";
+  $("performance-basis-badge").textContent = basis;
+  const scope = validation.scope === "research_and_validation_only"
+    || (result.type?.startsWith("signal_path") && !result.heatmap?.test_revealed)
+    ? "最终测试保持隐藏，只统计到验证边界；跨界持仓在边界按可清算价值估值"
+    : "统计覆盖当前结果的完整可见区间";
+  $("performance-method-note").textContent = `${basis}，按 365.25 天年化，风险自由利率与最低可接受收益均设为 0。${scope}。单个比率不能单独证明可实盘，应与稳定区、DSR、PBO 和最终盲测一起判断。`;
+
+  const minTrackValue = best.minimum_track_record_days_95;
+  const observedDays = Number(best.performance_observation_count || 0);
+  const groups = [
+    {
+      title: "收益 / 风险效率",
+      subtitle: "相同收益下承担的波动、下行波动与回撤成本",
+      items: [
+        ["CAGR", formatPct(best.cagr_pct), "cagr_pct", best.cagr_pct, "年化复合增长，不等于简单总收益"],
+        ["年化波动", formatPct(best.annualized_volatility_pct), "neutral", best.annualized_volatility_pct, "逐日收益标准差按加密市场年化"],
+        ["Sharpe", formatNumber(best.sharpe_ratio), "sharpe_ratio", best.sharpe_ratio, "每单位总波动获得的超额收益"],
+        ["Sortino", formatNumber(best.sortino_ratio), "sortino_ratio", best.sortino_ratio, "只把低于 0 的下行波动视为风险"],
+        ["Calmar", formatNumber(best.calmar_ratio), "calmar_ratio", best.calmar_ratio, "CAGR ÷ 路径最大回撤"],
+        ["Omega", formatNumber(best.omega_ratio), "omega_ratio", best.omega_ratio, "0 门槛以上收益总和 ÷ 以下损失总和"],
+      ],
+    },
+    {
+      title: "左尾 / 回撤风险",
+      subtitle: "关注极端坏日、回撤深度以及资金被套住的时间",
+      items: [
+        ["日 ES 95%", formatPct(best.daily_expected_shortfall_95_pct), "neutral", best.daily_expected_shortfall_95_pct, "最差 5% 日收益的平均损失，优先于只看 VaR"],
+        ["日 VaR 95%", formatPct(best.daily_var_95_pct), "neutral", best.daily_var_95_pct, "95% 置信水平的一日损失分位点"],
+        ["Ulcer Index", formatPct(best.ulcer_index_pct), "neutral", best.ulcer_index_pct, "所有回撤深度的均方根，持续回撤会被惩罚"],
+        ["最长回撤", best.max_drawdown_duration_days == null ? "--" : `${formatNumber(best.max_drawdown_duration_days, 0)} 天`, "neutral", best.max_drawdown_duration_days, "从权益高点到恢复高点的最长时间"],
+        ["收益偏度", formatNumber(best.return_skewness), "neutral", best.return_skewness, "负值意味着左尾更长；正值不等于没有尾部风险"],
+        ["超额峰度", formatNumber(best.return_excess_kurtosis), "neutral", best.return_excess_kurtosis, "高于 0 表示肥尾，正态假设更不可靠"],
+      ],
+    },
+    {
+      title: "统计可信度 / 防过拟合",
+      subtitle: "把样本长度、非正态收益和本次参数搜索次数算进去",
+      items: [
+        ["PSR > 0", formatPct(best.psr_zero_pct), "probability_high", best.psr_zero_pct, "真实 Sharpe 大于 0 的概率；已校正偏度、峰度和样本长度"],
+        ["PSR > 1", formatPct(best.psr_benchmark_pct), "probability_high", best.psr_benchmark_pct, "真实年化 Sharpe 大于 1 的概率"],
+        ["95% 最短记录", minTrackValue == null ? "未达到 SR 1" : `${formatNumber(minTrackValue, 0)} 天`, minTrackValue == null ? "bad" : observedDays >= Number(minTrackValue) ? "good" : "caution", minTrackValue, "达到“Sharpe > 1，置信度 95%”所需的记录长度"],
+        ["DSR", best.deflated_sharpe_ratio_pct == null ? "需运行矩阵" : formatPct(best.deflated_sharpe_ratio_pct), "probability_high", best.deflated_sharpe_ratio_pct, "在 PSR 基础上再惩罚本次多重参数试验"],
+        ["矩阵 PBO", validation.pbo_pct == null ? "需运行矩阵" : formatPct(validation.pbo_pct), "pbo", validation.pbo_pct, "样本内赢家在样本外跌破组合中位数的概率，越低越好"],
+        ["CSCV 样本外 Sharpe", formatNumber(validation.cscv_median_selected_oos_sharpe), "sharpe_ratio", validation.cscv_median_selected_oos_sharpe, validation.pbo_available ? `${formatNumber(validation.cscv_split_count, 0)} 次对称交叉验证的中位数` : "矩阵或样本长度不足"],
+      ],
+    },
+  ];
+  $("performance-diagnostics").innerHTML = groups.map((group) => `
+    <section class="diagnostic-group">
+      <header><h4>${escapeHtml(group.title)}</h4><span>${escapeHtml(group.subtitle)}</span></header>
+      <div class="diagnostic-list">${group.items.map(([label, display, qualityKey, raw, note]) => `
+        <div class="diagnostic-item ${diagnosticQuality(qualityKey, raw)}" title="${escapeHtml(note)}">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(display)}</strong>
+          <small>${escapeHtml(note)}</small>
+        </div>`).join("")}
+      </div>
+    </section>`).join("");
+}
+
+function diagnosticQuality(key, value) {
+  if (["good", "caution", "bad"].includes(key)) return key;
+  const number = Number(value);
+  if (!Number.isFinite(number) || key === "neutral") return "";
+  if (key === "pbo") return number <= 20 ? "good" : number <= 50 ? "caution" : "bad";
+  if (key === "probability_high") return number >= 95 ? "good" : number >= 70 ? "caution" : "bad";
+  if (key === "cagr_pct") return number > 0 ? "good" : "bad";
+  if (["sharpe_ratio", "sortino_ratio", "calmar_ratio", "omega_ratio"].includes(key)) {
+    return number >= 1 ? "good" : number > 0 ? "caution" : "bad";
+  }
+  return "";
+}
+
+function renderPathComparison(result) {
+  const section = $("path-comparison-section");
+  const baseline = result.baseline;
+  const candidate = result.best;
+  if (!baseline || !candidate) {
+    section.classList.add("is-hidden");
+    return;
+  }
+  section.classList.remove("is-hidden");
+  const unit = ({atr:"ATR",percent:"%",points:"点"})[candidate.parameters?.unit] || candidate.parameters?.unit || "";
+  $("path-comparison-summary").innerHTML = `
+    <span><strong>无风控基准</strong>：持有到有效反向信号</span>
+    <span><strong>当前候选</strong>：止损 ${formatNumber(candidate.parameters?.stop_loss)} ${escapeHtml(unit)} · 止盈 ${formatNumber(candidate.parameters?.take_profit)} ${escapeHtml(unit)}</span>
+    <span>同向再入场 <strong>${formatNumber(candidate.parameters?.max_reentries, 0)}</strong> 次</span>
+    <span>净利润变化 <strong class="${comparisonDeltaClass(candidate.net_profit - baseline.net_profit, "higher")}">${formatComparisonDelta(candidate.net_profit - baseline.net_profit, "money")}</strong></span>
+    <span>回撤变化 <strong class="${comparisonDeltaClass(candidate.max_drawdown_pct - baseline.max_drawdown_pct, "lower")}">${formatComparisonDelta(candidate.max_drawdown_pct - baseline.max_drawdown_pct, "pct")}</strong></span>
+    <span>验证收益变化 <strong class="${comparisonDeltaClass(candidate.validation_return_pct - baseline.validation_return_pct, "higher")}">${formatComparisonDelta(candidate.validation_return_pct - baseline.validation_return_pct, "pct")}</strong></span>
+    <span>比较范围：<strong>${result.heatmap?.test_revealed ? "研究 + 验证 + 已揭盲测试" : "研究 + 验证，测试隐藏"}</strong></span>
+  `;
+  const rows = [
+    ["初始权益", "initial_equity", "money", "neutral"],
+    ["最终权益", "final_equity", "money", "higher"],
+    ["净利润", "net_profit", "money", "higher"],
+    ["总盈利", "gross_profit", "money", "higher"],
+    ["总亏损", "gross_loss", "money", "lower"],
+    ["收益率", "return_pct", "pct", "higher"],
+    ["研究段收益", "research_return_pct", "pct", "higher"],
+    ["验证段收益", "validation_return_pct", "pct", "higher"],
+    ["CAGR", "cagr_pct", "pct", "higher"],
+    ["年化波动", "annualized_volatility_pct", "pct", "lower"],
+    ["Sharpe", "sharpe_ratio", "number", "higher"],
+    ["Sortino", "sortino_ratio", "number", "higher"],
+    ["Calmar", "calmar_ratio", "number", "higher"],
+    ["Omega", "omega_ratio", "number", "higher"],
+    ["最大回撤", "max_drawdown_pct", "pct", "lower"],
+    ["Ulcer Index", "ulcer_index_pct", "pct", "lower"],
+    ["最长回撤", "max_drawdown_duration_days", "days", "lower"],
+    ["日 Expected Shortfall 95%", "daily_expected_shortfall_95_pct", "pct", "lower"],
+    ["PSR > 0", "psr_zero_pct", "pct", "higher"],
+    ["PSR > 年化 Sharpe 1", "psr_benchmark_pct", "pct", "higher"],
+    ["盈利因子", "profit_factor", "number", "higher"],
+    ["胜率", "win_rate_pct", "pct", "higher"],
+    ["盈利交易", "winning_trade_count", "integer", "neutral"],
+    ["亏损交易", "losing_trade_count", "integer", "neutral"],
+    ["平均每笔", "average_trade_pnl", "money", "higher"],
+    ["手续费", "total_fees", "money", "lower"],
+    ["交易数", "trade_count", "integer", "neutral"],
+  ];
+  $("path-comparison-table").innerHTML = `
+    <thead><tr><th>指标</th><th>无风控基准</th><th>加入规则后</th><th>变化</th></tr></thead>
+    <tbody>${rows.map(([label, key, kind, preference]) => {
+      const baseValue = Number(baseline[key] || 0);
+      const candidateValue = Number(candidate[key] || 0);
+      const delta = candidateValue - baseValue;
+      return `<tr>
+        <td>${label}</td>
+        <td>${formatComparisonValue(baseValue, kind)}</td>
+        <td>${formatComparisonValue(candidateValue, kind)}</td>
+        <td class="${comparisonDeltaClass(delta, preference)}">${formatComparisonDelta(delta, kind)}</td>
+      </tr>`;
+    }).join("")}</tbody>
+  `;
+  $("path-exit-summary").innerHTML = [
+    ["基准反向退出", baseline.reverse_exit_count],
+    ["候选止损退出", candidate.stop_loss_count],
+    ["候选止盈退出", candidate.take_profit_count],
+    ["候选反向退出", candidate.reverse_exit_count],
+    ["候选再入场交易", candidate.reentry_trade_count],
+    ["边界估值持仓", candidate.window_mark_count],
+    ["候选平均持仓", `${formatNumber(candidate.average_holding_bars)} 根`],
+  ].map(([label, value]) => `<span>${label}<strong>${typeof value === "string" ? value : formatNumber(value, 0)}</strong></span>`).join("");
 }
 
 function renderArtifacts(result) {
@@ -483,24 +672,48 @@ function renderArtifacts(result) {
     $("artifact-list").innerHTML = "";
     return;
   }
-  $("artifact-list").innerHTML = artifacts.map((artifact) => {
+  const labels = {
+    "dataset/llm_research_samples.jsonl.gz": "① 给大模型：研究样本（推荐）",
+    "dataset/manifest.json": "② 指标字段、参数与切分说明",
+    "dataset/signals.csv": "有效开平 / 同向信号节点",
+    "dataset/episodes.csv": "开仓到反向信号路径摘要",
+    "dataset/bars.csv.gz": "全量 5m K 线与完整指标",
+    "dataset/README.txt": "数据文件使用说明",
+    "matrix.csv": "热力图矩阵完整结果",
+  };
+  const priority = {
+    "dataset/llm_research_samples.jsonl.gz": 1,
+    "dataset/manifest.json": 2,
+    "dataset/signals.csv": 3,
+    "dataset/episodes.csv": 4,
+    "dataset/bars.csv.gz": 5,
+    "dataset/README.txt": 6,
+  };
+  const ordered = [...artifacts].sort(
+    (left, right) => (priority[left.name] || 99) - (priority[right.name] || 99),
+  );
+  $("artifact-list").innerHTML = ordered.map((artifact) => {
     const path = String(artifact.name || "").split("/").map(encodeURIComponent).join("/");
     const href = `/api/backtests/runs/${encodeURIComponent(result.run_id)}/artifacts/${path}`;
-    return `<a class="artifact-item" href="${href}"><span><strong>${escapeHtml(artifact.label || artifact.name)}</strong><small>${escapeHtml(artifact.name)}</small></span><b>${formatBytes(artifact.size_bytes)} ↓</b></a>`;
+    const label = labels[artifact.name] || artifact.label || artifact.name;
+    return `<a class="artifact-item" href="${href}"><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(artifact.name)}</small></span><b>${formatBytes(artifact.size_bytes)} ↓</b></a>`;
   }).join("");
 }
 
 function renderPathTable(rows, testRevealed) {
   const table = $("result-table");
-  table.innerHTML = `<thead><tr><th>排名</th><th>结论</th><th>止损</th><th>止盈</th><th>稳定区</th><th>邻域盈利</th><th>验证收益</th><th>研究收益</th><th>${testRevealed ? "测试收益" : "测试段"}</th><th>回撤</th><th>PF</th><th>交易数</th><th></th></tr></thead><tbody>${rows.slice(0, 150).map((row, index) => `
+  table.innerHTML = `<thead><tr><th>排名</th><th>结论</th><th>止损</th><th>止盈</th><th>稳定区</th><th>邻域盈利</th><th>验证收益</th><th>较基准</th><th>研究收益</th><th>${testRevealed ? "测试收益" : "测试段"}</th><th>净利润</th><th>总亏损</th><th>回撤</th><th>Sharpe</th><th>DSR</th><th>ES 95%</th><th>PF</th><th>胜 / 负</th><th>手续费</th><th>交易数</th><th></th></tr></thead><tbody>${rows.slice(0, 150).map((row, index) => `
     <tr class="${row.plateau ? "plateau-row" : ""}">
       <td>#${row.rank}</td><td>${escapeHtml(row.verdict)}</td>
       <td>${formatNumber(row.parameters?.stop_loss)}</td><td>${formatNumber(row.parameters?.take_profit)}</td>
       <td>${row.region_id ? `R${row.region_id} · ${row.region_size} 格` : "--"}</td>
       <td>${formatPct(Number(row.positive_neighbor_ratio || 0) * 100)}</td>
-      <td>${formatPct(row.validation_return_pct)}</td><td>${formatPct(row.research_return_pct)}</td>
+      <td>${formatPct(row.validation_return_pct)}</td><td>${formatComparisonDelta(row.validation_return_pct_delta_vs_baseline, "pct")}</td><td>${formatPct(row.research_return_pct)}</td>
       <td>${testRevealed ? formatPct(row.test_return_pct) : "未揭盲"}</td>
-      <td>${formatPct(row.max_drawdown_pct)}</td><td>${formatNumber(row.profit_factor)}</td><td>${formatNumber(row.trade_count,0)}</td>
+      <td>${formatMoney(row.net_profit)}</td><td>${formatMoney(row.gross_loss)}</td>
+      <td>${formatPct(row.max_drawdown_pct)}</td><td>${formatNumber(row.sharpe_ratio)}</td><td>${formatPct(row.deflated_sharpe_ratio_pct)}</td><td>${formatPct(row.daily_expected_shortfall_95_pct)}</td><td>${formatNumber(row.profit_factor)}</td>
+      <td>${formatNumber(row.winning_trade_count,0)} / ${formatNumber(row.losing_trade_count,0)}</td>
+      <td>${formatMoney(row.total_fees)}</td><td>${formatNumber(row.trade_count,0)}</td>
       <td><button class="mini-button" data-path-row-index="${index}">带回参数</button></td>
     </tr>`).join("")}</tbody>`;
   table.querySelectorAll("[data-path-row-index]").forEach((button) => button.addEventListener("click", () => refillPathCandidate(rows[Number(button.dataset.pathRowIndex)])));
@@ -523,8 +736,8 @@ function refillPathCandidate(row) {
 
 function renderTable(rows) {
   const table = $("result-table");
-  table.innerHTML = `<thead><tr><th>排名</th><th>结论</th><th>稳健分</th><th>总收益</th><th>验证段</th><th>测试段</th><th>最大回撤</th><th>盈利因子</th><th>交易数</th><th>参数</th><th></th></tr></thead><tbody>${rows.slice(0, 100).map((row, index) => `
-    <tr><td>#${row.rank}</td><td>${escapeHtml(row.verdict)}</td><td>${formatNumber(row.robust_score)}</td><td>${formatPct(row.return_pct)}</td><td>${formatPct(row.validation_return_pct)}</td><td>${formatPct(row.test_return_pct)}</td><td>${formatPct(row.max_drawdown_pct)}</td><td>${formatNumber(row.profit_factor)}</td><td>${formatNumber(row.trade_count,0)}</td><td title="${escapeHtml(JSON.stringify(row.parameters))}">${escapeHtml(compactParameters(row.parameters))}</td><td><button class="mini-button" data-row-index="${index}">复测</button></td></tr>`).join("")}</tbody>`;
+  table.innerHTML = `<thead><tr><th>排名</th><th>结论</th><th>稳健分</th><th>总收益</th><th>验证段</th><th>测试段</th><th>最大回撤</th><th>Sharpe</th><th>DSR</th><th>盈利因子</th><th>交易数</th><th>参数</th><th></th></tr></thead><tbody>${rows.slice(0, 100).map((row, index) => `
+    <tr><td>#${row.rank}</td><td>${escapeHtml(row.verdict)}</td><td>${formatNumber(row.robust_score)}</td><td>${formatPct(row.return_pct)}</td><td>${formatPct(row.validation_return_pct)}</td><td>${formatPct(row.test_return_pct)}</td><td>${formatPct(row.max_drawdown_pct)}</td><td>${formatNumber(row.sharpe_ratio)}</td><td>${formatPct(row.deflated_sharpe_ratio_pct)}</td><td>${formatNumber(row.profit_factor)}</td><td>${formatNumber(row.trade_count,0)}</td><td title="${escapeHtml(JSON.stringify(row.parameters))}">${escapeHtml(compactParameters(row.parameters))}</td><td><button class="mini-button" data-row-index="${index}">复测</button></td></tr>`).join("")}</tbody>`;
   table.querySelectorAll("[data-row-index]").forEach((button) => button.addEventListener("click", () => refillCandidate(rows[Number(button.dataset.rowIndex)])));
 }
 
@@ -588,7 +801,14 @@ function renderPathHeatmap(result) {
         `止损 ${x}${unit} / 止盈 ${y}${unit}`,
         `研究收益 ${formatPct(row.research_return_pct)}`,
         `验证收益 ${formatPct(row.validation_return_pct)}`,
+        `验证较基准 ${formatComparisonDelta(row.validation_return_pct_delta_vs_baseline, "pct")}`,
+        `净利润 ${formatMoney(row.net_profit)}`,
+        `总盈利 / 总亏损 ${formatMoney(row.gross_profit)} / ${formatMoney(row.gross_loss)}`,
+        `盈利 / 亏损交易 ${formatNumber(row.winning_trade_count, 0)} / ${formatNumber(row.losing_trade_count, 0)}`,
         `最大回撤 ${formatPct(row.max_drawdown_pct)}`,
+        `Sharpe / Sortino ${formatNumber(row.sharpe_ratio)} / ${formatNumber(row.sortino_ratio)}`,
+        `DSR ${formatPct(row.deflated_sharpe_ratio_pct)}`,
+        `日 ES 95% ${formatPct(row.daily_expected_shortfall_95_pct)}`,
         `邻域盈利 ${formatPct(Number(row.positive_neighbor_ratio || 0) * 100)}`,
         row.region_id ? `稳定区 R${row.region_id}，${row.region_size} 格` : "不属于稳定区",
       ].join("\n") : "无结果";
@@ -603,6 +823,10 @@ function renderPathHeatmap(result) {
     <span><strong>${plateauRows.length}</strong> 个稳定格</span>
     <span><strong>${regions.size}</strong> 片连续区域</span>
     <span><strong>${ambiguous}</strong> 根双触发 K 线</span>
+    <span>无风控基准：<strong>${formatPct(result.baseline?.return_pct)}</strong></span>
+    <span>当前候选较基准：<strong>${formatComparisonDelta(result.best?.return_pct_delta_vs_baseline, "pct")}</strong></span>
+    <span>矩阵 PBO：<strong>${formatPct(result.statistical_validation?.pbo_pct)}</strong></span>
+    <span>DSR 校正门槛：<strong>${formatNumber(result.statistical_validation?.deflated_sharpe_benchmark)}</strong></span>
     <span>测试段：<strong>${heatmap.test_revealed ? "已揭盲" : "保持隐藏"}</strong></span>
   `;
   const map = $("heatmap");
@@ -619,9 +843,13 @@ function heatScale(metric, values) {
 
 function heatColor(metric, value, scale) {
   if (!Number.isFinite(value)) return "rgba(80,92,102,.28)";
-  if (metric === "max_drawdown_pct") {
+  if (["max_drawdown_pct", "daily_expected_shortfall_95_pct", "daily_var_95_pct", "ulcer_index_pct", "max_drawdown_duration_days"].includes(metric)) {
     const ratio = scale.max === scale.min ? .5 : (value - scale.min) / (scale.max - scale.min);
     return `hsl(${142 - ratio * 136} 52% ${25 + (1-ratio) * 12}%)`;
+  }
+  if (["psr_benchmark_pct", "psr_zero_pct", "deflated_sharpe_ratio_pct"].includes(metric)) {
+    const ratio = Math.max(0, Math.min(1, value / 100));
+    return `hsl(${8 + ratio * 134} ${38 + ratio * 28}% ${23 + ratio * 13}%)`;
   }
   if (metric === "profit_factor") {
     const centered = Math.max(-1, Math.min(1, (value - 1) / Math.max(scale.max - 1, 1)));
@@ -688,6 +916,31 @@ function shortKey(key) { return key.split(".").pop().replaceAll("_points", "").r
 function statusLabel(status) { return ({queued:"排队中",running:"运行中",succeeded:"已完成",failed:"失败",interrupted:"已中断"})[status] || status; }
 function formatNumber(value, digits = 2) { if (value == null || value === "") return "--"; const number = Number(value); return Number.isFinite(number) ? number.toLocaleString("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "--"; }
 function formatPct(value) { const formatted = formatNumber(value); return formatted === "--" ? "--" : `${formatted}%`; }
+function formatMoney(value) { const formatted = formatNumber(value); return formatted === "--" ? "--" : `${formatted} USDT`; }
+function formatMetricWithProfit(returnPct, netProfit) { return `${formatPct(returnPct)} · ${formatMoney(netProfit)}`; }
+function formatComparisonValue(value, kind) {
+  if (kind === "money") return formatMoney(value);
+  if (kind === "pct") return formatPct(value);
+  if (kind === "integer") return formatNumber(value, 0);
+  if (kind === "days") return `${formatNumber(value, 0)} 天`;
+  return formatNumber(value);
+}
+function formatComparisonDelta(value, kind) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  const sign = number > 0 ? "+" : "";
+  if (kind === "money") return `${sign}${formatNumber(number)} USDT`;
+  if (kind === "pct") return `${sign}${formatNumber(number)} 个百分点`;
+  if (kind === "integer") return `${sign}${formatNumber(number, 0)}`;
+  if (kind === "days") return `${sign}${formatNumber(number, 0)} 天`;
+  return `${sign}${formatNumber(number)}`;
+}
+function comparisonDeltaClass(value, preference) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0 || preference === "neutral") return "delta-neutral";
+  const improved = preference === "lower" ? number < 0 : number > 0;
+  return improved ? "delta-good" : "delta-bad";
+}
 function formatBytes(value) { const bytes = Number(value || 0); if (!bytes) return "0 B"; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function formatTimestamp(value) { const timestamp = Number(value); if (!Number.isFinite(timestamp)) return "--"; return new Date(timestamp * 1000).toLocaleString("zh-CN", { hour12: false }); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]); }

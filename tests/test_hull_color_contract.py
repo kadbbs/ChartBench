@@ -60,6 +60,37 @@ class HullColorContractTest(unittest.TestCase):
         self.assertEqual(hull_band_values(values, "buy"), [101.0, 102.0])
         self.assertEqual(hull_band_values(values, "sell"), [201.0, 202.0])
 
+    def test_merged_indicator_exposes_non_visual_research_features(self) -> None:
+        features = self.merged.features
+
+        self.assertEqual(
+            set(
+                (
+                    "time",
+                    "dkx_w",
+                    "dkx_d",
+                    "dkx_k",
+                    "dkx_spread",
+                    "dkx_buy",
+                    "dkx_sell",
+                    "mhull",
+                    "shull",
+                    "hull_direction",
+                    "ut_atr",
+                    "ut_n_loss",
+                    "ut_source",
+                    "ut_trailing_stop",
+                    "ut_distance",
+                    "ut_position",
+                    "ut_buy",
+                    "ut_sell",
+                )
+            ),
+            set(features),
+        )
+        self.assertTrue(all(len(values) == len(_bars()) for values in features.values()))
+        self.assertNotIn("ut_trailing_stop", {item.id for item in self.merged.series})
+
     def test_duo_kong_line_and_markers_follow_green_long_red_short(self) -> None:
         series = self.duo_kong.series[0]
         point_colors = {point.get("color") for point in series.data if point.get("color")}

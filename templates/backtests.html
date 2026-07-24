@@ -96,7 +96,7 @@
           </div>
 
           <div class="path-workflow-guide">
-            <article><i>1</i><div><strong>生成基准样本</strong><span>导出 5m K 线、开平节点、同向信号和仅含研究段的大模型 JSONL。</span></div></article>
+            <article><i>1</i><div><strong>生成基准样本</strong><span>导出 5m 完整指标、已闭合 1D Hull/STC、开平节点和仅含研究段的大模型 JSONL。</span></div></article>
             <article><i>2</i><div><strong>分析后填写范围</strong><span>将模型结论转成明确的止损/止盈候选，不让模型直接决定交易。</span></div></article>
             <article><i>3</i><div><strong>寻找连续盈利区</strong><span>验证集参与选择；最终测试段默认隐藏，不参与排名。</span></div></article>
           </div>
@@ -201,14 +201,45 @@
         <div id="metric-grid" class="metric-grid"></div>
         <div id="split-grid" class="split-grid"></div>
 
+        <div id="performance-diagnostics-section" class="analysis-block is-hidden">
+          <div class="block-heading performance-heading">
+            <div>
+              <h3>现代策略体检</h3>
+              <span>用等间隔权益收益衡量效率、左尾风险与回测发现的统计可信度</span>
+            </div>
+            <span id="performance-basis-badge" class="method-badge">逐日权益</span>
+          </div>
+          <p id="performance-method-note" class="method-note"></p>
+          <div id="performance-diagnostics" class="performance-diagnostics"></div>
+        </div>
+
+        <div id="path-comparison-section" class="analysis-block is-hidden">
+          <div class="block-heading">
+            <h3>加入规则前后对比</h3>
+            <span>无风控基准与当前候选使用同一数据集、资金、手续费、滑点和揭盲范围</span>
+          </div>
+          <div id="path-comparison-summary" class="comparison-summary"></div>
+          <div class="table-wrap comparison-table-wrap"><table id="path-comparison-table"></table></div>
+          <div id="path-exit-summary" class="exit-summary"></div>
+        </div>
+
         <div id="heatmap-section" class="analysis-block is-hidden">
           <div class="block-heading heatmap-heading">
             <div><h3>参数稳定区</h3><span>每格对应唯一一组 X/Y 参数，不再聚合隐藏维度</span></div>
             <label class="heatmap-metric"><span>显示指标</span>
               <select id="heatmap-metric-select">
                 <option value="validation_return_pct">验证段收益</option>
+                <option value="validation_return_pct_delta_vs_baseline">验证段相对基准</option>
                 <option value="research_return_pct">研究段收益</option>
                 <option value="return_pct">当前可见区间收益</option>
+                <option value="net_profit_delta_vs_baseline">相对基准净利润</option>
+                <option value="cagr_pct">年化复合收益 CAGR</option>
+                <option value="sharpe_ratio">Sharpe</option>
+                <option value="sortino_ratio">Sortino</option>
+                <option value="calmar_ratio">Calmar</option>
+                <option value="psr_benchmark_pct">PSR（年化 Sharpe &gt; 1）</option>
+                <option value="deflated_sharpe_ratio_pct">DSR（多重试验校正）</option>
+                <option value="daily_expected_shortfall_95_pct">日 Expected Shortfall 95%</option>
                 <option value="max_drawdown_pct">最大回撤</option>
                 <option value="profit_factor">盈利因子</option>
                 <option value="positive_neighbor_ratio">邻域盈利比例</option>
@@ -225,7 +256,7 @@
         </div>
 
         <div id="artifact-section" class="analysis-block is-hidden">
-          <div class="block-heading"><h3>研究数据下载</h3><span>模型样本只包含研究段；验证和测试数据不会写入 LLM JSONL</span></div>
+          <div class="block-heading"><h3>研究数据下载</h3><span>含 5m DKX/Hull/UT/STC/ATR 与因果对齐的已闭合日线指标；LLM JSONL 不含验证和测试段</span></div>
           <div id="artifact-list" class="artifact-list"></div>
         </div>
 

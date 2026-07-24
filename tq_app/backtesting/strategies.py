@@ -12,6 +12,10 @@ from tq_app.live_trading import LiveTradingConfig
 class BacktestSignal:
     side: str | None
     reason: str
+    marker_texts: tuple[str, ...] = ()
+    indicator_values: dict | None = None
+    indicator_colors: dict | None = None
+    atr_value: float | None = None
     htf_lock_key: str | None = None
     htf_context: dict | None = None
     htf_reentry_allowed: bool = False
@@ -56,6 +60,10 @@ class SignalEvaluatorStrategy:
         return BacktestSignal(
             side=decision.side,
             reason=decision.reason,
+            marker_texts=tuple(decision.marker_texts),
+            indicator_values=dict(decision.indicator_values),
+            indicator_colors=dict(decision.indicator_colors),
+            atr_value=decision.atr_value,
             htf_lock_key=decision.htf_lock_key,
             htf_context=decision.htf_context,
             htf_reentry_allowed=decision.htf_reentry_allowed,

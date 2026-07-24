@@ -37,6 +37,14 @@ class BacktestUiContractTest(unittest.TestCase):
             "result-table",
             "heatmap",
             "heatmap-metric-select",
+            "path-comparison-section",
+            "path-comparison-summary",
+            "path-comparison-table",
+            "path-exit-summary",
+            "performance-diagnostics-section",
+            "performance-basis-badge",
+            "performance-method-note",
+            "performance-diagnostics",
             "artifact-list",
             "backtest-chart",
         }:
@@ -69,6 +77,20 @@ class BacktestUiContractTest(unittest.TestCase):
         self.assertIn("byCoordinate.get", SCRIPT)
         self.assertIn("positive_neighbor_ratio", SCRIPT)
         self.assertIn("最终测试 20%", SCRIPT)
+        self.assertIn("function renderPathComparison", SCRIPT)
+        self.assertIn("validation_return_pct_delta_vs_baseline", SCRIPT)
+        self.assertIn("总盈利", SCRIPT)
+        self.assertIn("总亏损", SCRIPT)
+        self.assertIn("function renderPerformanceDiagnostics", SCRIPT)
+        self.assertIn("daily_expected_shortfall_95_pct", SCRIPT)
+        self.assertIn("deflated_sharpe_ratio_pct", SCRIPT)
+        self.assertIn("矩阵 PBO", SCRIPT)
+
+    def test_path_downloads_prioritize_prompt_ready_indicator_sample(self) -> None:
+        self.assertIn("① 给大模型：研究样本（推荐）", SCRIPT)
+        self.assertIn("全量 5m K 线与完整指标", SCRIPT)
+        self.assertIn("完整 5m + 已闭合 1D", SCRIPT)
+        self.assertIn("因果对齐的已闭合日线指标", TEMPLATE)
 
 
 if __name__ == "__main__":

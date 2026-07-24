@@ -32,6 +32,13 @@ from .path_research import (
     write_path_matrix_csv,
     write_signal_path_artifacts,
 )
+from .performance import (
+    attach_deflated_sharpe,
+    cscv_probability_of_backtest_overfitting,
+    performance_metrics,
+    realized_daily_equity,
+    strip_private_performance_fields,
+)
 
 
 RISK_PARAMETER_TYPES: dict[str, type] = {
@@ -179,10 +186,12 @@ class BacktestExperimentManager:
         return items
 
     def result(self, run_id: str) -> dict[str, Any]:
-        path = self._safe_run_dir(run_id) / "summary.json"
+        run_dir = self._safe_run_dir(run_id)
+        path = run_dir / "summary.json"
         if not path.exists():
             raise FileNotFoundError("实验结果尚未生成。")
-        return _read_json(path)
+        summary = _read_json(path)
+        return _upgrade_legacy_path_baseline_summary(run_dir, summary)
 
     def report(self, run_id: str) -> dict[str, Any]:
         path = self._safe_run_dir(run_id) / "artifacts" / "report.json"
@@ -532,9 +541,20 @@ def _execute_experiment_process(project_root_raw: str, run_id: str) -> None:
             )
             _write_json(status_path, status)
 
+        multiple_testing = attach_deflated_sharpe(rows)
+        overfitting = cscv_probability_of_backtest_overfitting(
+            [list(item.get("_daily_returns") or []) for item in rows]
+        )
+        for row in rows:
+            row["matrix_trial_count"] = int(multiple_testing["trial_count"])
+            row["matrix_pbo_pct"] = overfitting.get("pbo_pct")
+            row["matrix_cscv_split_count"] = int(
+                overfitting.get("cscv_split_count") or 0
+            )
         ranked = sorted(rows, key=lambda item: float(item["robust_score"]), reverse=True)
         for rank, row in enumerate(ranked, start=1):
             row["rank"] = rank
+            strip_private_performance_fields(row)
         result_type = "single" if total == 1 else "matrix"
         summary = {
             "type": result_type,
@@ -552,9 +572,14 @@ def _execute_experiment_process(project_root_raw: str, run_id: str) -> None:
             },
             "grid": spec.grid,
             "combination_count": total,
+            "statistical_validation": {
+                **multiple_testing,
+                **overfitting,
+                "scope": "full_experiment_window",
+            },
             "best": ranked[0] if ranked else None,
             "rows": ranked,
-            "score_explanation": "稳健分综合总收益、验证/测试段收益、回撤、盈利因子、年度一致性和最小交易数惩罚；用于筛选稳定区域，不代表未来收益。",
+            "score_explanation": "稳健分综合总收益、验证/测试段收益、回撤、盈利因子、年度一致性和最小交易数惩罚；另提供逐日 Sharpe/Sortino/Expected Shortfall、DSR 与矩阵 PBO 交叉验证，用于筛选稳定区域，不代表未来收益。",
         }
         _write_json(run_dir / "summary.json", summary)
         _write_summary_csv(run_dir / "summary.csv", ranked)
@@ -746,6 +771,34 @@ def _result_row(index: int, parameters: dict[str, Any], result: BacktestResult) 
     verdict = "通过" if validation_return > 0 and test_return > 0 and drawdown_pct <= 25 and trade_count >= 30 else "谨慎"
     if total_return <= 0 or test_return < -5 or drawdown_pct > 40:
         verdict = "不通过"
+    closed = [item for item in result.trades if item.exit_time is not None]
+    data_window = result.config.get("resolved_data_window") or {}
+    first_time = int(
+        data_window.get("first_bar_time")
+        or min((int(item.entry_time) for item in closed), default=0)
+    )
+    last_time = int(
+        data_window.get("last_bar_time")
+        or max(
+            (int(item.exit_time or item.entry_time) for item in closed),
+            default=first_time,
+        )
+    )
+    performance_times, performance_equity = realized_daily_equity(
+        initial_equity=float(metrics.get("initial_equity") or 1.0),
+        pnl_events=(
+            (int(item.exit_time or item.entry_time), float(item.net_pnl))
+            for item in closed
+        ),
+        start_time=first_time,
+        end_time=last_time,
+    )
+    advanced = performance_metrics(
+        performance_equity,
+        performance_times,
+        max_drawdown_pct=drawdown_pct,
+        return_basis="daily_realized_utc",
+    )
     return {
         "rank": 0,
         "run": index,
@@ -760,6 +813,7 @@ def _result_row(index: int, parameters: dict[str, Any], result: BacktestResult) 
         "profit_factor": metrics.get("profit_factor"),
         "total_net_points": metrics.get("total_net_points"),
         "total_fees": metrics.get("total_fees"),
+        **advanced,
         **stability,
     }
 
@@ -1018,6 +1072,53 @@ def _time_label(timestamp_ms: int) -> str:
 
 def _jsonable_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _upgrade_legacy_path_baseline_summary(
+    run_dir: Path,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill metrics added after a path dataset was generated.
+
+    The immutable internal dataset is enough to rebuild these fields, so an
+    existing multi-year baseline does not need to download candles or compute
+    indicators again.
+    """
+
+    best = summary.get("best")
+    if (
+        summary.get("type") != "signal_path_baseline"
+        or not isinstance(best, dict)
+        or (
+            "gross_profit" in best
+            and best.get("path_stat_scope") == "research_and_validation"
+            and "sharpe_ratio" in best
+        )
+    ):
+        return summary
+    dataset_path = run_dir / "dataset" / "internal.json.gz"
+    if not dataset_path.is_file():
+        return summary
+    refreshed = baseline_summary(load_signal_path_dataset(dataset_path))
+    result_keys = {
+        "schema_version",
+        "type",
+        "dataset",
+        "best",
+        "rows",
+        "grid",
+        "score_explanation",
+    }
+    refreshed.update(
+        {
+            key: value
+            for key, value in summary.items()
+            if key not in result_keys
+        }
+    )
+    refreshed["artifacts"] = artifact_catalog(run_dir)
+    _write_json(run_dir / "summary.json", refreshed)
+    return refreshed
 
 
 def _read_json(path: Path) -> dict[str, Any]:

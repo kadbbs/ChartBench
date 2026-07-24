@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import subprocess
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,13 +20,27 @@ from tq_app.domain.strategies import is_green_color, is_red_color
 
 from .application import ResolvedBacktestRun
 from .engine import PreparedBacktestStudy
+from .performance import (
+    attach_deflated_sharpe,
+    cscv_probability_of_backtest_overfitting,
+    performance_metrics,
+    strip_private_performance_fields,
+)
 from .runtime import PreparedBacktestMarket
 
 
-PATH_DATASET_SCHEMA_VERSION = 1
-PATH_MATRIX_SCHEMA_VERSION = 1
+PATH_DATASET_SCHEMA_VERSION = 2
+PATH_MATRIX_SCHEMA_VERSION = 3
 PATH_STOP_UNITS = {"atr", "percent", "points"}
 PATH_INTRABAR_POLICIES = {"stop_first", "take_first"}
+PATH_REPLAY_BAR_COLUMNS = (
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "atr",
+)
 PATH_BAR_COLUMNS = (
     "relative_index",
     "time",
@@ -36,12 +51,117 @@ PATH_BAR_COLUMNS = (
     "volume",
     "atr",
     "stc",
+    "stc_delta",
     "stc_direction",
+    "stc_zone",
+    "dkx_w",
+    "dkx_d",
+    "dkx_k",
+    "dkx_spread",
+    "dkx_buy",
+    "dkx_sell",
+    "marker_buy",
+    "marker_sell",
+    "mhull",
+    "shull",
+    "hull_direction",
     "mhull_up",
     "shull_up",
     "mhull_down",
     "shull_down",
+    "ut_atr",
+    "ut_n_loss",
+    "ut_source",
+    "ut_trailing_stop",
+    "ut_distance",
+    "ut_position",
+    "ut_buy",
+    "ut_sell",
+    "d1_bar_time",
+    "d1_stc",
+    "d1_stc_delta",
+    "d1_stc_direction",
+    "d1_mhull",
+    "d1_shull",
+    "d1_hull_direction",
+    "d1_hull_stc_aligned",
+    "d1_trend",
 )
+PATH_SIGNAL_FEATURE_COLUMNS = PATH_BAR_COLUMNS[7:]
+PATH_FEATURE_DEFINITIONS = {
+    "atr": "5m 简单移动平均真实波幅；周期见 manifest.execution.atr_period，矩阵 ATR 距离使用此值。",
+    "stc": "5m STC 数值。",
+    "stc_delta": "当前 5m STC 减上一根 5m STC。",
+    "stc_direction": "5m STC 因果方向：1=上升/绿色，-1=下降/红色，0=不明确。",
+    "stc_zone": "5m STC 区域：-1=<25，0=25~75，1=>75。",
+    "dkx_w": "5m DKX 中间价 W。",
+    "dkx_d": "5m DKX D 线。",
+    "dkx_k": "5m DKX K 线。",
+    "dkx_spread": "5m DKX D-K。",
+    "dkx_buy": "5m DKX 金叉原始标记：1=买。",
+    "dkx_sell": "5m DKX 死叉原始标记：1=卖。",
+    "marker_buy": "策略可见的任一多标记：DKX 买或 UT Buy。",
+    "marker_sell": "策略可见的任一空标记：DKX 卖或 UT Sell。",
+    "mhull": "5m Hull 主线 MHULL 原始值。",
+    "shull": "5m Hull 慢线 SHULL 原始值。",
+    "hull_direction": "5m Hull 因果方向：1=上升，-1=下降。",
+    "mhull_up": "5m 上升 Hull 段的 MHULL；非上升段为空。",
+    "shull_up": "5m 上升 Hull 段的 SHULL；非上升段为空。",
+    "mhull_down": "5m 下降 Hull 段的 MHULL；非下降段为空。",
+    "shull_down": "5m 下降 Hull 段的 SHULL；非下降段为空。",
+    "ut_atr": "5m UT Bot 使用的 Wilder RMA ATR。",
+    "ut_n_loss": "5m UT Bot 灵敏度乘 ATR 得到的 nLoss。",
+    "ut_source": "5m UT Bot 输入价格；是否使用 Heikin-Ashi 见指标参数。",
+    "ut_trailing_stop": "5m UT Bot 跟踪止损线。",
+    "ut_distance": "5m UT 输入价格减 UT 跟踪止损线。",
+    "ut_position": "5m UT 状态：1=多，-1=空，0=尚未切换。",
+    "ut_buy": "5m UT Bot 原始 Buy 触发：1=触发。",
+    "ut_sell": "5m UT Bot 原始 Sell 触发：1=触发。",
+    "d1_bar_time": "该 5m K 线收盘后可见的最近一根已闭合 1D K 线开盘时间。",
+    "d1_stc": "最近已闭合 1D STC 数值。",
+    "d1_stc_delta": "最近已闭合 1D STC 减其前一根 1D STC。",
+    "d1_stc_direction": "最近已闭合 1D STC 因果方向：1=上升/绿色，-1=下降/红色，0=不明确。",
+    "d1_mhull": "最近已闭合 1D MHULL 原始值。",
+    "d1_shull": "最近已闭合 1D SHULL 原始值。",
+    "d1_hull_direction": "最近已闭合 1D Hull 因果方向：1=上升，-1=下降。",
+    "d1_hull_stc_aligned": "最近已闭合 1D Hull/STC 是否同向：1=同向，0=不同向或不明确。",
+    "d1_trend": "策略日线过滤方向：1=允许多，-1=允许空，0=不同向或不明确。",
+}
+CUSTOM_INDICATOR_FEATURE_COLUMNS = (
+    "dkx_w",
+    "dkx_d",
+    "dkx_k",
+    "dkx_spread",
+    "dkx_buy",
+    "dkx_sell",
+    "mhull",
+    "shull",
+    "hull_direction",
+    "ut_atr",
+    "ut_n_loss",
+    "ut_source",
+    "ut_trailing_stop",
+    "ut_distance",
+    "ut_position",
+    "ut_buy",
+    "ut_sell",
+)
+INTEGER_FEATURE_COLUMNS = {
+    "stc_direction",
+    "stc_zone",
+    "dkx_buy",
+    "dkx_sell",
+    "marker_buy",
+    "marker_sell",
+    "hull_direction",
+    "ut_position",
+    "ut_buy",
+    "ut_sell",
+    "d1_stc_direction",
+    "d1_hull_direction",
+    "d1_hull_stc_aligned",
+    "d1_trend",
+}
 
 
 @dataclass(slots=True)
@@ -78,6 +198,27 @@ class PathReplayConfig:
     reentry_cooldown_bars: int = 0
     intrabar_policy: str = "stop_first"
     reveal_test: bool = False
+
+
+@dataclass(slots=True)
+class PreparedPathReplay:
+    arrays: dict[str, np.ndarray]
+    bar_times: list[int]
+    bar_duration: int
+
+
+def _prepare_path_replay(dataset: SignalPathDataset) -> PreparedPathReplay:
+    return PreparedPathReplay(
+        arrays={
+            key: np.asarray(
+                [float(item[key]) for item in dataset.bars],
+                dtype="float64",
+            )
+            for key in ("open", "high", "low", "close")
+        },
+        bar_times=[int(item["time"]) for item in dataset.bars],
+        bar_duration=_bar_duration_seconds(dataset.bars),
+    )
 
 
 def build_signal_path_dataset(
@@ -126,6 +267,7 @@ def build_signal_path_dataset(
             else "reverse"
         )
         context = dict(signal.htf_context or {})
+        signal_bar = bars[signal_index]
         event = {
             "id": len(signals) + 1,
             "side": signal.side,
@@ -138,11 +280,21 @@ def build_signal_path_dataset(
             "execution_time_label": bars[execution_index]["time_label"],
             "execution_open": float(bars[execution_index]["open"]),
             "reason": signal.reason,
+            "marker_texts": list(signal.marker_texts),
+            "indicator_values": dict(signal.indicator_values or {}),
+            "indicator_colors": dict(signal.indicator_colors or {}),
+            "atr_value": signal.atr_value,
+            "research_features": {
+                key: signal_bar.get(key)
+                for key in PATH_SIGNAL_FEATURE_COLUMNS
+            },
             "daily_trend": context.get("trend"),
             "daily_bar_time": context.get("bar_time"),
             "daily_bar_time_label": context.get("bar_time_label"),
             "daily_segment_start_time": context.get("trend_start_time"),
             "daily_segment_start_time_label": context.get("trend_start_time_label"),
+            "daily_indicator_values": dict(context.get("indicator_values") or {}),
+            "daily_indicator_colors": dict(context.get("indicator_colors") or {}),
             "daily_lock_key": signal.htf_lock_key,
         }
         signals.append(event)
@@ -234,9 +386,16 @@ def build_signal_path_dataset(
             "atr_period": resolved.config.atr_period,
         },
         "indicator_parameters": study.indicator_parameters,
+        "bar_columns": list(PATH_BAR_COLUMNS),
+        "feature_definitions": PATH_FEATURE_DEFINITIONS,
         "causality": {
             "closed_bars_only": True,
             "stc_strategy_color": "current_vs_previous_value",
+            "daily_alignment": (
+                "For each 5m signal bar, select the second-last 1D candle available "
+                "at the next 5m execution open; the newest 1D candle is still forming."
+            ),
+            "future_daily_values_excluded": True,
         },
     }
     return SignalPathDataset(manifest=manifest, bars=bars, signals=signals, episodes=episodes)
@@ -244,21 +403,42 @@ def build_signal_path_dataset(
 
 def baseline_summary(dataset: SignalPathDataset) -> dict[str, Any]:
     replay = replay_signal_paths(dataset, PathReplayConfig())
-    closed = [item for item in dataset.episodes if item["status"] == "closed"]
-    holding = [int(item["holding_bars"]) for item in closed]
-    mfe_atr = [float(item["mfe_atr"]) for item in closed if item.get("mfe_atr") is not None]
-    mae_atr = [float(item["mae_atr"]) for item in closed if item.get("mae_atr") is not None]
+    all_closed = [item for item in dataset.episodes if item["status"] == "closed"]
+    validation_end = (dataset.manifest.get("splits") or {}).get("validation_end")
+    visible_closed = [
+        item
+        for item in all_closed
+        if (
+            int(item.get("exit_time") or item.get("entry_time") or 0)
+            <= int(validation_end)
+            if validation_end is not None
+            else str(item.get("split") or "research") != "test"
+        )
+    ]
+    holding = [int(item["holding_bars"]) for item in visible_closed]
+    mfe_atr = [
+        float(item["mfe_atr"])
+        for item in visible_closed
+        if item.get("mfe_atr") is not None
+    ]
+    mae_atr = [
+        float(item["mae_atr"])
+        for item in visible_closed
+        if item.get("mae_atr") is not None
+    ]
     same_side = sum(len(item.get("same_side_signal_ids") or []) for item in dataset.episodes)
     best = {
         **replay,
         "verdict": "基准完成",
         "robust_score": None,
+        "path_stat_scope": "research_and_validation",
         "median_holding_bars": median(holding) if holding else 0,
         "median_mfe_atr": median(mfe_atr) if mfe_atr else None,
         "median_mae_atr": median(mae_atr) if mae_atr else None,
         "qualified_signal_count": len(dataset.signals),
         "same_side_signal_count": same_side,
-        "closed_episode_count": len(closed),
+        "closed_episode_count": len(all_closed),
+        "visible_closed_episode_count": len(visible_closed),
         "llm_research_episode_count": int(
             dataset.manifest.get("llm_research_episode_count") or 0
         ),
@@ -274,7 +454,8 @@ def baseline_summary(dataset: SignalPathDataset) -> dict[str, Any]:
         "grid": {},
         "score_explanation": (
             "基准结果只按日线 Hull/STC 同向过滤后的 5m 反向信号平仓，"
-            "没有止损、止盈、保本、移动保护或同向再入场。"
+            "没有止损、止盈、保本、移动保护或同向再入场。最终测试未揭盲时，"
+            "跨越验证边界的持仓按边界最后一根可见 K 线清算价值估值，不读取未来平仓收益。"
         ),
     }
 
@@ -300,6 +481,13 @@ def run_path_matrix(
     if any(float(value) <= 0 for value in (*stop_values, *take_values)):
         raise ValueError("止损和止盈候选值必须大于 0。")
 
+    prepared_replay = _prepare_path_replay(dataset)
+    baseline = replay_signal_paths(
+        dataset,
+        PathReplayConfig(reveal_test=reveal_test),
+        include_performance_series=True,
+        _prepared=prepared_replay,
+    )
     rows: list[dict[str, Any]] = []
     total = len(stop_values) * len(take_values)
     completed = 0
@@ -324,6 +512,8 @@ def run_path_matrix(
                     intrabar_policy=intrabar_policy,
                     reveal_test=reveal_test,
                 ),
+                include_performance_series=True,
+                _prepared=prepared_replay,
             )
             score = _selection_score(metrics)
             rows.append(
@@ -341,12 +531,27 @@ def run_path_matrix(
                     "neighbor_std_validation_return_pct": None,
                     "verdict": "待评估",
                     **metrics,
+                    **_comparison_fields(metrics, baseline),
                 }
             )
             completed += 1
             if progress_callback is not None:
                 progress_callback(completed, total)
 
+    statistical_candidates = [baseline, *rows]
+    multiple_testing = attach_deflated_sharpe(statistical_candidates)
+    overfitting = cscv_probability_of_backtest_overfitting(
+        [
+            list(item.get("_daily_returns") or [])
+            for item in statistical_candidates
+        ]
+    )
+    for row in rows:
+        row["matrix_trial_count"] = int(multiple_testing["trial_count"])
+        row["matrix_pbo_pct"] = overfitting.get("pbo_pct")
+        row["matrix_cscv_split_count"] = int(
+            overfitting.get("cscv_split_count") or 0
+        )
     _attach_neighborhood_stability(rows, stop_values, take_values)
     _attach_plateau_regions(rows, stop_values, take_values)
     ranked = sorted(
@@ -371,6 +576,9 @@ def run_path_matrix(
     best = _region_center_candidate(ranked, stop_values, take_values) or (ranked[0] if ranked else None)
     if best is not None:
         best["verdict"] = "稳定区候选" if best["plateau"] else best["verdict"]
+    for row in rows:
+        strip_private_performance_fields(row)
+    strip_private_performance_fields(baseline)
 
     return {
         "schema_version": PATH_MATRIX_SCHEMA_VERSION,
@@ -391,12 +599,28 @@ def run_path_matrix(
             "test_revealed": bool(reveal_test),
         },
         "combination_count": len(rows),
+        "statistical_validation": {
+            **multiple_testing,
+            **overfitting,
+            "scope": (
+                "all"
+                if reveal_test
+                else "research_and_validation_only"
+            ),
+        },
+        "baseline": baseline,
         "best": best,
+        "best_comparison": (
+            _comparison_fields(best, baseline)
+            if best is not None
+            else {}
+        ),
         "rows": ranked,
         "score_explanation": (
             "候选只使用研究段和验证段评分，测试段不参与排序。稳定区要求当前格盈利、"
             "3×3 邻域至少 80% 验证盈利、邻域最差收益为正且验证交易数充足；"
-            "同一根 5m 同时触发止损止盈时按所选保守规则处理。"
+            "同一根 5m 同时触发止损止盈时按所选保守规则处理。DSR 按本次矩阵组合数"
+            "校正多重试验，PBO 使用研究+验证逐日权益做 CSCV，均不读取隐藏测试段。"
         ),
     }
 
@@ -404,6 +628,9 @@ def run_path_matrix(
 def replay_signal_paths(
     dataset: SignalPathDataset,
     config: PathReplayConfig,
+    *,
+    include_performance_series: bool = False,
+    _prepared: PreparedPathReplay | None = None,
 ) -> dict[str, Any]:
     execution = dataset.manifest.get("execution") or {}
     initial_equity = float(execution.get("initial_equity") or 20_000.0)
@@ -413,10 +640,8 @@ def replay_signal_paths(
     fee_rate = float(execution.get("fee_rate") or 0.0)
     slippage_rate = float(execution.get("slippage_rate") or 0.0)
     bars = dataset.bars
-    arrays = {
-        key: np.asarray([float(item[key]) for item in bars], dtype="float64")
-        for key in ("open", "high", "low", "close")
-    }
+    prepared_replay = _prepared or _prepare_path_replay(dataset)
+    arrays = prepared_replay.arrays
     signal_by_id = {int(item["id"]): item for item in dataset.signals}
     equity = initial_equity
     global_peak = initial_equity
@@ -509,6 +734,7 @@ def replay_signal_paths(
             gross_pnl = _direction(side) * (exit_price - entry_price) * qty
             net_pnl = gross_pnl - entry_fee - exit_fee
 
+            equity_before = equity
             global_peak, trade_drawdown = _mark_to_market_drawdown(
                 arrays,
                 entry_index=entry_index,
@@ -521,6 +747,7 @@ def replay_signal_paths(
                 global_peak=global_peak,
             )
             equity += net_pnl
+            equity_after = equity
             global_peak = max(global_peak, equity)
             realized_drawdown = (global_peak - equity) / global_peak if global_peak > 0 else 0.0
             split = str(episode.get("split") or "research")
@@ -538,6 +765,10 @@ def replay_signal_paths(
                     "exit_price": exit_price,
                     "exit_reason": exit_reason,
                     "qty": qty,
+                    "equity_before": equity_before,
+                    "equity_after": equity_after,
+                    "entry_fee": entry_fee,
+                    "exit_fee": exit_fee,
                     "gross_pnl": gross_pnl,
                     "fees": entry_fee + exit_fee,
                     "net_pnl": net_pnl,
@@ -550,15 +781,74 @@ def replay_signal_paths(
             if exit_reason == "reverse_signal" or entries_used > config.max_reentries:
                 break
 
+    has_time_boundaries = (
+        (dataset.manifest.get("splits") or {}).get("validation_end")
+        is not None
+    )
+    performance_records = (
+        records
+        if config.reveal_test or has_time_boundaries
+        else [item for item in records if item["split"] != "test"]
+    )
+    visible_end_index = _path_visible_end_index(
+        dataset,
+        reveal_test=config.reveal_test,
+        bar_times=prepared_replay.bar_times,
+    )
+    visible_records = _records_through_index(
+        dataset,
+        performance_records,
+        end_index=visible_end_index,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
+    visible_max_drawdown_pct = _drawdown_through_index(
+        dataset,
+        performance_records,
+        end_index=visible_end_index,
+        initial_equity=initial_equity,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+        arrays=prepared_replay.arrays,
+    )
+    performance_times, performance_equity = _daily_mark_to_market_equity(
+        dataset,
+        performance_records,
+        initial_equity=initial_equity,
+        reveal_test=config.reveal_test,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+        prepared=prepared_replay,
+    )
+    split_returns = _time_consistent_split_returns(
+        dataset,
+        performance_records,
+        initial_equity=initial_equity,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+        bar_times=prepared_replay.bar_times,
+    )
+    yearly_returns = _yearly_returns_from_equity(
+        performance_times,
+        performance_equity,
+        initial_equity=initial_equity,
+    )
     metrics = _replay_metrics(
         records,
         initial_equity,
         reveal_test=config.reveal_test,
+        visible_records=visible_records,
+        split_boundaries=dataset.manifest.get("splits") or {},
+        split_returns=split_returns,
+        yearly_returns=yearly_returns,
+        max_drawdown_pct=visible_max_drawdown_pct,
     )
-    visible_records = (
-        records
-        if config.reveal_test
-        else [item for item in records if item["split"] != "test"]
+    metrics.update(
+        performance_metrics(
+            performance_equity,
+            performance_times,
+            max_drawdown_pct=visible_max_drawdown_pct,
+        )
     )
     metrics["ambiguous_bar_count"] = sum(
         1 for item in visible_records if item["ambiguous_bar"]
@@ -566,11 +856,25 @@ def replay_signal_paths(
     metrics["reentry_trade_count"] = sum(
         1 for item in visible_records if int(item["entry_number"]) > 1
     )
+    metrics["window_mark_count"] = sum(
+        1 for item in visible_records if item["exit_reason"] == "window_mark"
+    )
     if not config.reveal_test:
-        metrics["test_return_pct"] = None
-        metrics["test_trade_count"] = None
-        metrics["test_win_rate_pct"] = None
-        metrics["test_profit_factor"] = None
+        for key in (
+            "net_profit",
+            "gross_profit",
+            "gross_loss",
+            "total_fees",
+            "return_pct",
+            "trade_count",
+            "winning_trade_count",
+            "losing_trade_count",
+            "win_rate_pct",
+            "profit_factor",
+        ):
+            metrics[f"test_{key}"] = None
+    if not include_performance_series:
+        strip_private_performance_fields(metrics)
     return metrics
 
 
@@ -579,6 +883,10 @@ def write_signal_path_artifacts(dataset: SignalPathDataset, output_dir: Path) ->
     dataset_dir.mkdir(parents=True, exist_ok=True)
     _write_json(dataset_dir / "manifest.json", dataset.manifest)
     _write_gzip_json(dataset_dir / "internal.json.gz", dataset.as_dict())
+    _write_gzip_json(
+        dataset_dir / "replay.json.gz",
+        _replay_cache_payload(dataset),
+    )
     _write_csv(dataset_dir / "episodes.csv", dataset.episodes)
     _write_csv(dataset_dir / "signals.csv", dataset.signals)
     _write_gzip_csv(dataset_dir / "bars.csv.gz", dataset.bars)
@@ -587,10 +895,13 @@ def write_signal_path_artifacts(dataset: SignalPathDataset, output_dir: Path) ->
         "ChartBench signal-path research dataset\n\n"
         "- manifest.json: data identity, strategy semantics and split boundaries\n"
         "- episodes.csv: no-risk entry-to-qualified-opposite-signal episodes\n"
-        "- signals.csv: every qualified entry, same-side and reverse signal\n"
-        "- bars.csv.gz: unique 5-minute OHLCV and causal indicator features\n"
-        "- llm_research_samples.jsonl.gz: research split only; test data is excluded\n"
-        "- internal.json.gz: replay cache used by ChartBench\n"
+        "- signals.csv: every qualified entry, same-side and reverse signal, including exact signal-node indicator snapshots\n"
+        "- bars.csv.gz: unique 5-minute OHLCV plus causal 5m DKX/Hull/UT/STC/ATR and aligned closed-1D Hull/STC features\n"
+        "- llm_research_samples.jsonl.gz: research split only; every row contains bar_columns and feature_definitions; test data is excluded\n"
+        "- internal.json.gz: complete internal research dataset\n"
+        "- replay.json.gz: compact OHLC/ATR replay cache used internally by ChartBench\n"
+        "\nDirection encoding: 1=up/buy/green, -1=down/sell/red, 0=unclear or not aligned.\n"
+        "Daily features always use the latest fully closed 1D candle visible when the next 5m bar opens.\n"
     )
     (dataset_dir / "README.txt").write_text(readme, encoding="utf-8")
     return artifact_catalog(output_dir)
@@ -606,9 +917,35 @@ def write_path_matrix_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def load_signal_path_dataset(path: Path) -> SignalPathDataset:
-    with gzip.open(path, "rt", encoding="utf-8") as file:
+    source_path = path
+    replay_path = path.with_name("replay.json.gz")
+    if path.name == "internal.json.gz" and replay_path.is_file():
+        source_path = replay_path
+    with gzip.open(source_path, "rt", encoding="utf-8") as file:
         payload = json.load(file)
-    return SignalPathDataset.from_dict(payload)
+    dataset = SignalPathDataset.from_dict(payload)
+    if (
+        path.name == "internal.json.gz"
+        and source_path == path
+        and not replay_path.exists()
+    ):
+        _write_gzip_json(replay_path, _replay_cache_payload(dataset))
+    return dataset
+
+
+def _replay_cache_payload(dataset: SignalPathDataset) -> dict[str, Any]:
+    return {
+        "manifest": dataset.manifest,
+        "bars": [
+            {
+                key: item.get(key)
+                for key in PATH_REPLAY_BAR_COLUMNS
+            }
+            for item in dataset.bars
+        ],
+        "signals": dataset.signals,
+        "episodes": dataset.episodes,
+    }
 
 
 def artifact_catalog(run_dir: Path) -> list[dict[str, Any]]:
@@ -663,26 +1000,18 @@ def _research_bars(study: PreparedBacktestStudy, atr_period: int) -> list[dict[s
         "merged_dkx_hull_ut.mhull_down": "mhull_down",
         "merged_dkx_hull_ut.shull_down": "shull_down",
     }
-    features: dict[int, dict[str, Any]] = {}
-    for indicator in snapshot.get("indicators") or []:
-        indicator_id = str(indicator.get("id") or "")
-        for series in indicator.get("series") or []:
-            series_id = str(series.get("id") or "")
-            target = feature_ids.get(f"{indicator_id}.{series_id}")
-            if target is None:
-                continue
-            for point in series.get("data") or []:
-                value = point.get("value")
-                if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-                    continue
-                timestamp = int(point.get("time") or 0)
-                item = features.setdefault(timestamp, {})
-                item[target] = float(value)
-                if target == "stc":
-                    color = str(point.get("signal_color") or point.get("color") or "")
-                    item["stc_direction"] = 1 if is_green_color(color) else -1 if is_red_color(color) else 0
+    features = _series_features_by_time(snapshot, feature_ids)
+    custom_features = _indicator_feature_table(snapshot, "merged_dkx_hull_ut")
+    custom_times = custom_features.get("time") or []
+    custom_index_by_time = (
+        {}
+        if len(custom_times) == len(candles)
+        and all(int(candle["time"]) == custom_times[index] for index, candle in enumerate(candles))
+        else {timestamp: index for index, timestamp in enumerate(custom_times)}
+    )
 
     bars: list[dict[str, Any]] = []
+    previous_stc: float | None = None
     for index, candle in enumerate(candles):
         timestamp = int(candle["time"])
         item = {
@@ -696,15 +1025,222 @@ def _research_bars(study: PreparedBacktestStudy, atr_period: int) -> list[dict[s
             "volume": volume_by_time.get(timestamp, 0.0),
             "atr": _finite_or_none(atr.iloc[index]),
             "stc": None,
+            "stc_delta": None,
             "stc_direction": None,
+            "stc_zone": None,
+            "dkx_w": None,
+            "dkx_d": None,
+            "dkx_k": None,
+            "dkx_spread": None,
+            "dkx_buy": 0,
+            "dkx_sell": 0,
+            "marker_buy": 0,
+            "marker_sell": 0,
+            "mhull": None,
+            "shull": None,
+            "hull_direction": None,
             "mhull_up": None,
             "shull_up": None,
             "mhull_down": None,
             "shull_down": None,
+            "ut_atr": None,
+            "ut_n_loss": None,
+            "ut_source": None,
+            "ut_trailing_stop": None,
+            "ut_distance": None,
+            "ut_position": 0,
+            "ut_buy": 0,
+            "ut_sell": 0,
+            "d1_bar_time": None,
+            "d1_stc": None,
+            "d1_stc_delta": None,
+            "d1_stc_direction": None,
+            "d1_mhull": None,
+            "d1_shull": None,
+            "d1_hull_direction": None,
+            "d1_hull_stc_aligned": None,
+            "d1_trend": None,
         }
         item.update(features.get(timestamp) or {})
+        custom_index = (
+            index
+            if index < len(custom_times) and custom_times[index] == timestamp
+            else custom_index_by_time.get(timestamp)
+        )
+        if custom_index is not None:
+            for column in CUSTOM_INDICATOR_FEATURE_COLUMNS:
+                values = custom_features.get(column) or []
+                if custom_index >= len(values):
+                    continue
+                value = _feature_value(values[custom_index], column)
+                if value is not None:
+                    item[column] = value
+        stc_value = _optional_float(item.get("stc"))
+        if stc_value is not None:
+            item["stc_delta"] = (
+                stc_value - previous_stc
+                if previous_stc is not None
+                else None
+            )
+            item["stc_zone"] = -1 if stc_value < 25 else 1 if stc_value > 75 else 0
+            previous_stc = stc_value
+        item["marker_buy"] = int(bool(item.get("dkx_buy")) or bool(item.get("ut_buy")))
+        item["marker_sell"] = int(bool(item.get("dkx_sell")) or bool(item.get("ut_sell")))
         bars.append(item)
+    _attach_closed_daily_features(
+        bars,
+        study.htf_snapshot,
+        low_duration_seconds=int(snapshot.get("duration_seconds") or 300),
+    )
     return bars
+
+
+def _series_features_by_time(
+    snapshot: dict[str, Any],
+    feature_ids: dict[str, str],
+) -> dict[int, dict[str, Any]]:
+    features: dict[int, dict[str, Any]] = {}
+    for indicator in snapshot.get("indicators") or []:
+        indicator_id = str(indicator.get("id") or "")
+        for series in indicator.get("series") or []:
+            series_id = str(series.get("id") or "")
+            target = feature_ids.get(f"{indicator_id}.{series_id}")
+            if target is None:
+                continue
+            for point in series.get("data") or []:
+                value = _optional_float(point.get("value"))
+                if value is None:
+                    continue
+                timestamp = int(point.get("time") or 0)
+                item = features.setdefault(timestamp, {})
+                item[target] = value
+                if target == "stc":
+                    color = str(point.get("signal_color") or point.get("color") or "")
+                    item["stc_direction"] = (
+                        1 if is_green_color(color) else -1 if is_red_color(color) else 0
+                    )
+    return features
+
+
+def _indicator_feature_table(
+    snapshot: dict[str, Any],
+    indicator_id: str,
+) -> dict[str, list[Any]]:
+    for indicator in snapshot.get("indicators") or []:
+        if str(indicator.get("id") or "") != indicator_id:
+            continue
+        return {
+            key: values
+            for key, values in (indicator.get("features") or {}).items()
+            if isinstance(values, list)
+        }
+    return {}
+
+
+def _feature_value(value: Any, column: str) -> float | int | None:
+    parsed = _optional_float(value)
+    if parsed is None:
+        return None
+    if column in INTEGER_FEATURE_COLUMNS:
+        return int(round(parsed))
+    return parsed
+
+
+def _daily_indicator_rows(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(snapshot, dict):
+        return []
+    candles = list(snapshot.get("candles") or [])
+    if not candles:
+        return []
+    visual = _series_features_by_time(snapshot, {"stc.stc": "stc"})
+    custom = _indicator_feature_table(snapshot, "merged_dkx_hull_ut")
+    custom_times = custom.get("time") or []
+    custom_index_by_time = (
+        {}
+        if len(custom_times) == len(candles)
+        and all(int(candle["time"]) == custom_times[index] for index, candle in enumerate(candles))
+        else {timestamp: index for index, timestamp in enumerate(custom_times)}
+    )
+    rows: list[dict[str, Any]] = []
+    previous_stc: float | None = None
+    for index, candle in enumerate(candles):
+        timestamp = int(candle["time"])
+        row: dict[str, Any] = {
+            "time": timestamp,
+            "stc": None,
+            "stc_delta": None,
+            "stc_direction": None,
+            "mhull": None,
+            "shull": None,
+            "hull_direction": None,
+        }
+        row.update(visual.get(timestamp) or {})
+        custom_index = (
+            index
+            if index < len(custom_times) and custom_times[index] == timestamp
+            else custom_index_by_time.get(timestamp)
+        )
+        if custom_index is not None:
+            for column in ("mhull", "shull", "hull_direction"):
+                values = custom.get(column) or []
+                if custom_index < len(values):
+                    row[column] = _feature_value(values[custom_index], column)
+        stc_value = _optional_float(row.get("stc"))
+        if stc_value is not None:
+            row["stc_delta"] = (
+                stc_value - previous_stc
+                if previous_stc is not None
+                else None
+            )
+            previous_stc = stc_value
+        rows.append(row)
+    return rows
+
+
+def _attach_closed_daily_features(
+    bars: list[dict[str, Any]],
+    daily_snapshot: dict[str, Any] | None,
+    *,
+    low_duration_seconds: int,
+) -> None:
+    daily_rows = _daily_indicator_rows(daily_snapshot)
+    if not daily_rows:
+        return
+    daily_times = [int(item["time"]) for item in daily_rows]
+    for index, bar in enumerate(bars):
+        # The strategy confirms bar[index] when bar[index + 1] opens. At that
+        # moment the newest daily candle is still forming, so -2 is the latest
+        # fully closed 1D candle. This mirrors BacktestSnapshotSlicer +
+        # SignalEvaluator(use_closed_bar=True) exactly.
+        visible_time = (
+            int(bars[index + 1]["time"])
+            if index + 1 < len(bars)
+            else int(bar["time"]) + max(int(low_duration_seconds), 1)
+        )
+        daily_index = bisect_right(daily_times, visible_time) - 2
+        if daily_index < 0:
+            continue
+        daily = daily_rows[daily_index]
+        hull_direction = _feature_value(daily.get("hull_direction"), "d1_hull_direction")
+        stc_direction = _feature_value(daily.get("stc_direction"), "d1_stc_direction")
+        aligned = bool(
+            hull_direction in {-1, 1}
+            and stc_direction in {-1, 1}
+            and hull_direction == stc_direction
+        )
+        bar.update(
+            {
+                "d1_bar_time": int(daily["time"]),
+                "d1_stc": _optional_float(daily.get("stc")),
+                "d1_stc_delta": _optional_float(daily.get("stc_delta")),
+                "d1_stc_direction": stc_direction,
+                "d1_mhull": _optional_float(daily.get("mhull")),
+                "d1_shull": _optional_float(daily.get("shull")),
+                "d1_hull_direction": hull_direction,
+                "d1_hull_stc_aligned": int(aligned),
+                "d1_trend": int(hull_direction) if aligned else 0,
+            }
+        )
 
 
 def _new_episode(identifier: int, event: dict[str, Any], context_bars: int) -> dict[str, Any]:
@@ -928,45 +1464,488 @@ def _mark_to_market_drawdown(
     return max(global_peak, float(np.max(favorable_equity))), max(float(np.max(drawdowns)), 0.0)
 
 
+def _path_visible_end_index(
+    dataset: SignalPathDataset,
+    *,
+    reveal_test: bool,
+    bar_times: list[int] | None = None,
+) -> int:
+    if not dataset.bars:
+        return -1
+    if reveal_test:
+        return len(dataset.bars) - 1
+    validation_end = (dataset.manifest.get("splits") or {}).get("validation_end")
+    if validation_end is None:
+        return len(dataset.bars) - 1
+    resolved_bar_times = (
+        bar_times
+        if bar_times is not None
+        else [int(item["time"]) for item in dataset.bars]
+    )
+    return min(
+        max(bisect_right(resolved_bar_times, int(validation_end)) - 1, 0),
+        len(dataset.bars) - 1,
+    )
+
+
+def _records_through_index(
+    dataset: SignalPathDataset,
+    records: list[dict[str, Any]],
+    *,
+    end_index: int,
+    fee_rate: float,
+    slippage_rate: float,
+) -> list[dict[str, Any]]:
+    """Close a boundary-crossing position at the last visible close."""
+
+    if end_index < 0:
+        return []
+    visible: list[dict[str, Any]] = []
+    for record in sorted(records, key=lambda item: int(item["entry_index"])):
+        if int(record["entry_index"]) > end_index:
+            break
+        if int(record["exit_index"]) <= end_index:
+            visible.append(record)
+            continue
+        visible.append(
+            _marked_record(
+                dataset,
+                record,
+                end_index=end_index,
+                fee_rate=fee_rate,
+                slippage_rate=slippage_rate,
+            )
+        )
+        break
+    return visible
+
+
+def _marked_record(
+    dataset: SignalPathDataset,
+    record: dict[str, Any],
+    *,
+    end_index: int,
+    fee_rate: float,
+    slippage_rate: float,
+) -> dict[str, Any]:
+    side = str(record["side"])
+    exit_side = "sell" if side == "buy" else "buy"
+    mark_price = _apply_slippage(
+        float(dataset.bars[end_index]["close"]),
+        exit_side,
+        slippage_rate,
+    )
+    qty = float(record["qty"])
+    exit_fee = abs(qty * mark_price) * fee_rate
+    gross_pnl = (
+        _direction(side)
+        * (mark_price - float(record["entry_price"]))
+        * qty
+    )
+    net_pnl = gross_pnl - float(record["entry_fee"]) - exit_fee
+    marked = dict(record)
+    marked.update(
+        exit_index=end_index,
+        exit_time=(
+            int(dataset.bars[end_index]["time"])
+            + _bar_duration_seconds(dataset.bars)
+        ),
+        exit_price=mark_price,
+        exit_reason="window_mark",
+        gross_pnl=gross_pnl,
+        exit_fee=exit_fee,
+        fees=float(record["entry_fee"]) + exit_fee,
+        net_pnl=net_pnl,
+        equity_after=float(record["equity_before"]) + net_pnl,
+        ambiguous_bar=False,
+    )
+    return marked
+
+
+def _drawdown_through_index(
+    dataset: SignalPathDataset,
+    records: list[dict[str, Any]],
+    *,
+    end_index: int,
+    initial_equity: float,
+    fee_rate: float,
+    slippage_rate: float,
+    arrays: dict[str, np.ndarray] | None = None,
+) -> float:
+    if end_index < 0 or not records:
+        return 0.0
+    resolved_arrays = arrays or {
+        key: np.asarray(
+            [float(item[key]) for item in dataset.bars],
+            dtype="float64",
+        )
+        for key in ("open", "high", "low", "close")
+    }
+    global_peak = float(initial_equity)
+    maximum = 0.0
+    for record in sorted(records, key=lambda item: int(item["entry_index"])):
+        entry_index = int(record["entry_index"])
+        if entry_index > end_index:
+            break
+        actual_exit = int(record["exit_index"])
+        crosses_boundary = actual_exit > end_index
+        end_exclusive = end_index + 1 if crosses_boundary else actual_exit
+        global_peak, path_drawdown = _mark_to_market_drawdown(
+            resolved_arrays,
+            entry_index=entry_index,
+            end_exclusive=end_exclusive,
+            side=str(record["side"]),
+            entry_price=float(record["entry_price"]),
+            qty=float(record["qty"]),
+            equity_before=float(record["equity_before"]),
+            entry_fee=float(record["entry_fee"]),
+            global_peak=global_peak,
+        )
+        if crosses_boundary:
+            marked = _marked_record(
+                dataset,
+                record,
+                end_index=end_index,
+                fee_rate=fee_rate,
+                slippage_rate=slippage_rate,
+            )
+            marked_equity = float(marked["equity_after"])
+            realized_drawdown = (
+                (global_peak - marked_equity) / global_peak
+                if global_peak > 0
+                else 0.0
+            )
+            maximum = max(maximum, path_drawdown, realized_drawdown)
+            break
+        equity_after = float(record["equity_after"])
+        global_peak = max(global_peak, equity_after)
+        realized_drawdown = (
+            (global_peak - equity_after) / global_peak
+            if global_peak > 0
+            else 0.0
+        )
+        maximum = max(maximum, path_drawdown, realized_drawdown)
+    return maximum * 100.0
+
+
+def _equity_at_index(
+    dataset: SignalPathDataset,
+    records: list[dict[str, Any]],
+    *,
+    index: int,
+    initial_equity: float,
+    fee_rate: float,
+    slippage_rate: float,
+) -> float:
+    if index < 0:
+        return float(initial_equity)
+    realized = float(initial_equity)
+    for record in sorted(records, key=lambda item: int(item["entry_index"])):
+        if int(record["entry_index"]) > index:
+            break
+        if int(record["exit_index"]) <= index:
+            realized = float(record["equity_after"])
+            continue
+        return float(
+            _marked_record(
+                dataset,
+                record,
+                end_index=index,
+                fee_rate=fee_rate,
+                slippage_rate=slippage_rate,
+            )["equity_after"]
+        )
+    return realized
+
+
+def _time_consistent_split_returns(
+    dataset: SignalPathDataset,
+    records: list[dict[str, Any]],
+    *,
+    initial_equity: float,
+    fee_rate: float,
+    slippage_rate: float,
+    bar_times: list[int] | None = None,
+) -> dict[str, float] | None:
+    splits = dataset.manifest.get("splits") or {}
+    if (
+        splits.get("research_end") is None
+        or splits.get("validation_end") is None
+        or not dataset.bars
+    ):
+        return None
+    resolved_bar_times = (
+        bar_times
+        if bar_times is not None
+        else [int(item["time"]) for item in dataset.bars]
+    )
+    research_index = max(
+        bisect_right(resolved_bar_times, int(splits["research_end"])) - 1,
+        0,
+    )
+    validation_index = max(
+        bisect_right(resolved_bar_times, int(splits["validation_end"])) - 1,
+        research_index,
+    )
+    final_index = len(dataset.bars) - 1
+    research_equity = _equity_at_index(
+        dataset,
+        records,
+        index=research_index,
+        initial_equity=initial_equity,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
+    validation_equity = _equity_at_index(
+        dataset,
+        records,
+        index=validation_index,
+        initial_equity=initial_equity,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
+    final_equity = _equity_at_index(
+        dataset,
+        records,
+        index=final_index,
+        initial_equity=initial_equity,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
+    return {
+        "research": research_equity - initial_equity,
+        "validation": validation_equity - research_equity,
+        "test": final_equity - validation_equity,
+    }
+
+
+def _yearly_returns_from_equity(
+    timestamps: list[int],
+    equity_values: list[float],
+    *,
+    initial_equity: float,
+) -> dict[str, float]:
+    yearly_pnl: dict[str, float] = {}
+    for timestamp, previous, current in zip(
+        timestamps[1:],
+        equity_values[:-1],
+        equity_values[1:],
+    ):
+        year = (
+            pd.Timestamp(int(timestamp), unit="s", tz="UTC")
+            .tz_convert("Asia/Shanghai")
+            .strftime("%Y")
+        )
+        yearly_pnl[year] = yearly_pnl.get(year, 0.0) + current - previous
+    return {
+        year: pnl / initial_equity * 100.0
+        for year, pnl in sorted(yearly_pnl.items())
+    }
+
+
+def _bar_duration_seconds(bars: list[dict[str, Any]]) -> int:
+    if len(bars) < 2:
+        return 300
+    for left, right in zip(bars, bars[1:]):
+        step = int(right["time"]) - int(left["time"])
+        if step > 0:
+            return step
+    return 300
+
+
+def _record_performance_split(
+    record: dict[str, Any],
+    boundaries: dict[str, Any],
+) -> str:
+    research_end = boundaries.get("research_end")
+    validation_end = boundaries.get("validation_end")
+    if research_end is None or validation_end is None:
+        return str(record.get("split") or "research")
+    exit_time = int(record["exit_time"])
+    if exit_time <= int(research_end):
+        return "research"
+    if exit_time <= int(validation_end):
+        return "validation"
+    return "test"
+
+
+def _daily_mark_to_market_equity(
+    dataset: SignalPathDataset,
+    records: list[dict[str, Any]],
+    *,
+    initial_equity: float,
+    reveal_test: bool,
+    fee_rate: float,
+    slippage_rate: float,
+    prepared: PreparedPathReplay | None = None,
+) -> tuple[list[int], list[float]]:
+    """Return a UTC day-end liquidation-value series.
+
+    The visible series stops at the validation boundary until the user reveals
+    the final test. A trade that crosses that boundary is valued at the last
+    visible close instead of importing its later exit result.
+    """
+
+    if not dataset.bars:
+        return [], []
+    prepared_replay = prepared or _prepare_path_replay(dataset)
+    bar_times = prepared_replay.bar_times
+    visible_end_index = _path_visible_end_index(
+        dataset,
+        reveal_test=reveal_test,
+        bar_times=bar_times,
+    )
+    bar_duration = prepared_replay.bar_duration
+
+    day_end_indices: list[int] = []
+    previous_day: int | None = None
+    previous_index = 0
+    for index in range(visible_end_index + 1):
+        close_time = bar_times[index] + bar_duration
+        day = (close_time - 1) // 86_400
+        if previous_day is not None and day != previous_day:
+            day_end_indices.append(previous_index)
+        previous_day = day
+        previous_index = index
+    day_end_indices.append(visible_end_index)
+
+    ordered_records = sorted(
+        records,
+        key=lambda item: (
+            int(item["entry_index"]),
+            int(item["exit_index"]),
+        ),
+    )
+    close_prices = prepared_replay.arrays["close"]
+    output_times = [bar_times[0]]
+    output_equity = [float(initial_equity)]
+    record_index = 0
+    realized_equity = float(initial_equity)
+
+    for day_end_index in day_end_indices:
+        marked_equity = realized_equity
+        while record_index < len(ordered_records):
+            record = ordered_records[record_index]
+            entry_index = int(record["entry_index"])
+            exit_index = int(record["exit_index"])
+            if entry_index > day_end_index:
+                break
+            if exit_index <= day_end_index:
+                realized_equity = float(record["equity_after"])
+                marked_equity = realized_equity
+                record_index += 1
+                continue
+
+            side = str(record["side"])
+            direction = _direction(side)
+            raw_mark = float(close_prices[day_end_index])
+            exit_side = "sell" if side == "buy" else "buy"
+            mark_price = _apply_slippage(raw_mark, exit_side, slippage_rate)
+            estimated_exit_fee = abs(float(record["qty"]) * mark_price) * fee_rate
+            marked_equity = (
+                float(record["equity_before"])
+                - float(record["entry_fee"])
+                + direction
+                * (mark_price - float(record["entry_price"]))
+                * float(record["qty"])
+                - estimated_exit_fee
+            )
+            break
+
+        output_times.append(bar_times[day_end_index] + bar_duration)
+        output_equity.append(marked_equity)
+
+    return output_times, output_equity
+
+
 def _replay_metrics(
     records: list[dict[str, Any]],
     initial_equity: float,
     *,
     reveal_test: bool,
+    visible_records: list[dict[str, Any]] | None = None,
+    split_boundaries: dict[str, Any] | None = None,
+    split_returns: dict[str, float] | None = None,
+    yearly_returns: dict[str, float] | None = None,
+    max_drawdown_pct: float | None = None,
 ) -> dict[str, Any]:
-    visible = records if reveal_test else [item for item in records if item["split"] != "test"]
+    visible = (
+        visible_records
+        if visible_records is not None
+        else records
+        if reveal_test
+        else [item for item in records if item["split"] != "test"]
+    )
     wins = [item for item in visible if float(item["net_pnl"]) > 0]
     losses = [item for item in visible if float(item["net_pnl"]) < 0]
+    breakevens = [item for item in visible if float(item["net_pnl"]) == 0]
     gross_profit = sum(float(item["net_pnl"]) for item in wins)
     gross_loss = abs(sum(float(item["net_pnl"]) for item in losses))
     visible_net_profit = sum(float(item["net_pnl"]) for item in visible)
-    visible_max_drawdown_pct = max(
-        (float(item.get("path_drawdown_pct") or 0.0) for item in visible),
-        default=0.0,
-    )
-    yearly_pnl: dict[str, float] = {}
-    for item in visible:
-        year = (
-            pd.Timestamp(int(item["entry_time"]), unit="s", tz="UTC")
-            .tz_convert("Asia/Shanghai")
-            .strftime("%Y")
+    total_fees = sum(float(item["fees"]) for item in visible)
+    average_win = gross_profit / len(wins) if wins else 0.0
+    average_loss = -gross_loss / len(losses) if losses else 0.0
+    holding_bars = [
+        max(int(item["exit_index"]) - int(item["entry_index"]), 0)
+        for item in visible
+    ]
+    visible_max_drawdown_pct = (
+        max(float(max_drawdown_pct), 0.0)
+        if max_drawdown_pct is not None
+        else max(
+            (float(item.get("path_drawdown_pct") or 0.0) for item in visible),
+            default=0.0,
         )
-        yearly_pnl[year] = yearly_pnl.get(year, 0.0) + float(item["net_pnl"])
-    yearly_returns = {
-        year: pnl / initial_equity * 100
-        for year, pnl in sorted(yearly_pnl.items())
-    }
+    )
+    if yearly_returns is None:
+        yearly_pnl: dict[str, float] = {}
+        for item in visible:
+            year = (
+                pd.Timestamp(int(item["entry_time"]), unit="s", tz="UTC")
+                .tz_convert("Asia/Shanghai")
+                .strftime("%Y")
+            )
+            yearly_pnl[year] = yearly_pnl.get(year, 0.0) + float(item["net_pnl"])
+        yearly_returns = {
+            year: pnl / initial_equity * 100
+            for year, pnl in sorted(yearly_pnl.items())
+        }
     positive_years = sum(1 for value in yearly_returns.values() if value > 0)
     metrics: dict[str, Any] = {
         "initial_equity": initial_equity,
         "final_equity": initial_equity + visible_net_profit,
+        "gross_pnl": sum(float(item["gross_pnl"]) for item in visible),
         "net_profit": visible_net_profit,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
         "return_pct": visible_net_profit / initial_equity * 100,
         "max_drawdown_pct": visible_max_drawdown_pct,
         "trade_count": len(visible),
+        "winning_trade_count": len(wins),
+        "losing_trade_count": len(losses),
+        "breakeven_trade_count": len(breakevens),
         "win_rate_pct": len(wins) / len(visible) * 100 if visible else 0.0,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0),
-        "total_fees": sum(float(item["fees"]) for item in visible),
+        "average_trade_pnl": visible_net_profit / len(visible) if visible else 0.0,
+        "average_win": average_win,
+        "average_loss": average_loss,
+        "payoff_ratio": (
+            average_win / abs(average_loss)
+            if average_loss < 0
+            else 999.0
+            if average_win > 0
+            else 0.0
+        ),
+        "largest_win": max((float(item["net_pnl"]) for item in wins), default=0.0),
+        "largest_loss": min((float(item["net_pnl"]) for item in losses), default=0.0),
+        "average_holding_bars": (
+            sum(holding_bars) / len(holding_bars)
+            if holding_bars
+            else 0.0
+        ),
+        "total_fees": total_fees,
+        "long_trade_count": sum(1 for item in visible if item["side"] == "buy"),
+        "short_trade_count": sum(1 for item in visible if item["side"] == "sell"),
         "stop_loss_count": sum(1 for item in visible if item["exit_reason"] == "stop_loss"),
         "take_profit_count": sum(1 for item in visible if item["exit_reason"] == "take_profit"),
         "reverse_exit_count": sum(1 for item in visible if item["exit_reason"] == "reverse_signal"),
@@ -977,14 +1956,30 @@ def _replay_metrics(
         ),
         "worst_year_return_pct": min(yearly_returns.values(), default=0.0),
     }
+    boundaries = split_boundaries or {}
     for split in ("research", "validation", "test"):
-        subset = [item for item in records if item["split"] == split]
-        pnl = sum(float(item["net_pnl"]) for item in subset)
+        subset = [
+            item
+            for item in records
+            if _record_performance_split(item, boundaries) == split
+        ]
+        pnl = (
+            float(split_returns[split])
+            if split_returns is not None
+            else sum(float(item["net_pnl"]) for item in subset)
+        )
         split_wins = sum(1 for item in subset if float(item["net_pnl"]) > 0)
+        split_losses = sum(1 for item in subset if float(item["net_pnl"]) < 0)
         split_profit = sum(float(item["net_pnl"]) for item in subset if float(item["net_pnl"]) > 0)
         split_loss = abs(sum(float(item["net_pnl"]) for item in subset if float(item["net_pnl"]) < 0))
+        metrics[f"{split}_net_profit"] = pnl
+        metrics[f"{split}_gross_profit"] = split_profit
+        metrics[f"{split}_gross_loss"] = split_loss
+        metrics[f"{split}_total_fees"] = sum(float(item["fees"]) for item in subset)
         metrics[f"{split}_return_pct"] = pnl / initial_equity * 100
         metrics[f"{split}_trade_count"] = len(subset)
+        metrics[f"{split}_winning_trade_count"] = split_wins
+        metrics[f"{split}_losing_trade_count"] = split_losses
         metrics[f"{split}_win_rate_pct"] = split_wins / len(subset) * 100 if subset else 0.0
         metrics[f"{split}_profit_factor"] = (
             split_profit / split_loss
@@ -994,6 +1989,65 @@ def _replay_metrics(
             else 0.0
         )
     return metrics
+
+
+def _comparison_fields(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+) -> dict[str, float | int]:
+    """Return flat fields so the UI and matrix CSV share one comparison contract."""
+
+    float_metrics = {
+        "annualized_volatility_pct",
+        "cagr_pct",
+        "calmar_ratio",
+        "daily_expected_shortfall_95_pct",
+        "daily_max_drawdown_pct",
+        "daily_var_95_pct",
+        "net_profit",
+        "gross_profit",
+        "gross_loss",
+        "martin_ratio",
+        "return_pct",
+        "research_return_pct",
+        "validation_return_pct",
+        "max_drawdown_pct",
+        "max_drawdown_duration_days",
+        "omega_ratio",
+        "profit_factor",
+        "psr_benchmark_pct",
+        "psr_zero_pct",
+        "return_excess_kurtosis",
+        "return_skewness",
+        "sharpe_ratio",
+        "sortino_ratio",
+        "ulcer_index_pct",
+        "win_rate_pct",
+        "total_fees",
+        "average_trade_pnl",
+    }
+    count_metrics = {
+        "trade_count",
+        "winning_trade_count",
+        "losing_trade_count",
+        "stop_loss_count",
+        "take_profit_count",
+        "reverse_exit_count",
+        "reentry_trade_count",
+        "performance_observation_count",
+    }
+    comparison: dict[str, float | int] = {}
+    for key in sorted(float_metrics):
+        baseline_value = float(baseline.get(key) or 0.0)
+        candidate_value = float(candidate.get(key) or 0.0)
+        comparison[f"baseline_{key}"] = baseline_value
+        comparison[f"{key}_delta_vs_baseline"] = candidate_value - baseline_value
+    for key in sorted(count_metrics):
+        baseline_value = int(baseline.get(key) or 0)
+        candidate_value = int(candidate.get(key) or 0)
+        comparison[f"baseline_{key}"] = baseline_value
+        comparison[f"{key}_delta_vs_baseline"] = candidate_value - baseline_value
+    return comparison
 
 
 def _selection_score(metrics: dict[str, Any]) -> float:
@@ -1158,7 +2212,10 @@ def _write_llm_jsonl(path: Path, dataset: SignalPathDataset) -> None:
             context_start = int(episode["context_start_index"])
             path_end = int(episode["path_end_index"]) + 1
             payload = {
-                "schema_version": 1,
+                "schema_version": int(
+                    dataset.manifest.get("schema_version")
+                    or PATH_DATASET_SCHEMA_VERSION
+                ),
                 "dataset_id": dataset.manifest["dataset_id"],
                 "episode": {
                     key: value
@@ -1177,6 +2234,7 @@ def _write_llm_jsonl(path: Path, dataset: SignalPathDataset) -> None:
                     if int(event_id) in signals
                 ],
                 "bar_columns": list(PATH_BAR_COLUMNS),
+                "feature_definitions": PATH_FEATURE_DEFINITIONS,
                 "context_bars": [
                     _compact_bar(item, index - entry_index)
                     for index, item in enumerate(bars[context_start:entry_index], start=context_start)
@@ -1247,6 +2305,8 @@ def _dataset_fingerprint(
 ) -> str:
     digest = hashlib.sha256()
     identity = {
+        "schema_version": PATH_DATASET_SCHEMA_VERSION,
+        "bar_columns": PATH_BAR_COLUMNS,
         "provider": resolved.config.provider,
         "symbol": resolved.config.symbol,
         "duration_seconds": resolved.config.duration_seconds,

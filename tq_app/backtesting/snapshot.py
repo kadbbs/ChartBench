@@ -80,7 +80,13 @@ def attach_higher_timeframe(
 
 
 class BacktestSnapshotSlicer:
-    def __init__(self, snapshot: dict[str, Any], *, max_bars: int) -> None:
+    def __init__(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        max_bars: int,
+        include_features: bool = False,
+    ) -> None:
         self.snapshot = snapshot
         self.max_bars = max(int(max_bars), 2)
         self.candles = list(snapshot.get("candles") or [])
@@ -88,7 +94,10 @@ class BacktestSnapshotSlicer:
         self.volume = list(snapshot.get("volume") or [])
         self.volume_times = [int(item.get("time") or 0) for item in self.volume]
         self.time_labels = dict(snapshot.get("time_labels") or {})
-        self.indicators = [_CachedIndicator(item) for item in snapshot.get("indicators") or []]
+        self.indicators = [
+            _CachedIndicator(item, include_features=include_features)
+            for item in snapshot.get("indicators") or []
+        ]
 
     def slice(self, end_exclusive: int) -> dict[str, Any]:
         end = min(max(int(end_exclusive), 0), len(self.candles))
@@ -118,13 +127,36 @@ class BacktestSnapshotSlicer:
 
 
 class _CachedIndicator:
-    def __init__(self, indicator: dict[str, Any]) -> None:
+    def __init__(self, indicator: dict[str, Any], *, include_features: bool) -> None:
         self.template = indicator
         self.series = [_CachedSeries(item) for item in indicator.get("series") or []]
+        self.include_features = include_features
+        self.features = (
+            {
+                key: values
+                for key, values in (indicator.get("features") or {}).items()
+                if isinstance(values, list)
+            }
+            if include_features
+            else {}
+        )
+        self.feature_times = [int(value or 0) for value in self.features.get("time") or []]
 
     def slice(self, start_time: int, end_time: int) -> dict[str, Any]:
         indicator = dict(self.template)
         indicator["series"] = [series.slice(start_time, end_time) for series in self.series]
+        if not self.include_features:
+            indicator.pop("features", None)
+            return indicator
+        feature_start = bisect_left(self.feature_times, start_time)
+        feature_end = bisect_right(self.feature_times, end_time)
+        indicator["features"] = {
+            key: [
+                values[index] if index < len(values) else None
+                for index in range(feature_start, feature_end)
+            ]
+            for key, values in self.features.items()
+        }
         return indicator
 
 
@@ -196,6 +228,7 @@ def serialize_indicator(result: IndicatorResult) -> dict[str, Any]:
         "name": result.name,
         "pane": result.pane,
         "series": [asdict(series) for series in result.series],
+        "features": result.features,
     }
 
 
@@ -215,4 +248,16 @@ def _slice_indicator(indicator: dict[str, Any], allowed_times: set[int]) -> dict
         item["options"] = options
         series_items.append(item)
     sliced["series"] = series_items
+    features = dict(indicator.get("features") or {})
+    feature_times = list(features.get("time") or [])
+    feature_indices = [
+        index
+        for index, time_value in enumerate(feature_times)
+        if int(time_value or 0) in allowed_times
+    ]
+    sliced["features"] = {
+        key: [values[index] if index < len(values) else None for index in feature_indices]
+        for key, values in features.items()
+        if isinstance(values, list)
+    }
     return sliced

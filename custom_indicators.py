@@ -63,6 +63,20 @@ def _line_points(df: pd.DataFrame, column: str) -> list[dict[str, float | int | 
     ]
 
 
+def _feature_values(series: pd.Series) -> list[float | int | None]:
+    values: list[float | int | None] = []
+    for value in series.tolist():
+        if pd.isna(value):
+            values.append(None)
+        elif isinstance(value, (bool, np.bool_)):
+            values.append(int(value))
+        elif isinstance(value, (int, np.integer)):
+            values.append(int(value))
+        else:
+            values.append(float(value))
+    return values
+
+
 def _wma(series: pd.Series, period: int) -> pd.Series:
     safe_period = max(int(period), 1)
     weights = np.arange(1, safe_period + 1, dtype="float64")
@@ -291,6 +305,7 @@ class MergedDkxHullUtIndicator(Indicator):
         df["dkx_w"] = (3 * df["close"] + df["high"] + df["low"] + df["open"]) / 6
         df["dkx_d"] = sum((20 - index) * df["dkx_w"].shift(index).fillna(0) for index in range(20)) / 210
         df["dkx_k"] = df["dkx_d"].rolling(10, min_periods=10).mean()
+        df["dkx_spread"] = df["dkx_d"] - df["dkx_k"]
         df["dkx_buy"] = _crossover(df["dkx_d"], df["dkx_k"])
         df["dkx_sell"] = _crossunder(df["dkx_d"], df["dkx_k"])
 
@@ -304,6 +319,9 @@ class MergedDkxHullUtIndicator(Indicator):
             df["mhull"] = _hma(hull_source, hull_mode_length)
         df["shull"] = df["mhull"].shift(2)
         df["hull_up"] = df["mhull"] > df["mhull"].shift(2)
+        df["hull_direction"] = df["hull_up"].map({True: 1, False: -1}).where(
+            df["mhull"].notna() & df["shull"].notna()
+        )
 
         prev_close = df["close"].shift(1)
         true_range = pd.concat(
@@ -349,6 +367,11 @@ class MergedDkxHullUtIndicator(Indicator):
             position.append(current_position)
 
         df["ut_trailing_stop"] = trailing_stop
+        df["ut_atr"] = x_atr
+        df["ut_n_loss"] = n_loss
+        df["ut_source"] = src_ut
+        df["ut_position"] = position
+        df["ut_distance"] = src_ut - df["ut_trailing_stop"]
         df["ut_buy"] = (src_ut > df["ut_trailing_stop"]) & _crossover(ema_src_ut, df["ut_trailing_stop"])
         df["ut_sell"] = (src_ut < df["ut_trailing_stop"]) & _crossover(df["ut_trailing_stop"], ema_src_ut)
 
@@ -414,6 +437,26 @@ class MergedDkxHullUtIndicator(Indicator):
             id=self.meta.id,
             name=self.meta.name,
             pane=self.meta.pane,
+            features={
+                "time": pd.to_numeric(df["time"], errors="coerce").fillna(0).astype(int).tolist(),
+                "dkx_w": _feature_values(df["dkx_w"]),
+                "dkx_d": _feature_values(df["dkx_d"]),
+                "dkx_k": _feature_values(df["dkx_k"]),
+                "dkx_spread": _feature_values(df["dkx_spread"]),
+                "dkx_buy": _feature_values(df["dkx_buy"]),
+                "dkx_sell": _feature_values(df["dkx_sell"]),
+                "mhull": _feature_values(df["mhull"]),
+                "shull": _feature_values(df["shull"]),
+                "hull_direction": _feature_values(df["hull_direction"]),
+                "ut_atr": _feature_values(df["ut_atr"]),
+                "ut_n_loss": _feature_values(df["ut_n_loss"]),
+                "ut_source": _feature_values(df["ut_source"]),
+                "ut_trailing_stop": _feature_values(df["ut_trailing_stop"]),
+                "ut_distance": _feature_values(df["ut_distance"]),
+                "ut_position": _feature_values(df["ut_position"]),
+                "ut_buy": _feature_values(df["ut_buy"]),
+                "ut_sell": _feature_values(df["ut_sell"]),
+            },
             series=[
                 SeriesDefinition(
                     id="dkx_d",
