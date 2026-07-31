@@ -42,6 +42,10 @@ DEFAULT_LOG_PATH = Path("logs/live_trading.log")
 DEFAULT_ORDER_LOG_PATH = Path("logs/live_trading_orders.jsonl")
 DEFAULT_STATE_PATH = Path("logs/live_trading_state.json")
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
+BITGET_READ_RATE_LIMIT_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+BITGET_MAX_RETRY_AFTER_SECONDS = 5.0
+
+
 @dataclass(slots=True)
 class LiveTradingConfig:
     provider: str = "bitget"
@@ -375,33 +379,56 @@ class BitgetFuturesTradeClient:
         query = urlencode({key: value for key, value in (params or {}).items() if value not in (None, "")})
         request_path = path if not query else f"{path}?{query}"
         body_text = json.dumps(body or {}, separators=(",", ":"), ensure_ascii=False) if method != "GET" else ""
-        timestamp = str(int(time.time() * 1000))
-        prehash = f"{timestamp}{method}{request_path}{body_text}"
-        digest = hmac.new(self.secret.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).digest()
-        headers = {
-            "ACCESS-KEY": self.api_key,
-            "ACCESS-SIGN": base64.b64encode(digest).decode("utf-8"),
-            "ACCESS-TIMESTAMP": timestamp,
-            "ACCESS-PASSPHRASE": self.passphrase,
-            "locale": "zh-CN",
-            "Content-Type": "application/json",
-        }
-        request = Request(
-            f"{self.api_base}{request_path}",
-            data=body_text.encode("utf-8") if body_text else None,
-            headers=headers,
-            method=method,
-        )
+        retry_delays = BITGET_READ_RATE_LIMIT_RETRY_DELAYS_SECONDS if method == "GET" else ()
+
+        for attempt in range(len(retry_delays) + 1):
+            timestamp = str(int(time.time() * 1000))
+            prehash = f"{timestamp}{method}{request_path}{body_text}"
+            digest = hmac.new(self.secret.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).digest()
+            headers = {
+                "ACCESS-KEY": self.api_key,
+                "ACCESS-SIGN": base64.b64encode(digest).decode("utf-8"),
+                "ACCESS-TIMESTAMP": timestamp,
+                "ACCESS-PASSPHRASE": self.passphrase,
+                "locale": "zh-CN",
+                "Content-Type": "application/json",
+            }
+            request = Request(
+                f"{self.api_base}{request_path}",
+                data=body_text.encode("utf-8") if body_text else None,
+                headers=headers,
+                method=method,
+            )
+            try:
+                with urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 429 and attempt < len(retry_delays):
+                    time.sleep(self._rate_limit_retry_delay(exc.headers, retry_delays[attempt]))
+                    continue
+                raise RuntimeError(f"Bitget API {path} HTTP {exc.code}: {error_body or exc.reason}") from exc
+
+            code = str(payload.get("code", ""))
+            if code == "429" and attempt < len(retry_delays):
+                time.sleep(retry_delays[attempt])
+                continue
+            if code and code != "00000":
+                raise RuntimeError(f"Bitget API {path} 返回错误 {code}: {payload.get('msg') or payload}")
+            return payload
+
+        raise RuntimeError(f"Bitget API {path} 请求失败。")
+
+    @staticmethod
+    def _rate_limit_retry_delay(headers: Any, fallback: float) -> float:
+        retry_after = headers.get("Retry-After") if headers is not None else None
         try:
-            with urlopen(request, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Bitget API {path} HTTP {exc.code}: {body or exc.reason}") from exc
-        code = str(payload.get("code", ""))
-        if code and code != "00000":
-            raise RuntimeError(f"Bitget API {path} 返回错误 {code}: {payload.get('msg') or payload}")
-        return payload
+            parsed = float(retry_after)
+        except (TypeError, ValueError):
+            return fallback
+        if parsed <= 0:
+            return fallback
+        return min(parsed, BITGET_MAX_RETRY_AFTER_SECONDS)
 
 
 class BitgetTickerWebSocket:
@@ -1514,15 +1541,46 @@ class LiveTradingEngine:
         tickers: dict[str, dict[str, Any]] | None = None,
         sync_positions: bool = True,
     ) -> list[TradeExecutionResult]:
-        if sync_positions:
+        if not sync_positions:
+            return self.check_live_risk_exits(tickers=tickers, use_exchange_positions=False)
+
+        real_trading = self._is_real_trading_mode()
+        position_sync_needs_exchange = (
+            self.config.local_position_enabled
+            and self.config.position_sync_enabled
+            and (not self.config.position_sync_real_only or real_trading)
+        )
+        risk_check_needs_exchange = self.config.risk_exits_enabled and real_trading
+        if not position_sync_needs_exchange and not risk_check_needs_exchange:
             self.sync_local_positions_with_exchange()
-        return self.check_live_risk_exits(tickers=tickers, use_exchange_positions=sync_positions)
+            return self.check_live_risk_exits(tickers=tickers, use_exchange_positions=False)
+
+        client = self._trade_client()
+        try:
+            exchange_positions = self._exchange_open_positions(client)
+        except Exception as exc:
+            self._warn_position_sync_failure(exc)
+            return []
+
+        if position_sync_needs_exchange:
+            self.sync_local_positions_with_exchange(
+                client=client,
+                exchange_positions=exchange_positions,
+            )
+        return self.check_live_risk_exits(
+            tickers=tickers,
+            use_exchange_positions=True,
+            client=client,
+            exchange_positions=[dict(position) for position in exchange_positions],
+        )
 
     def check_live_risk_exits(
         self,
         *,
         tickers: dict[str, dict[str, Any]] | None = None,
         use_exchange_positions: bool = True,
+        client: FuturesTradeClient | None = None,
+        exchange_positions: list[dict[str, Any]] | None = None,
     ) -> list[TradeExecutionResult]:
         if not self.config.risk_exits_enabled:
             return []
@@ -1531,10 +1589,11 @@ class LiveTradingEngine:
 
         state = self._read_state()
         positions = [item for item in state.get("local_positions") or [] if isinstance(item, dict)]
-        client: FuturesTradeClient | None = None
         if use_exchange_positions:
-            client = self._trade_client()
-            exchange_positions = self._exchange_open_positions(client)
+            if client is None:
+                client = self._trade_client()
+            if exchange_positions is None:
+                exchange_positions = self._exchange_open_positions(client)
         else:
             exchange_positions = self._local_risk_managed_positions(positions, tickers=tickers)
         if not exchange_positions:
@@ -2324,20 +2383,33 @@ class LiveTradingEngine:
             self.logger.warning("观察/邮件模式同向仓位检查失败，继续发送信号邮件: %s", exc)
             return None
 
-    def sync_local_positions_with_exchange(self, *, symbol: str | None = None, force: bool = False) -> dict[str, Any]:
+    def sync_local_positions_with_exchange(
+        self,
+        *,
+        symbol: str | None = None,
+        force: bool = False,
+        client: FuturesTradeClient | None = None,
+        exchange_positions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if not self.config.local_position_enabled or not self.config.position_sync_enabled:
             return {"skipped": True, "reason": "本地仓位或同步开关未启用"}
         if self.config.position_sync_real_only and not force and not self._is_real_trading_mode():
             return {"skipped": True, "reason": "非真实交易模式，保留 only 邮件/观察模式的本地虚拟仓位"}
 
         try:
-            client = self._trade_client()
-            exchange_positions = self._exchange_open_positions(client, symbol=symbol)
+            if client is None:
+                client = self._trade_client()
+            if exchange_positions is None:
+                exchange_positions = self._exchange_open_positions(client, symbol=symbol)
+            elif symbol:
+                scoped_symbol = symbol.upper()
+                exchange_positions = [
+                    position
+                    for position in exchange_positions
+                    if str(position.get("symbol") or "").upper() == scoped_symbol
+                ]
         except Exception as exc:
-            now = time.monotonic()
-            if now - self._last_position_sync_warning_at >= 60:
-                self.logger.warning("%s 持仓同步失败，本地仓位暂不覆盖: %s", self._exchange_label(), exc)
-                self._last_position_sync_warning_at = now
+            self._warn_position_sync_failure(exc)
             return {"skipped": True, "reason": str(exc)}
 
         state = self._read_state()
@@ -2452,6 +2524,13 @@ class LiveTradingEngine:
             self._write_state(state)
             self.logger.info("%s 持仓已同步到本地账本: %s", self._exchange_label(), json.dumps(state["last_position_sync"], ensure_ascii=False))
         return {"skipped": False, "open_count": len(exchange_positions), "added": added, "updated": updated, "closed": closed}
+
+    def _warn_position_sync_failure(self, exc: Exception) -> None:
+        now = time.monotonic()
+        if now - self._last_position_sync_warning_at < 60:
+            return
+        self.logger.warning("%s 持仓同步失败，本地仓位暂不覆盖: %s", self._exchange_label(), exc)
+        self._last_position_sync_warning_at = now
 
     def _exchange_open_positions(self, client: FuturesTradeClient, *, symbol: str | None = None) -> list[dict[str, Any]]:
         payload = client.get_all_positions(product_type=self.config.product_type, margin_coin=self.config.margin_coin)
